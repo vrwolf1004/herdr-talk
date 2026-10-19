@@ -20,10 +20,12 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import socket
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 
 APP = "herdr-talk"
@@ -209,6 +211,129 @@ def run_plain(chat):
     return 0
 
 
+def enable_vt():
+    """Turn on ANSI escape handling in the Windows console (no-op elsewhere)."""
+    if os.name == "nt":
+        os.system("")
+
+
+def char_width(text):
+    """Terminal columns used by text. East Asian wide characters count as two."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def read_char():
+    """Block until one key is typed and return it as text. Windows reads keys; elsewhere reads one UTF-8 character."""
+    if os.name == "nt":
+        import msvcrt
+        ch = msvcrt.getwch()
+        if ch in ("\x00", "\xe0"):   # arrow and function keys send a second code; drop it
+            msvcrt.getwch()
+            return ""
+        return ch
+    fd = sys.stdin.fileno()
+    first = os.read(fd, 1)
+    need = 4 if first[0] >= 0xF0 else 3 if first[0] >= 0xE0 else 2 if first[0] >= 0xC0 else 1
+    data = first + (os.read(fd, need - 1) if need > 1 else b"")
+    return data.decode("utf-8", "ignore")
+
+
+def wrap_line(line, cols):
+    """Split one message into rows of at most cols columns. Breaks at spaces; a word longer than a row is cut by character."""
+    rows, current = [], ""
+    for word in (line or " ").split(" "):
+        candidate = word if not current else current + " " + word
+        if char_width(candidate) <= cols:
+            current = candidate
+            continue
+        if current:
+            rows.append(current)
+        chunk, width = "", 0
+        for ch in word:
+            w = char_width(ch)
+            if width + w > cols:
+                rows.append(chunk)
+                chunk, width = "", 0
+            chunk += ch
+            width += w
+        current = chunk
+    rows.append(current)
+    return rows
+
+
+def run_ansi(chat):
+    """Chat with the input line fixed on the bottom row, without prompt_toolkit.
+    Every change redraws the screen from our own message list, with absolute cursor positions and no scroll region."""
+    global _sink
+    enable_vt()
+    history = []
+    buffer = []
+    lock = threading.Lock()
+
+    def render():
+        size = shutil.get_terminal_size((80, 24))
+        cols, rows = max(20, size.columns), max(5, size.lines)
+        wrapped = []
+        for line in history:
+            wrapped += wrap_line(line, cols - 1)
+        visible = wrapped[-(rows - 1):]
+        visible = [""] * (rows - 1 - len(visible)) + visible
+        text = "".join(buffer)
+        # Plain newlines between rows (no cursor jumps), so the input row stays on the last line.
+        sys.stdout.write("\x1b[H\x1b[2J" + "\n".join(visible) + "\n> " + text)
+        sys.stdout.flush()
+
+    def add_message(line, style=""):
+        with lock:
+            history.append(line)
+            del history[:-MAX_LINES]
+            render()
+
+    with _sink_lock:
+        _sink = add_message
+    with lock:
+        render()
+    threading.Thread(target=leave_when_idle, args=(chat,), daemon=True).start()
+    try:
+        while True:
+            ch = read_char()
+            if ch in ("\r", "\n"):
+                text = "".join(buffer)
+                buffer.clear()
+                # Chat messages come back from chat.handle() as "name (you): text", so echo only commands here.
+                if text.startswith("/"):
+                    with lock:
+                        history.append(f"> {text}")
+                        del history[:-MAX_LINES]
+                        render()
+                if not chat.handle(text):
+                    break
+                with lock:
+                    render()
+            elif ch in ("\x08", "\x7f"):
+                if buffer:
+                    buffer.pop()
+                with lock:
+                    render()
+            elif ch in ("\x03", "\x04"):   # Ctrl+C, Ctrl+D
+                break
+            elif ch == "\x0c":             # Ctrl+L: clear the messages on screen
+                with lock:
+                    history.clear()
+                    render()
+            elif ch and ch.isprintable():
+                buffer.append(ch)
+                with lock:
+                    render()
+    finally:
+        with _sink_lock:
+            _sink = None
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+    say("bye")
+    return 0
+
+
 def run_screen(chat):
     """Full-screen chat: messages above, input line below. Falls back to run_plain() if it cannot start."""
     try:
@@ -219,7 +344,7 @@ def run_screen(chat):
         from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
         from prompt_toolkit.styles import Style
     except ImportError:
-        return run_plain(chat)
+        return run_ansi(chat)
 
     def messages_text():
         return [(style, line + "\n") for style, line in chat.lines]
@@ -278,7 +403,7 @@ def run_screen(chat):
             full_screen=True,
         )
     except Exception:  # no usable console for prompt_toolkit
-        return run_plain(chat)
+        return run_ansi(chat)
 
     async def leave_when_idle_screen():
         while True:
