@@ -1,0 +1,23 @@
+id = "herdr-talk"
+name = "herdr-talk"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+platforms = ["windows", "linux", "macos"]
+description = "Chat with people on other PCs from inside herdr. Works directly on the same network without a server. Over the internet, messages are relayed through Supabase, encrypted end to end, and not stored."
+
+# Python 3 standard library only. Windows runs `python`, Linux/macOS run `python3`.
+# Open the chat pane from herdr: herdr plugin pane open --plugin herdr-talk --entrypoint chat-windows (Windows) or chat (Linux, macOS)
+
+[[panes]]
+id = "chat"
+title = "talk"
+platforms = ["linux", "macos"]
+placement = "split"
+command = ["python3", "-X", "utf8", "src/talk.py", "run"]
+
+[[panes]]
+id = "chat-windows"
+title = "talk"
+platforms = ["windows"]
+placement = "split"
+command = ["python", "-X", "utf8", "src/talk.py", "run"]
