@@ -30,6 +30,8 @@ import time
 import unicodedata
 import uuid
 
+from i18n import t
+
 APP = "herdr-talk"
 UDP_PORT = 47850          # discovery port, the same on every PC
 ANNOUNCE_SECONDS = 2
@@ -108,44 +110,44 @@ class Chat:
         if text == "/quit":
             return False
         if text == "/help":
-            say("<text> send to all, /name <new> change name, /lang <code> random name for a language, /peers list peers, /quit leave")
+            say(t("help.oneline"))
             return True
         if text == "/name" or text.startswith("/name "):
             new_name = text[5:].strip()[:32]
             if not new_name:
-                say("usage: /name <new name>   (or press Ctrl+N)")
+                say(t("usage.name"))
                 return True
             old_name = self.me["name"]
             self.me["name"] = new_name
-            say(f"* {old_name} is now {new_name}")
+            say(t("name.changed", old=old_name, new=new_name))
             return True
         if text == "/lang" or text.startswith("/lang "):
             code = text[5:].strip().lower()
             if code not in NAMES_BY_LANGUAGE:
-                say("usage: /lang <" + "|".join(NAMES_BY_LANGUAGE) + ">")
+                say(t("usage.lang", codes="|".join(NAMES_BY_LANGUAGE)))
                 return True
             old_name = self.me["name"]
             self.me["name"] = random.choice(NAMES_BY_LANGUAGE[code][1])
-            say(f"* {old_name} is now {self.me['name']}")
+            say(t("name.changed", old=old_name, new=self.me["name"]))
             return True
         if text == "/peers":
             found = self.fresh_peers()
             if not found:
-                say("no peers yet")
+                say(t("peers.none"))
             for info in found.values():
                 say(f"- {info['name']} ({info['ip']}:{info['port']})")
             return True
         text = text[:MAX_TEXT_CHARS].replace("\n", " ")
         targets = self.fresh_peers()
         if not targets:
-            say("no peers yet. Start herdr-talk on another PC on the same network.")
+            say(t("peers.none_hint"))
             return True
         for info in targets.values():
             try:
                 send_to(info, self.me, text)
             except OSError:
-                say(f"! could not reach {info['name']}")
-        say(f"{self.me['name']} (you): {text}", style="class:mine")
+                say(t("peer.unreachable", name=info["name"]))
+        say(f"{self.me['name']} {t('chat.you')}: {text}", style="class:mine")
         return True
 
 
@@ -185,7 +187,7 @@ def listen_for_peers(udp_port, chat):
                 "seen": time.time(),
             }
         if is_new:
-            say(f"* {info.get('name', 'unknown')} joined ({addr[0]})")
+            say(t("peer.joined", name=info.get("name", "unknown"), ip=addr[0]))
 
 
 def receive_messages(server):
@@ -226,7 +228,7 @@ def leave_when_idle(chat):
     while True:
         time.sleep(10)
         if time.time() - chat.last_activity >= IDLE_LIMIT_SECONDS:
-            print("* left: no activity for 10 minutes", flush=True)
+            print(t("idle.left", minutes=IDLE_LIMIT_SECONDS // 60), flush=True)
             os._exit(0)
 
 
@@ -243,7 +245,7 @@ def run_plain(chat):
             break
         if not chat.handle(text):
             break
-    say("bye")
+    say(t("bye"))
     return 0
 
 
@@ -298,28 +300,29 @@ def wrap_line(line, cols):
 
 
 HELP_LINES = [
-    "Send a message",
-    "  <text>          send to everyone",
+    t("help.title_send"),
+    t("help.send"),
     "",
-    "Commands",
-    "  /name <new>     change your name",
-    "  /lang <code>    random name by language",
-    "    codes: ko en zh ja vi fr de es ru id pt",
-    "  /peers          list peers seen recently",
-    "  /help           show this box",
-    "  /quit           leave the chat",
+    t("help.commands"),
+    t("help.name"),
+    t("help.lang"),
+    t("help.codes"),
+    t("help.peers"),
+    t("help.help"),
+    t("help.quit"),
     "",
-    "Keys",
-    "  Enter           send or run a command",
-    "  Backspace       delete one character",
-    "  Ctrl+L          clear the message list",
-    "  Ctrl+C          quit",
+    t("help.keys"),
+    t("help.enter"),
+    t("help.backspace"),
+    t("help.ctrl_l"),
+    t("help.ctrl_c"),
     "",
-    "press any key to close",
+    t("help.close"),
 ]
-HELP_WIDTH = max(len(line) for line in HELP_LINES)
+HELP_WIDTH = max(char_width(line) for line in HELP_LINES)
 HELP_BORDER = "+" + "-" * (HELP_WIDTH + 2) + "+"
-HELP_BOX = [HELP_BORDER] + [f"| {line.ljust(HELP_WIDTH)} |" for line in HELP_LINES] + [HELP_BORDER]
+# Pad by display width, so wide characters (Korean, Japanese) keep the right edge straight.
+HELP_BOX = [HELP_BORDER] + [f"| {line}{' ' * (HELP_WIDTH - char_width(line))} |" for line in HELP_LINES] + [HELP_BORDER]
 
 
 def run_ansi(chat):
@@ -405,7 +408,7 @@ def run_ansi(chat):
             _sink = None
         sys.stdout.write("\n")
         sys.stdout.flush()
-    say("bye")
+    say(t("bye"))
     return 0
 
 
@@ -432,7 +435,7 @@ def run_screen(chat):
 
     def status_text():
         peers = len(chat.fresh_peers())
-        return f" herdr-talk  |  {chat.me['name']}  |  peers: {peers}  |  Ctrl+N: rename   /help   Ctrl+C: quit "
+        return t("status.line", name=chat.me["name"], peers=peers)
 
     message_window = Window(content=FormattedTextControl(messages_text), wrap_lines=True, always_hide_cursor=True)
     message_window.get_vertical_scroll = scroll_to_bottom
@@ -484,7 +487,7 @@ def run_screen(chat):
         while True:
             await asyncio.sleep(10)
             if time.time() - chat.last_activity >= IDLE_LIMIT_SECONDS:
-                chat.add_line("* left: no activity for 10 minutes")
+                chat.add_line(t("idle.left", minutes=IDLE_LIMIT_SECONDS // 60))
                 app.exit()
                 return
 
@@ -510,7 +513,7 @@ def run(args):
     threading.Thread(target=announce, args=(args.udp_port, me), daemon=True).start()
     threading.Thread(target=listen_for_peers, args=(args.udp_port, chat), daemon=True).start()
 
-    say(f"herdr-talk: you are '{me['name']}' (TCP port {me['port']}). Type /help for commands.")
+    say(t("start.hello", name=me["name"], port=me["port"]))
     return run_screen(chat)
 
 
