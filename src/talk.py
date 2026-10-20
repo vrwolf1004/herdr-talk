@@ -19,7 +19,9 @@ Commands (typed in the input line)
 import argparse
 import asyncio
 import json
+import locale
 import os
+import random
 import shutil
 import socket
 import sys
@@ -36,6 +38,31 @@ MAX_MESSAGE_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 2000
 MAX_LINES = 2000
 IDLE_LIMIT_SECONDS = 10 * 60   # leave automatically after this long without any chat activity
+
+# Display names picked at random when --name is not given: the list for this PC's language, else every list.
+# Each entry: language code -> (Windows language name, names).
+NAMES_BY_LANGUAGE = {
+    "ko": ("korean", ["민준", "서준", "도윤", "예준", "시우", "하준", "지호", "주원", "서연", "서윤"]),
+    "en": ("english", ["Liam", "Olivia", "Noah", "Emma", "Oliver", "Ava", "Elijah", "Sophia", "James", "Isabella"]),
+    "zh": ("chinese", ["Haoran", "Yifan", "Ziyi", "Jiahui", "Xinyi", "Yu", "Mei", "Jie", "Lin", "Ting"]),
+    "ja": ("japanese", ["Haruto", "Yui", "Sota", "Hina", "Ren", "Sakura", "Yuto", "Riku", "Aoi", "Mio"]),
+    "vi": ("vietnamese", ["Anh", "Minh", "Huong", "Linh", "Tuan", "Hoa", "Duc", "Thao", "Phuc", "Lan"]),
+    "fr": ("french", ["Louis", "Gabriel", "Jules", "Lea", "Chloe", "Manon", "Lucas", "Hugo", "Camille", "Adam"]),
+    "de": ("german", ["Ben", "Mia", "Emil", "Hannah", "Paul", "Lina", "Leon", "Sofia", "Finn", "Greta"]),
+    "es": ("spanish", ["Lucia", "Martin", "Mateo", "Valentina", "Pablo", "Daniela", "Diego", "Paula", "Sergio", "Carmen"]),
+    "ru": ("russian", ["Mikhail", "Alexander", "Maria", "Artem", "Anna", "Ivan", "Daria", "Dmitry", "Polina", "Egor"]),
+    "id": ("indonesian", ["Budi", "Siti", "Agus", "Dewi", "Rizky", "Putri", "Adi", "Nur", "Fajar", "Ayu"]),
+    "pt": ("portuguese", ["Miguel", "Helena", "Arthur", "Alice", "Heitor", "Laura", "Bernardo", "Julia", "Davi", "Theo"]),
+}
+
+
+def default_name():
+    """Random name from the list matching the PC's language (e.g. Korean for a Korean locale)."""
+    language = (locale.getlocale()[0] or "").lower()
+    for code, (language_name, names) in NAMES_BY_LANGUAGE.items():
+        if language.startswith(code) or language.startswith(language_name):
+            return random.choice(names)
+    return random.choice([name for _, names in NAMES_BY_LANGUAGE.values() for name in names])
 
 _sink_lock = threading.Lock()
 _sink = None  # where say() writes; set by run()
@@ -81,7 +108,7 @@ class Chat:
         if text == "/quit":
             return False
         if text == "/help":
-            say("<text> send to all, /name <new> change name, /peers list peers, /quit leave")
+            say("<text> send to all, /name <new> change name, /lang <code> random name for a language, /peers list peers, /quit leave")
             return True
         if text == "/name" or text.startswith("/name "):
             new_name = text[5:].strip()[:32]
@@ -91,6 +118,15 @@ class Chat:
             old_name = self.me["name"]
             self.me["name"] = new_name
             say(f"* {old_name} is now {new_name}")
+            return True
+        if text == "/lang" or text.startswith("/lang "):
+            code = text[5:].strip().lower()
+            if code not in NAMES_BY_LANGUAGE:
+                say("usage: /lang <" + "|".join(NAMES_BY_LANGUAGE) + ">")
+                return True
+            old_name = self.me["name"]
+            self.me["name"] = random.choice(NAMES_BY_LANGUAGE[code][1])
+            say(f"* {old_name} is now {self.me['name']}")
             return True
         if text == "/peers":
             found = self.fresh_peers()
@@ -261,6 +297,31 @@ def wrap_line(line, cols):
     return rows
 
 
+HELP_LINES = [
+    "Send a message",
+    "  <text>          send to everyone",
+    "",
+    "Commands",
+    "  /name <new>     change your name",
+    "  /lang <code>    random name by language",
+    "    codes: ko en zh ja vi fr de es ru id pt",
+    "  /peers          list peers seen recently",
+    "  /help           show this box",
+    "  /quit           leave the chat",
+    "",
+    "Keys",
+    "  Enter           send or run a command",
+    "  Backspace       delete one character",
+    "  Ctrl+L          clear the message list",
+    "  Ctrl+C          quit",
+    "",
+    "press any key to close",
+]
+HELP_WIDTH = max(len(line) for line in HELP_LINES)
+HELP_BORDER = "+" + "-" * (HELP_WIDTH + 2) + "+"
+HELP_BOX = [HELP_BORDER] + [f"| {line.ljust(HELP_WIDTH)} |" for line in HELP_LINES] + [HELP_BORDER]
+
+
 def run_ansi(chat):
     """Chat with the input line fixed on the bottom row, without prompt_toolkit.
     Every change redraws the screen from our own message list, with absolute cursor positions and no scroll region."""
@@ -269,6 +330,7 @@ def run_ansi(chat):
     history = []
     buffer = []
     lock = threading.Lock()
+    help_open = False
 
     def render():
         size = shutil.get_terminal_size((80, 24))
@@ -278,6 +340,9 @@ def run_ansi(chat):
             wrapped += wrap_line(line, cols - 1)
         visible = wrapped[-(rows - 1):]
         visible = [""] * (rows - 1 - len(visible)) + visible
+        if help_open and len(visible) >= len(HELP_BOX) and cols >= len(HELP_BORDER):
+            top = (len(visible) - len(HELP_BOX)) // 2
+            visible[top:top + len(HELP_BOX)] = HELP_BOX
         text = "".join(buffer)
         # Plain newlines between rows (no cursor jumps), so the input row stays on the last line.
         sys.stdout.write("\x1b[H\x1b[2J" + "\n".join(visible) + "\n> " + text)
@@ -297,9 +362,19 @@ def run_ansi(chat):
     try:
         while True:
             ch = read_char()
+            if help_open and ch not in ("\x03", "\x04"):   # any key closes the help box
+                help_open = False
+                with lock:
+                    render()
+                continue
             if ch in ("\r", "\n"):
                 text = "".join(buffer)
                 buffer.clear()
+                if text.strip() == "/help":
+                    help_open = True
+                    with lock:
+                        render()
+                    continue
                 # Chat messages come back from chat.handle() as "name (you): text", so echo only commands here.
                 if text.startswith("/"):
                     with lock:
@@ -425,7 +500,8 @@ def run(args):
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("", args.tcp_port))
     server.listen()
-    me = {"id": uuid.uuid4().hex, "name": args.name, "port": server.getsockname()[1]}
+    name = args.name or default_name()
+    me = {"id": uuid.uuid4().hex, "name": name, "port": server.getsockname()[1]}
 
     chat = Chat(me)
     with _sink_lock:
@@ -442,7 +518,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="herdr-talk")
     commands = parser.add_subparsers(dest="command", required=True)
     chat = commands.add_parser("run", help="open the chat in this pane")
-    chat.add_argument("--name", default=socket.gethostname(), help="name shown to others")
+    chat.add_argument("--name", default=None, help="name shown to others (random if omitted)")
     chat.add_argument("--tcp-port", type=int, default=0, help="TCP port for messages (0 = pick one)")
     chat.add_argument("--udp-port", type=int, default=UDP_PORT, help="discovery port (keep the same on every PC)")
     args = parser.parse_args(argv)
