@@ -70,3 +70,10 @@ python -X utf8 src/talk.py run --name my-laptop
 - Only works on the same network (same router, no client isolation).
 - Messages are not stored. A peer that is offline does not get the message.
 - Not encrypted in phase 1. Use only on a network you trust.
+
+## Documentation
+
+- [Usage](docs/usage.md): commands, keys, names, language, troubleshooting
+- [Configuration](docs/configuration.md): settings, language order, timing constants
+- [Development](docs/development.md): code layout, adding languages, names, messages and commands
+- [TODO](docs/todo.md): improvement list
