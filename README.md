@@ -73,8 +73,10 @@ python -X utf8 src/talk.py run --name my-laptop
 
 ## Documentation
 
-- [Usage](docs/usage.md): commands, keys, names, language, troubleshooting
+- [Usage](docs/usage.md): install, commands, keys, names, language, network
+- [사용법 (한국어)](docs/usage.ko.md): 설치, 명령어, 단축키, 이름, 언어, 네트워크
 - [Configuration](docs/configuration.md): settings, language order, timing constants
+- [Troubleshooting](docs/troubleshooting.md): symptoms and checks
 - [Development](docs/development.md): code layout, adding languages, names, messages and commands
 - [TODO](docs/todo.md): improvement list
 

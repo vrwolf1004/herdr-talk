@@ -1,8 +1,18 @@
 # Usage
 
-How to chat, what each command does, and how names and languages work.
+How to install, chat, what each command does, and how names and languages work.
 
-## Start a chat
+## 1. Install
+
+Install from GitHub:
+
+```sh
+herdr plugin install vrwolf1004/herdr-talk
+```
+
+Requirements: herdr 0.9.0 or later, Python 3, and both PCs on the same network. The plugin uses only the Python standard library.
+
+## 2. Start a chat
 
 Open the chat pane from herdr on each PC:
 
@@ -23,7 +33,7 @@ Other chat panes on the same network show a `joined` line when they are first se
 * Liam joined (172.31.99.181)
 ```
 
-## Send messages
+## 3. Send messages
 
 Type a line and press Enter. The message goes to every peer seen in the last 10 seconds. Your own messages show `(you)` after your name:
 
@@ -39,7 +49,7 @@ Limits:
 - A message is cut to 2000 characters, and line breaks become spaces.
 - The message list keeps the last 2000 lines.
 
-## Commands
+## 4. Commands
 
 | Input | What it does |
 |-------|--------------|
@@ -47,16 +57,16 @@ Limits:
 | `/name <new>` | Change your name (up to 32 characters) |
 | `/lang <code>` | Pick a random new name from the list for a language |
 | `/peers` | List peers seen recently, with their address and port |
-| `/help` | Show a box with the commands and keys (any key closes it) |
+| `/help` | Show the commands and keys. In the plain view it is a box (any key closes it). In the full-screen view it is one line. |
 | `/quit` | Leave the chat |
 
 Language codes for `/lang`: `ko en zh ja vi fr de es ru id pt`.
 
 `/lang` and `/name` change only your display name. Peers see the new name on their next discovery message, about 2 seconds later.
 
-## Keys
+## 5. Keys
 
-In the plain pane (no `prompt_toolkit`):
+In the plain view (used when `prompt_toolkit` is not installed, which is the default):
 
 | Key | What it does |
 |-----|--------------|
@@ -67,7 +77,7 @@ In the plain pane (no `prompt_toolkit`):
 
 If `prompt_toolkit` is installed, the chat uses a full-screen view instead. There, **Ctrl+N** fills the input with `/name ` so you can type a new name, and **Ctrl+C** or **Ctrl+D** quits.
 
-## Names
+## 6. Names
 
 When you do not pass `--name`, the chat picks a random name from the list for the PC's language:
 
@@ -83,12 +93,13 @@ To choose the name when starting the script directly:
 python -X utf8 src/talk.py run --name my-laptop
 ```
 
-## Leaving
+## 7. Leaving
 
 - `/quit` leaves at any time.
-- The chat leaves on its own after 10 minutes with no chat activity. Typing a message or a command counts as activity.
+- The chat leaves on its own after 10 minutes with no chat activity. In the full-screen view, typing a message or a command counts as activity.
+- In the plain view, the idle timer is not reset by activity yet. The chat leaves 10 minutes after it starts, even while people are chatting. This is a known issue (see [TODO](todo.md)).
 
-## Language
+## 8. Language
 
 The chat's own text (messages, `/help` box, status line) follows the language setting. The setting is chosen in this order:
 
@@ -98,17 +109,21 @@ The chat's own text (messages, `/help` box, status line) follows the language se
 
 Languages: `en`, `ko`, `ru`, `fr`, `es`, `de`, `ja`. Other languages fall back to English. The command names (`/name`, `/lang`, `Ctrl+N`) stay the same in every language.
 
-## Network
+## 9. Network
 
 - Both PCs must be on the same network with no client isolation.
 - Discovery uses UDP port `47850`, and messages use a random TCP port that each chat picks at start.
 - Allow both in the firewall. If the peer list stays empty, check the firewall first.
 - Nothing is encrypted in this phase. Use it only on a network you trust.
 
-## Troubleshooting
+## 10. Troubleshooting
 
-| Symptom | Check |
-|---------|-------|
-| `no peers yet` | Both PCs on the same network? Firewall allows UDP `47850` and the TCP port? |
-| `! could not reach <name>` | The peer closed its pane or the firewall blocks its TCP port. Peers that have not been seen for 10 seconds drop from the list. |
-| Language is not what you expect | Set `HERDR_TALK_LANG=ko` (or another code) to force it. |
+Symptoms and checks are in [Troubleshooting](troubleshooting.md).
+
+## Documentation
+
+- [Usage (한국어)](usage.ko.md)
+- [Configuration](configuration.md): settings, language order, timing constants
+- [Development](development.md): code layout, adding languages, names, messages and commands
+- [Troubleshooting](troubleshooting.md): symptoms and checks
+- [TODO](todo.md): improvement list

@@ -44,10 +44,10 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 
 ## Docs and release
 
-- [ ] **Restore the Documentation section in both READMEs.** The `docs/` folder now exists (`usage.md`, `configuration.md`, `development.md`), so links to them can be added back.
-- [ ] **Write `docs/usage.ko.md`.** The main README has a Korean version, but the detailed docs are only in English.
+- [x] **Restore the Documentation section in both READMEs.** The `docs/` folder now exists (`usage.md`, `configuration.md`, `development.md`), so links to them can be added back.
+- [x] **Write `docs/usage.ko.md`.** The main README has a Korean version, but the detailed docs are only in English.
 - [ ] **Describe the language setting in the READMEs,** like herdr-timekit does, with a short Language section.
-- [ ] **Commit the `docs/` folder and this list** after review.
+- [x] **Commit the `docs/` folder and this list** after review.
 - [ ] **Check the herdr plugin install from GitHub** (`herdr plugin install vrwolf1004/herdr-talk`) after the next push, since the manifest and `src/` files must all be in the repo.
 
 ## Later (phase 2 and beyond)

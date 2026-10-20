@@ -73,8 +73,10 @@ python -X utf8 src/talk.py run --name my-laptop
 
 ## 문서
 
-- [사용법](docs/usage.md): 명령어, 단축키, 이름, 언어, 문제 해결 (영문)
+- [사용법](docs/usage.ko.md): 설치, 명령어, 단축키, 이름, 언어, 네트워크
+- [Usage (English)](docs/usage.md)
 - [설정](docs/configuration.md): 설정 값, 언어 결정 순서, 시간 상수 (영문)
+- [문제 해결](docs/troubleshooting.md): 증상별 확인 방법 (영문)
 - [개발](docs/development.md): 코드 구조, 언어·이름·문구·명령 추가 방법 (영문)
 - [할 일](docs/todo.md): 개선 목록 (영문)
 

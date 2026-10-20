@@ -7,9 +7,12 @@ herdr-talk/
 ├── README.md, README.ko.md     short overview (English, Korean)
 ├── herdr-plugin.toml           herdr manifest: the chat panes for each OS
 ├── docs/
-│   ├── usage.md                how to chat, commands, keys, names, language
+│   ├── usage.md                how to install, chat, commands, keys, names, language, network
+│   ├── usage.ko.md             same as usage.md, in Korean
 │   ├── configuration.md        settings, language order, timing constants
-│   └── development.md          this file
+│   ├── troubleshooting.md      symptoms and checks
+│   ├── development.md          this file
+│   └── todo.md                 improvement list
 └── src/
     ├── talk.py                 entry point: discovery, messages, screens, commands
     ├── i18n.py                 language choice and t(key, **values)
@@ -35,7 +38,8 @@ The herdr panes run the same command without `--name`, so each pane picks its ow
 - **Discovery**: `announce()` sends the name and TCP port by UDP broadcast every `ANNOUNCE_SECONDS`. `listen_for_peers()` records each peer in `Chat.peers`. `fresh_peers()` drops peers not seen for `PEER_TIMEOUT_SECONDS`.
 - **Messages**: `send_to()` opens a TCP connection per message and sends one JSON object. `receive_messages()` accepts connections, and `receive_one()` shows the message.
 - **Commands**: `Chat.handle()` runs one typed line. It returns `False` to leave the chat.
-- **Screens**: `run_screen()` uses `prompt_toolkit` when it is installed. If the import fails, it falls back to `run_ansi()`, which redraws the screen with plain ANSI codes. The help box (`HELP_BOX`) is drawn only by `run_ansi()`.
+- **Screens**: `run_screen()` uses `prompt_toolkit` when it is installed. If the import fails, or the full-screen app cannot start (no usable console), it falls back to `run_ansi()`, which redraws the screen with plain ANSI codes. The help box (`HELP_BOX`) is drawn only by `run_ansi()`. `run_plain()` is not called anywhere (see [TODO](todo.md)).
+- **Idle timer**: `leave_when_idle()` (plain view) and `leave_when_idle_screen()` (full-screen view) check `Chat.last_activity`. Only `Chat.add_line()` updates it, so the plain view does not reset it yet (see [TODO](todo.md)).
 - **Names**: `NAMES_BY_LANGUAGE` maps a language code to its Windows language name and a list of names. `default_name()` picks from the list that matches the PC's locale.
 
 ## Adding a language for names
@@ -66,7 +70,7 @@ for f in sorted(glob.glob('src/locales/*.json')):
 ## Adding a command
 
 1. Add a branch to `Chat.handle()` in `src/talk.py`.
-2. Add a line to the help box (`help.*` keys in every locale file).
+2. Add a line to the help box (`help.*` keys in every locale file), and update `help.oneline` for the full-screen view.
 3. Document it in `docs/usage.md` and in both READMEs.
 
 ## herdr panes
