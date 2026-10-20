@@ -77,3 +77,9 @@ python -X utf8 src/talk.py run --name my-laptop
 - [설정](docs/configuration.md): 설정 값, 언어 결정 순서, 시간 상수 (영문)
 - [개발](docs/development.md): 코드 구조, 언어·이름·문구·명령 추가 방법 (영문)
 - [할 일](docs/todo.md): 개선 목록 (영문)
+
+## 프로젝트 응원하기
+
+프로젝트가 도움이 되셨다면 커피 한 잔으로 개발을 응원해 주세요.
+
+[![Ko-fi에서 응원하기](https://img.shields.io/badge/Ko--fi-%EC%9D%91%EC%9B%90%ED%95%98%EA%B8%B0-FF5E5B?style=for-the-badge&logo=buymeacoffee&logoColor=white)](https://ko-fi.com/dev_ohyt)
