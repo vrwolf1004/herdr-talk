@@ -48,10 +48,10 @@ Commands in the chat:
 | `/name <new>` | Change your name |
 | `/lang <code>` | Pick a random new name from a language list: `ko en zh ja vi fr de es ru id pt` |
 | `/peers` | List peers seen recently |
-| `/help` | Show a box with the commands and keys (any key closes it) |
+| `/help` | Show the commands and keys. In the plain view it is a box (any key closes it). In the full-screen view it is one line. |
 | `/quit` | Leave the chat |
 
-Keys: Backspace deletes one character, Ctrl+L clears the message list, Ctrl+C quits.
+Keys: Backspace deletes one character, Ctrl+L clears the message list, Ctrl+C quits. If `prompt_toolkit` is installed, the chat uses a full-screen view instead, where Ctrl+N fills `/name ` so you can rename yourself.
 
 Each PC gets a random name when it starts, picked from the list for its language (a PC set to Korean gets Korean names). Use `/lang <code>` in the chat to pick another one. To set your own name when running the script directly, use `--name`:
 
@@ -70,6 +70,7 @@ python -X utf8 src/talk.py run --name my-laptop
 - Only works on the same network (same router, no client isolation).
 - Messages are not stored. A peer that is offline does not get the message.
 - Not encrypted in phase 1. Use only on a network you trust.
+- The chat leaves on its own after 10 minutes without activity. In the plain view, activity does not reset this timer yet, so the chat can leave 10 minutes after it starts (known issue, see [TODO](docs/todo.md)).
 
 ## Documentation
 
