@@ -24,6 +24,7 @@ import os
 import random
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -497,6 +498,33 @@ def run_screen(chat):
     return 0
 
 
+def herdr_cli(*args):
+    completed = subprocess.run(
+        [os.environ.get("HERDR_BIN_PATH", "herdr"), *args],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stdout + completed.stderr).strip() or f"herdr {' '.join(args)} failed")
+    output = completed.stdout.strip().lstrip("﻿")
+    return json.loads(output).get("result", {}) if output else {}
+
+
+def open_chat(_args):
+    """현재 pane 아래에 pane 을 나눠 chat 을 실행한다. 대화가 끝나면(Ctrl+C) 그 셸 프롬프트가 남는다."""
+    anchor = os.environ.get("HERDR_PANE_ID")
+    if not anchor:
+        print(t("open.no_pane"), file=sys.stderr)
+        return 1
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        pane_id = herdr_cli("pane", "split", anchor, "--direction", "down", "--cwd", src_dir)["pane"]["pane_id"]
+        herdr_cli("pane", "run", pane_id, sys.executable, "-X", "utf8", os.path.abspath(__file__), "run")
+    except (RuntimeError, ValueError, KeyError) as error:
+        print(error, file=sys.stderr)
+        return 1
+    return 0
+
+
 def run(args):
     global _sink
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -524,9 +552,12 @@ def main(argv=None):
     chat.add_argument("--name", default=None, help="name shown to others (random if omitted)")
     chat.add_argument("--tcp-port", type=int, default=0, help="TCP port for messages (0 = pick one)")
     chat.add_argument("--udp-port", type=int, default=UDP_PORT, help="discovery port (keep the same on every PC)")
+    commands.add_parser("open", help="split the current pane and run the chat in it")
     args = parser.parse_args(argv)
     if args.command == "run":
         return run(args)
+    if args.command == "open":
+        return open_chat(args)
     return 1
 
 

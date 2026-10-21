@@ -5,7 +5,7 @@
 ```
 herdr-talk/
 ├── README.md, README.ko.md     short overview (English, Korean)
-├── herdr-plugin.toml           herdr manifest: the chat panes for each OS
+├── herdr-plugin.toml           herdr manifest: open actions and chat panes for each OS
 ├── docs/
 │   ├── usage.md                how to install, chat, commands, keys, names, language, network
 │   ├── usage.ko.md             same as usage.md, in Korean
@@ -75,12 +75,15 @@ for f in sorted(glob.glob('src/locales/*.json')):
 
 ## herdr panes
 
-`herdr-plugin.toml` defines two panes:
+`herdr-plugin.toml` defines an `open` action (`open-windows` on Windows) and
+two direct chat panes:
 
 - `chat-windows` for Windows, which runs `python`
 - `chat` for Linux and macOS, which runs `python3`
 
-Both use `split` placement and run `src/talk.py run`.
+Both panes use `split` placement and run `src/talk.py run`. The `open` action
+requires a current herdr pane, splits a new pane below it, then runs the same
+chat command there with `pane.run`.
 
 ## Checks before a commit
 

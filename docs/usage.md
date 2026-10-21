@@ -14,12 +14,19 @@ Requirements: herdr 0.9.0 or later, Python 3, and both PCs on the same network. 
 
 ## 2. Start a chat
 
-Open the chat pane from herdr on each PC:
+From a herdr pane on each PC, run the `open` action to split a chat pane below
+the current pane:
 
 ```sh
-herdr plugin pane open --plugin herdr-talk --entrypoint chat-windows   # Windows
-herdr plugin pane open --plugin herdr-talk --entrypoint chat           # Linux, macOS
+herdr plugin action invoke open-windows --plugin herdr-talk   # Windows
+herdr plugin action invoke open --plugin herdr-talk           # Linux, macOS
 ```
+
+The action requires a current herdr pane (`HERDR_PANE_ID`). You can also open
+the chat pane directly with `herdr plugin pane open --plugin herdr-talk
+--entrypoint chat-windows` (Windows) or `--entrypoint chat` (Linux/macOS).
+After Ctrl+C, the chat command exits and the split pane returns to its shell
+prompt.
 
 When the pane starts, it shows the name it picked and its TCP port:
 

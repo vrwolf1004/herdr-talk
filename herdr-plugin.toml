@@ -8,6 +8,20 @@ description = "Chat with people on other PCs from inside herdr. Works directly o
 # Python 3 standard library only. Windows runs `python`, Linux/macOS run `python3`.
 # Open the chat pane from herdr: herdr plugin pane open --plugin herdr-talk --entrypoint chat-windows (Windows) or chat (Linux, macOS)
 
+[[actions]]
+id = "open"
+title = "talk: open chat"
+platforms = ["linux", "macos"]
+contexts = ["global", "pane", "workspace"]
+command = ["python3", "-X", "utf8", "src/talk.py", "open"]
+
+[[actions]]
+id = "open-windows"
+title = "talk: open chat"
+platforms = ["windows"]
+contexts = ["global", "pane", "workspace"]
+command = ["python", "-X", "utf8", "src/talk.py", "open"]
+
 [[panes]]
 id = "chat"
 title = "talk"

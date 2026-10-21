@@ -5,6 +5,7 @@ Check the symptom in the table first. Each check points to the setting or step t
 | Symptom | Check |
 |---------|-------|
 | `no peers yet` | Both PCs on the same network? Firewall allows UDP `47850` and the TCP port? |
+| `herdr-talk open: run this from a herdr pane` | Run the `open` action from a herdr pane so it has a `HERDR_PANE_ID`, or open the `chat` pane directly. |
 | `! could not reach <name>` | The peer closed its pane or the firewall blocks its TCP port. Peers that have not been seen for 10 seconds drop from the list. |
 | Language is not what you expect | Set `HERDR_TALK_LANG=ko` (or another code) to force it. |
 | Chat leaves after 10 minutes in the plain view | Known issue: the idle timer is not reset by activity in the plain view (see [TODO](todo.md)). |

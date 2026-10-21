@@ -22,12 +22,14 @@ herdr 안에서 다른 PC의 사람과 채팅하는 플러그인입니다. 같�
    herdr plugin install vrwolf1004/herdr-talk
    ```
 
-2. 각 PC에서 채팅 pane을 엽니다:
+2. 각 PC의 pane에서 open 액션을 실행해 그 아래에 채팅 pane을 나눕니다:
 
    ```sh
-   herdr plugin pane open --plugin herdr-talk --entrypoint chat-windows   # Windows
-   herdr plugin pane open --plugin herdr-talk --entrypoint chat           # Linux, macOS
+   herdr plugin action invoke open-windows --plugin herdr-talk   # Windows
+   herdr plugin action invoke open --plugin herdr-talk           # Linux, macOS
    ```
+
+   직접 pane을 열 수도 있습니다: `herdr plugin pane open --plugin herdr-talk --entrypoint chat-windows` (Windows) 또는 `--entrypoint chat` (Linux/macOS).
 
 3. 메시지를 입력하고 Enter를 누르면 같은 네트워크의 모든 상대에게 갑니다.
 
@@ -52,6 +54,7 @@ herdr 안에서 다른 PC의 사람과 채팅하는 플러그인입니다. 같�
 | `/quit` | 채팅 나가기 |
 
 단축키: Backspace는 한 글자 지우기, Ctrl+L은 메시지 지우기, Ctrl+C는 종료입니다. `prompt_toolkit`이 설치되어 있으면 전체 화면으로 동작하며, 이때 Ctrl+N을 누르면 `/name `이 채워져 직접 이름을 바꿀 수 있습니다.
+`open` 액션은 현재 pane 아래에 채팅 pane을 만듭니다. Ctrl+C를 누르면 채팅이 끝나고 해당 pane은 셸 프롬프트로 돌아옵니다.
 
 시작할 때 PC의 언어에 맞는 이름 목록에서 이름이 무작위로 정해집니다(한국어 PC는 한국 이름). 채팅에서 `/lang <코드>`로 다른 나라 이름을 고를 수 있습니다. 스크립트를 직접 실행할 때 이름을 정하려면 `--name`을 씁니다:
 

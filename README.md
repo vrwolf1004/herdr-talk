@@ -22,12 +22,14 @@ Chat with people on other PCs from inside herdr. Works directly on the same netw
    herdr plugin install vrwolf1004/herdr-talk
    ```
 
-2. On each PC, open the chat pane:
+2. From a pane on each PC, run the open action to split a chat pane below it:
 
    ```sh
-   herdr plugin pane open --plugin herdr-talk --entrypoint chat-windows   # Windows
-   herdr plugin pane open --plugin herdr-talk --entrypoint chat           # Linux, macOS
+   herdr plugin action invoke open-windows --plugin herdr-talk   # Windows
+   herdr plugin action invoke open --plugin herdr-talk           # Linux, macOS
    ```
+
+   You can also open the chat pane directly with `herdr plugin pane open --plugin herdr-talk --entrypoint chat-windows` (Windows) or `--entrypoint chat` (Linux/macOS).
 
 3. Type a message and press Enter. It goes to every peer on the network.
 
@@ -52,6 +54,7 @@ Commands in the chat:
 | `/quit` | Leave the chat |
 
 Keys: Backspace deletes one character, Ctrl+L clears the message list, Ctrl+C quits. If `prompt_toolkit` is installed, the chat uses a full-screen view instead, where Ctrl+N fills `/name ` so you can rename yourself.
+The `open` action creates the chat pane below the current pane. After Ctrl+C, the chat exits and the pane returns to its shell prompt.
 
 Each PC gets a random name when it starts, picked from the list for its language (a PC set to Korean gets Korean names). Use `/lang <code>` in the chat to pick another one. To set your own name when running the script directly, use `--name`:
 
