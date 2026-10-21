@@ -38,6 +38,8 @@ UDP_PORT = 47850          # discovery port, the same on every PC
 ANNOUNCE_SECONDS = 2
 PEER_TIMEOUT_SECONDS = 10
 MAX_MESSAGE_BYTES = 64 * 1024
+RECEIVE_TIMEOUT_SECONDS = 5
+LOOP_POLL_SECONDS = 0.5  # 종료 신호를 이 간격으로 확인한다
 MAX_TEXT_CHARS = 2000
 MAX_LINES = 2000
 IDLE_LIMIT_SECONDS = 10 * 60   # leave automatically after this long without any chat activity
@@ -59,15 +61,22 @@ NAMES_BY_LANGUAGE = {
 }
 
 
-def default_name():
+def pick_name(names, taken=()):
+    """Random name that is not in taken. If every name is taken, fall back to the whole list."""
+    free = [name for name in names if name not in taken]
+    return random.choice(free or names)
+
+
+def default_name(taken=()):
     """Random name from the list matching the PC's language (e.g. Korean for a Korean locale)."""
     language = (locale.getlocale()[0] or "").lower()
     for code, (language_name, names) in NAMES_BY_LANGUAGE.items():
         if language.startswith(code) or language.startswith(language_name):
-            return random.choice(names)
-    return random.choice([name for _, names in NAMES_BY_LANGUAGE.values() for name in names])
+            return pick_name(names, taken)
+    return pick_name([name for _, names in NAMES_BY_LANGUAGE.values() for name in names], taken)
 
 _sink_lock = threading.Lock()
+STOP = threading.Event()  # run() 이 끝날 때 설정한다. 네트워크 스레드는 이것을 보고 멈춘다.
 _sink = None  # where say() writes; set by run()
 
 
@@ -88,13 +97,19 @@ class Chat:
         self.peers = {}
         self.peers_lock = threading.Lock()
         self.lines = []
+        self.lines_lock = threading.Lock()  # 네트워크 스레드와 화면이 같은 목록을 쓴다
         self.app = None
         self.last_activity = time.time()
 
-    def add_line(self, line, style=""):
+    def touch(self):
+        """Mark activity so the idle timer restarts. Used by every view, not only add_line()."""
         self.last_activity = time.time()
-        self.lines.append((style, line))
-        del self.lines[:-MAX_LINES]
+
+    def add_line(self, line, style=""):
+        self.touch()
+        with self.lines_lock:
+            self.lines.append((style, line))
+            del self.lines[:-MAX_LINES]
         if self.app is not None:
             self.app.invalidate()
 
@@ -111,7 +126,8 @@ class Chat:
         if text == "/quit":
             return False
         if text == "/help":
-            say(t("help.oneline"))
+            for line in HELP_BOX:
+                say(line)
             return True
         if text == "/name" or text.startswith("/name "):
             new_name = text[5:].strip()[:32]
@@ -128,7 +144,8 @@ class Chat:
                 say(t("usage.lang", codes="|".join(NAMES_BY_LANGUAGE)))
                 return True
             old_name = self.me["name"]
-            self.me["name"] = random.choice(NAMES_BY_LANGUAGE[code][1])
+            taken = {info["name"] for info in self.fresh_peers().values()} | {old_name}
+            self.me["name"] = pick_name(NAMES_BY_LANGUAGE[code][1], taken)
             say(t("name.changed", old=old_name, new=self.me["name"]))
             return True
         if text == "/peers":
@@ -156,13 +173,16 @@ def announce(udp_port, me):
     """Broadcast this instance's name and TCP port every few seconds."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    while True:
-        payload = json.dumps({"app": APP, **me}).encode("utf-8")
-        try:
-            sock.sendto(payload, ("255.255.255.255", udp_port))
-        except OSError:
-            pass
-        time.sleep(ANNOUNCE_SECONDS)
+    try:
+        while not STOP.is_set():
+            payload = json.dumps({"app": APP, **me}).encode("utf-8")
+            try:
+                sock.sendto(payload, ("255.255.255.255", udp_port))
+            except OSError:
+                pass
+            STOP.wait(ANNOUNCE_SECONDS)
+    finally:
+        sock.close()
 
 
 def listen_for_peers(udp_port, chat):
@@ -170,8 +190,21 @@ def listen_for_peers(udp_port, chat):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("", udp_port))
-    while True:
-        data, addr = sock.recvfrom(4096)
+    sock.settimeout(LOOP_POLL_SECONDS)
+    try:
+        _listen_loop(sock, chat)
+    finally:
+        sock.close()
+
+
+def _listen_loop(sock, chat):
+    while not STOP.is_set():
+        try:
+            data, addr = sock.recvfrom(4096)
+        except socket.timeout:
+            continue
+        except OSError:
+            return  # 소켓이 닫혔다 (종료 중)
         try:
             info = json.loads(data.decode("utf-8"))
         except ValueError:
@@ -193,12 +226,24 @@ def listen_for_peers(udp_port, chat):
 
 def receive_messages(server):
     """Accept TCP connections. Each connection carries one JSON message."""
-    while True:
-        conn, _ = server.accept()
+    server.settimeout(LOOP_POLL_SECONDS)
+    while not STOP.is_set():
+        try:
+            conn, _ = server.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            return  # 서버 소켓이 닫혔다 (종료 중)
         threading.Thread(target=receive_one, args=(conn,), daemon=True).start()
 
 
+def clean_text(value, limit):
+    """Replace control characters with spaces and cut to limit characters."""
+    return "".join(char if char.isprintable() else " " for char in value)[:limit]
+
+
 def receive_one(conn):
+    conn.settimeout(RECEIVE_TIMEOUT_SECONDS)  # 멈춘 연결이 스레드를 잡고 있지 않게 한다
     with conn:
         data = b""
         while len(data) <= MAX_MESSAGE_BYTES:
@@ -212,9 +257,16 @@ def receive_one(conn):
         message = json.loads(data.decode("utf-8"))
     except ValueError:
         return
-    if message.get("app") != APP:
+    if not isinstance(message, dict) or message.get("app") != APP:
         return
-    say(f"{message.get('from', 'unknown')}: {message.get('text', '')}")
+    sender, body = message.get("from"), message.get("text")
+    if not isinstance(sender, str) or not isinstance(body, str):
+        return  # 형식이 틀린 메시지는 버린다
+    sender = clean_text(sender, 32) or "unknown"
+    body = clean_text(body, MAX_TEXT_CHARS)
+    if not body.strip():
+        return
+    say(f"{sender}: {body}")
 
 
 def send_to(peer, me, text):
@@ -231,23 +283,6 @@ def leave_when_idle(chat):
         if time.time() - chat.last_activity >= IDLE_LIMIT_SECONDS:
             print(t("idle.left", minutes=IDLE_LIMIT_SECONDS // 60), flush=True)
             os._exit(0)
-
-
-def run_plain(chat):
-    """Line-by-line chat. Used when prompt_toolkit is missing or no console is available."""
-    global _sink
-    with _sink_lock:
-        _sink = lambda line, style="": print(line, flush=True)
-    threading.Thread(target=leave_when_idle, args=(chat,), daemon=True).start()
-    while True:
-        try:
-            text = input("> ")
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not chat.handle(text):
-            break
-    say(t("bye"))
-    return 0
 
 
 def enable_vt():
@@ -353,6 +388,7 @@ def run_ansi(chat):
         sys.stdout.flush()
 
     def add_message(line, style=""):
+        chat.touch()
         with lock:
             history.append(line)
             del history[:-MAX_LINES]
@@ -414,7 +450,7 @@ def run_ansi(chat):
 
 
 def run_screen(chat):
-    """Full-screen chat: messages above, input line below. Falls back to run_plain() if it cannot start."""
+    """Full-screen chat: messages above, input line below. Falls back to run_ansi() if prompt_toolkit cannot start."""
     try:
         from prompt_toolkit.application import Application
         from prompt_toolkit.buffer import Buffer
@@ -426,7 +462,9 @@ def run_screen(chat):
         return run_ansi(chat)
 
     def messages_text():
-        return [(style, line + "\n") for style, line in chat.lines]
+        with chat.lines_lock:
+            snapshot = list(chat.lines)
+        return [(style, line + "\n") for style, line in snapshot]
 
     def scroll_to_bottom(window):
         info = window.render_info
@@ -542,7 +580,11 @@ def run(args):
     threading.Thread(target=listen_for_peers, args=(args.udp_port, chat), daemon=True).start()
 
     say(t("start.hello", name=me["name"], port=me["port"]))
-    return run_screen(chat)
+    try:
+        return run_screen(chat)
+    finally:
+        STOP.set()
+        server.close()
 
 
 def main(argv=None):

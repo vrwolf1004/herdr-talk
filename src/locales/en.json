@@ -1,5 +1,4 @@
 {
-  "help.oneline": "<text> send to all, /name <new> change name, /lang <code> random name for a language, /peers list peers, /quit leave",
   "help.title_send": "Send a message",
   "help.send": "  <text>          send to everyone",
   "help.commands": "Commands",

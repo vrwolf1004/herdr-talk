@@ -1,5 +1,4 @@
 {
-  "help.oneline": "<Text> an alle, /name <Name> Namen ändern, /lang <Code> zufälliger Name nach Sprache, /peers Liste, /quit verlassen",
   "help.title_send": "Nachricht senden",
   "help.send": "  <Text>          an alle senden",
   "help.commands": "Befehle",
@@ -26,5 +25,6 @@
   "idle.left": "* verlassen: {minutes} Minuten ohne Aktivität",
   "bye": "tschüss",
   "status.line": " herdr-talk  |  {name}  |  Peers: {peers}  |  Ctrl+N: Name   /help   Ctrl+C: beenden ",
-  "start.hello": "herdr-talk: du bist '{name}' (TCP-Port {port}). Gib /help für die Befehle ein."
+  "start.hello": "herdr-talk: du bist '{name}' (TCP-Port {port}). Gib /help für die Befehle ein.",
+  "open.no_pane": "herdr-talk open: Bitte in einem herdr-Pane ausführen (HERDR_PANE_ID ist nicht gesetzt)."
 }

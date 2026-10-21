@@ -1,5 +1,4 @@
 {
-  "help.oneline": "<текст> всем, /name <новое имя> сменить имя, /lang <код> случайное имя по языку, /peers список, /quit выйти",
   "help.title_send": "Отправка сообщения",
   "help.send": "  <текст>         отправить всем",
   "help.commands": "Команды",
@@ -26,5 +25,6 @@
   "idle.left": "* вышел: нет активности {minutes} мин",
   "bye": "пока",
   "status.line": " herdr-talk  |  {name}  |  собеседники: {peers}  |  Ctrl+N: имя   /help   Ctrl+C: выход ",
-  "start.hello": "herdr-talk: вы — '{name}' (TCP порт {port}). Введите /help для команд."
+  "start.hello": "herdr-talk: вы — '{name}' (TCP порт {port}). Введите /help для команд.",
+  "open.no_pane": "herdr-talk open: запустите из pane herdr (HERDR_PANE_ID не задан)."
 }

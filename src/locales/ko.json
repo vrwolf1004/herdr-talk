@@ -1,5 +1,4 @@
 {
-  "help.oneline": "<텍스트> 모두에게 보내기, /name <새 이름> 이름 바꾸기, /lang <코드> 언어별 무작위 이름, /peers 상대 목록, /quit 나가기",
   "help.title_send": "메시지 보내기",
   "help.send": "  <텍스트>        모든 상대에게 보내기",
   "help.commands": "명령어",
