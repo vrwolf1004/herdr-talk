@@ -2,7 +2,7 @@
 
 [**English**](README.md) | [한국어](README.ko.md)
 
-🌐 UI languages: 🇺🇸 English (en) · 🇰🇷 한국어 (ko) · 🇷🇺 Русский (ru) · 🇫🇷 Français (fr) · 🇪🇸 Español (es) · 🇩🇪 Deutsch (de) · 🇯🇵 日本語 (ja)
+UI languages: English · Korean · Russian · French · Spanish · German · Japanese
 
 Chat with people on other PCs from inside herdr. Nearby peers connect directly over the same network without a chat server.
 
