@@ -37,6 +37,11 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 
 ## Network and security
 
+- [ ] **수신 메시지 스키마와 표시 문자열 검증**
+  - TCP JSON에서 필수 필드, 값 형식, 길이 및 제어 문자를 확인하고, 잘못된 메시지는 버린다. 임의의 `from`/`text`로 인한 잘못된 표시를 재현하는 테스트를 추가한다.
+- [ ] **네트워크 스레드와 UI 상태 수명 관리**
+  - 수신 루프는 종료 신호 없이 계속 돌고 소켓을 닫지 않는다. 공유 메시지 목록은 네트워크 스레드와 UI가 함께 변경한다. 종료 이벤트·소켓 정리와 잠금 또는 단일 이벤트 큐를 설계하고 종료/동시성 테스트를 추가한다.
+
 - [ ] **Encryption (phase 2).** Messages are plain JSON over TCP. Phase 2 plans end-to-end encryption through Supabase. Phase 1 must stay on trusted networks only.
 - [ ] **Limit the message rate.** A peer can send many messages quickly and fill the list. Add a simple per-peer limit.
 - [ ] **Check the peer address.** Messages are accepted from any address that sends the right `app` field. Consider checking that the sender matches a peer seen over UDP.
