@@ -8,7 +8,19 @@ Chat with people on other PCs from inside herdr. Nearby peers connect directly o
 
 ## Dashboard design
 
-The chat pane lists messages and keeps the input line at the bottom. Messages are sent directly to peers and are not stored.
+Chat pane:
+
+```text
+herdr-talk: you are 'Haruto' (TCP port 52311). Type /help for commands.
+* Liam joined (172.31.99.181)
+
+Liam: hi, anyone here?
+Haruto (you): hello!
+
+>
+```
+
+This plugin uses a chat pane rather than an Agents-sidebar block. Messages are sent directly to peers and are not stored.
 
 ## Installation
 
