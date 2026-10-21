@@ -2,87 +2,44 @@
 
 [English](README.md) | [**한국어**](README.ko.md)
 
-herdr 안에서 다른 PC의 사람과 채팅하는 플러그인입니다. 같은 네트워크에서는 서버 없이 바로 연결됩니다.
+🌐 UI 언어: 🇺🇸 English (en) · 🇰🇷 한국어 (ko) · 🇷🇺 Русский (ru) · 🇫🇷 Français (fr) · 🇪🇸 Español (es) · 🇩🇪 Deutsch (de) · 🇯🇵 日本語 (ja)
 
-> 상태: 1차(같은 네트워크) 구현 단계입니다. 인터넷 너머 채팅(Supabase, 종단 간 암호화)은 2차로 계획되어 있습니다.
+herdr 안에서 다른 PC의 사람과 채팅합니다. 같은 네트워크의 상대와 채팅 서버 없이 직접 연결됩니다.
+
+## 대시보드 디자인
+
+채팅 pane에 메시지가 표시되고 입력 줄은 아래에 고정됩니다. 메시지는 상대에게 직접 전송되며 저장되지 않습니다.
+
+## 설치
+
+```sh
+herdr plugin install vrwolf1004/herdr-talk
+```
+
+## 액션
+
+| 액션 | 기능 |
+| --- | --- |
+| `open` | 현재 pane 아래에 채팅 pane 열기 (Linux/macOS) |
+| `open-windows` | 현재 pane 아래에 채팅 pane 열기 (Windows) |
+
+herdr pane 안에서 액션을 실행해야 합니다. 직접 pane을 여는 방법, 채팅 명령, 네트워크 요구 사항은 [사용법](docs/usage.ko.md)을 참고하세요.
 
 ## 요구 사항
 
-- herdr 0.9.0 이상
 - Windows, Linux, macOS
-- Python 3
-- 추가 패키지는 필요 없습니다. 입력 줄은 pane 아래에 고정됩니다.
-- 두 PC가 같은 네트워크에 있고, 방화벽이 탐색과 메시지 포트를 막지 않아야 합니다
-
-## 빠른 시작
-
-1. 두 PC에 플러그인을 설치합니다:
-
-   ```sh
-   herdr plugin install vrwolf1004/herdr-talk
-   ```
-
-2. 각 PC의 pane에서 open 액션을 실행해 그 아래에 채팅 pane을 나눕니다:
-
-   ```sh
-   herdr plugin action invoke open-windows --plugin herdr-talk   # Windows
-   herdr plugin action invoke open --plugin herdr-talk           # Linux, macOS
-   ```
-
-   직접 pane을 열 수도 있습니다: `herdr plugin pane open --plugin herdr-talk --entrypoint chat-windows` (Windows) 또는 `--entrypoint chat` (Linux/macOS).
-
-3. 메시지를 입력하고 Enter를 누르면 같은 네트워크의 모든 상대에게 갑니다.
-
-채팅 화면은 이렇게 보입니다. 다른 사람의 메시지에는 이름이, 내 메시지에는 `(you)`가 붙고, 입력 줄은 맨 아래에 있습니다:
-
-```text
-* 하준 joined (172.31.99.176)
-도윤: 안녕하세요
-하준 (you): 반갑습니다
->
-```
-
-채팅 명령어:
-
-| 입력 | 하는 일 |
-|------|---------|
-| `<텍스트>` | 모든 상대에게 보내기 |
-| `/name <새 이름>` | 내 이름 바꾸기 |
-| `/lang <코드>` | 해당 언어의 이름 목록에서 무작위로 새 이름 고르기: `ko en zh ja vi fr de es ru id pt` |
-| `/peers` | 최근에 보인 상대 목록 |
-| `/help` | 명령어와 단축키 보기. 기본 화면에서는 상자로(아무 키나 누르면 닫힘), 전체 화면에서는 한 줄로 나옵니다 |
-| `/quit` | 채팅 나가기 |
-
-단축키: Backspace는 한 글자 지우기, Ctrl+L은 메시지 지우기, Ctrl+C는 종료입니다. `prompt_toolkit`이 설치되어 있으면 전체 화면으로 동작하며, 이때 Ctrl+N을 누르면 `/name `이 채워져 직접 이름을 바꿀 수 있습니다.
-`open` 액션은 현재 pane 아래에 채팅 pane을 만듭니다. Ctrl+C를 누르면 채팅이 끝나고 해당 pane은 셸 프롬프트로 돌아옵니다.
-
-시작할 때 PC의 언어에 맞는 이름 목록에서 이름이 무작위로 정해집니다(한국어 PC는 한국 이름). 채팅에서 `/lang <코드>`로 다른 나라 이름을 고를 수 있습니다. 스크립트를 직접 실행할 때 이름을 정하려면 `--name`을 씁니다:
-
-```sh
-python -X utf8 src/talk.py run --name my-laptop
-```
-
-## 동작 방식
-
-- 각 채팅 프로그램은 2초마다 UDP `47850` 포트로 자기 이름과 TCP 포트를 알립니다.
-- 같은 네트워크의 다른 프로그램은 그 정보를 받아 상대 목록에 넣습니다.
-- 메시지는 상대에게 TCP로 바로 보냅니다. 어디에도 저장하지 않습니다.
-
-## 한계
-
-- 같은 네트워크(같은 공유기, 기기 간 통신 허용)에서만 동작합니다.
-- 10분 동안 활동이 없으면 자동으로 나갑니다. 기본 화면에서는 활동이 이 타이머를 갱신하지 않아 시작 후 10분이면 나가는 알려진 문제가 있습니다([할 일](docs/todo.md)).
-- 메시지를 저장하지 않으므로, 꺼져 있는 상대는 메시지를 받지 못합니다.
-- 1차에는 암호화가 없습니다. 믿을 수 있는 네트워크에서만 쓰세요.
+- herdr 0.9.0 이상
+- Python 3, 표준 라이브러리만 사용
+- 두 PC가 같은 네트워크에 있고 방화벽에서 탐색과 TCP 통신을 허용해야 함
 
 ## 문서
 
-- [사용법](docs/usage.ko.md): 설치, 명령어, 단축키, 이름, 언어, 네트워크
+- [사용법 (한국어)](docs/usage.ko.md)
 - [Usage (English)](docs/usage.md)
-- [설정](docs/configuration.md): 설정 값, 언어 결정 순서, 시간 상수 (영문)
-- [문제 해결](docs/troubleshooting.md): 증상별 확인 방법 (영문)
-- [개발](docs/development.md): 코드 구조, 언어·이름·문구·명령 추가 방법 (영문)
-- [할 일](docs/todo.md): 개선 목록 (영문)
+- [설정](docs/configuration.md)
+- [문제 해결](docs/troubleshooting.md)
+- [개발](docs/development.md)
+- [할 일](docs/todo.md)
 
 ## 프로젝트 응원하기
 
