@@ -37,7 +37,7 @@ Example `config.json`:
 
 Translations live in `src/locales/<language>.json`. Missing keys fall back to English.
 
-The language does not change the random name list. Names come from the PC's locale, or from the `/lang` command. See [Usage: Names](usage.md#names).
+The language does not change the random name list. Names come from the PC's locale, or from the `/lang` command. See [Usage: Names](usage.md#6-names).
 
 ## Discovery and timing
 

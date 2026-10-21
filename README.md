@@ -20,7 +20,10 @@ Haruto (you): hello!
 >
 ```
 
-This plugin uses a chat pane rather than an Agents-sidebar block. Messages are sent directly to peers and are not stored.
+This plugin uses a chat pane rather than an Agents-sidebar block. The current
+implementation is LAN-only: peers are discovered with UDP broadcast and
+messages are sent directly over TCP. Messages are not stored or encrypted, so
+use it only on a network you trust.
 
 ## Installation
 
@@ -43,6 +46,7 @@ The action must be run from a herdr pane. See the [usage guide](docs/usage.md) f
 - herdr 0.9.0 or later
 - Python 3; standard library only
 - Both PCs on the same network, with discovery and TCP traffic allowed by the firewall
+- Optional `prompt_toolkit` enables the full-screen chat view; otherwise the built-in terminal view is used
 
 ## Documentation
 

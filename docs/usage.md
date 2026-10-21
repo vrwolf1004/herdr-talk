@@ -10,7 +10,7 @@ Install from GitHub:
 herdr plugin install vrwolf1004/herdr-talk
 ```
 
-Requirements: herdr 0.9.0 or later, Python 3, and both PCs on the same network. The plugin uses only the Python standard library.
+Requirements: herdr 0.9.0 or later, Python 3, and both PCs on the same network. The plugin uses only the Python standard library; optional `prompt_toolkit` enables the full-screen view.
 
 ## 2. Start a chat
 
@@ -103,8 +103,7 @@ python -X utf8 src/talk.py run --name my-laptop
 ## 7. Leaving
 
 - `/quit` leaves at any time.
-- The chat leaves on its own after 10 minutes with no chat activity. In the full-screen view, typing a message or a command counts as activity.
-- In the plain view, the idle timer is not reset by activity yet. The chat leaves 10 minutes after it starts, even while people are chatting. This is a known issue (see [TODO](todo.md)).
+- The chat leaves on its own after 10 minutes without chat activity. Sending or receiving a message and command output reset the timer in either view. Typing without submitting does not count as activity.
 
 ## 8. Language
 
@@ -121,7 +120,7 @@ Languages: `en`, `ko`, `ru`, `fr`, `es`, `de`, `ja`. Other languages fall back t
 - Both PCs must be on the same network with no client isolation.
 - Discovery uses UDP port `47850`, and messages use a random TCP port that each chat picks at start.
 - Allow both in the firewall. If the peer list stays empty, check the firewall first.
-- Nothing is encrypted in this phase. Use it only on a network you trust.
+- Discovery is UDP broadcast and messages go directly over TCP. Traffic is not encrypted; use it only on a network you trust.
 
 ## 10. Troubleshooting
 
