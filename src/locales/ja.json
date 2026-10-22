@@ -26,5 +26,6 @@
   "bye": "終了します",
   "status.line": " herdr-talk  |  {name}  |  相手: {peers}  |  Ctrl+N: 名前変更   /help   Ctrl+C: 終了 ",
   "start.hello": "herdr-talk: あなたの名前は '{name}' です (TCP ポート {port})。/help でコマンドを表示します。",
-  "open.no_pane": "herdr-talk open: herdr の pane 内で実行してください (HERDR_PANE_ID が設定されていません)。"
+  "open.no_pane": "herdr-talk open: herdr の pane 内で実行してください (HERDR_PANE_ID が設定されていません)。",
+  "dock.agent_name": "talk: 接続 {count}人"
 }

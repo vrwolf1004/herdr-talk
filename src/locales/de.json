@@ -26,5 +26,6 @@
   "bye": "tschüss",
   "status.line": " herdr-talk  |  {name}  |  Peers: {peers}  |  Ctrl+N: Name   /help   Ctrl+C: beenden ",
   "start.hello": "herdr-talk: du bist '{name}' (TCP-Port {port}). Gib /help für die Befehle ein.",
-  "open.no_pane": "herdr-talk open: Bitte in einem herdr-Pane ausführen (HERDR_PANE_ID ist nicht gesetzt)."
+  "open.no_pane": "herdr-talk open: Bitte in einem herdr-Pane ausführen (HERDR_PANE_ID ist nicht gesetzt).",
+  "dock.agent_name": "talk: {count} online"
 }

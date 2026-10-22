@@ -122,7 +122,17 @@ Languages: `en`, `ko`, `ru`, `fr`, `es`, `de`, `ja`. Other languages fall back t
 - Allow both in the firewall. If the peer list stays empty, check the firewall first.
 - Discovery is UDP broadcast and messages go directly over TCP. Traffic is not encrypted; use it only on a network you trust.
 
-## 10. Troubleshooting
+## 10. Dock block
+
+Run `dock-start` (Linux/macOS) or `dock-start-windows` (Windows) to show a chat block in the shared `herdr-dock` workspace. The block shows `talk: N online` in the agents list. Clicking it focuses the pane, and the chat window is that pane.
+
+- The block leaves after 10 minutes without chat activity, as in a normal chat. Run `dock-start` again to bring it back.
+- `dock-stop` hides the block and releases its slot.
+- The plugin starts the block on herdr startup as well.
+
+> `herdr-dock-grid` link is optional. Without it, the plugin uses its own `src/dock_layout.py` copy and works the same way.
+
+## 11. Troubleshooting
 
 Symptoms and checks are in [Troubleshooting](troubleshooting.md).
 

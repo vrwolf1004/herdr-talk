@@ -26,5 +26,6 @@
   "bye": "пока",
   "status.line": " herdr-talk  |  {name}  |  собеседники: {peers}  |  Ctrl+N: имя   /help   Ctrl+C: выход ",
   "start.hello": "herdr-talk: вы — '{name}' (TCP порт {port}). Введите /help для команд.",
-  "open.no_pane": "herdr-talk open: запустите из pane herdr (HERDR_PANE_ID не задан)."
+  "open.no_pane": "herdr-talk open: запустите из pane herdr (HERDR_PANE_ID не задан).",
+  "dock.agent_name": "talk: в сети {count}"
 }

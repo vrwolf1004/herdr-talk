@@ -26,5 +26,6 @@
   "bye": "종료합니다",
   "status.line": " herdr-talk  |  {name}  |  상대: {peers}  |  Ctrl+N: 이름 변경   /help   Ctrl+C: 종료 ",
   "start.hello": "herdr-talk: 당신의 이름은 '{name}'입니다 (TCP 포트 {port}). 명령어는 /help를 입력하세요.",
-  "open.no_pane": "herdr-talk open: herdr 패널 안에서 실행하세요 (HERDR_PANE_ID 가 없습니다)."
+  "open.no_pane": "herdr-talk open: herdr 패널 안에서 실행하세요 (HERDR_PANE_ID 가 없습니다).",
+  "dock.agent_name": "talk: 접속 {count}명"
 }

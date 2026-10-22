@@ -117,7 +117,17 @@ python -X utf8 src/talk.py run --name my-laptop
 - 방화벽에서 둘 다 허용하세요. 상대 목록이 계속 비어 있으면 방화벽부터 확인하세요.
 - UDP 브로드캐스트로 상대를 찾고 TCP로 메시지를 직접 전송합니다. 트래픽은 암호화되지 않으므로 신뢰할 수 있는 네트워크에서만 사용하세요.
 
-## 10. 문제 해결
+## 10. 도크 블록
+
+`dock-start`(Linux/macOS) 또는 `dock-start-windows`(Windows)를 실행하면 공용 `herdr-dock` 워크스페이스에 대화 블록이 뜹니다. 에이전트 목록에는 `talk: 접속 N명`으로 보입니다. 블록을 클릭하면 그 pane이 포커스되고, 대화창이 바로 그 pane입니다.
+
+- 채팅 활동이 10분 동안 없으면 블록도 사라집니다. 다시 띄우려면 `dock-start`를 실행하세요.
+- `dock-stop`은 블록을 숨기고 자리를 놓습니다.
+- herdr 시작 때도 블록이 자동으로 뜹니다.
+
+> `herdr-dock-grid` 연결은 선택입니다. 없으면 플러그인의 `src/dock_layout.py` 복사본으로 똑같이 동작합니다.
+
+## 11. 문제 해결
 
 증상과 확인 방법은 [문제 해결](troubleshooting.md)에 있습니다.
 

@@ -31,6 +31,19 @@ import time
 import unicodedata
 import uuid
 
+import herdr_api
+
+
+def load_dock_layout():
+    """설치된 herdr-dock-grid 가 있으면 그 원본을, 없으면 이 plugin 의 복사본(src/dock_layout.py)을 쓴다."""
+    grid = herdr_api.installed_plugin_path("herdr-dock-grid")
+    if grid:
+        sys.path.insert(0, os.path.join(grid, "src"))
+    import dock_layout
+    return dock_layout
+
+
+dock = load_dock_layout()
 from i18n import t
 
 APP = "herdr-talk"
@@ -579,12 +592,69 @@ def run(args):
     threading.Thread(target=announce, args=(args.udp_port, me), daemon=True).start()
     threading.Thread(target=listen_for_peers, args=(args.udp_port, chat), daemon=True).start()
 
+    if args.dock:
+        herdr_api.try_request("pane.report_agent", {"pane_id": args.pane, "source": SOURCE, "agent": AGENT_ID, "state": "idle"})
+        threading.Thread(target=keep_dock_block, args=(args.pane, chat), daemon=True).start()
     say(t("start.hello", name=me["name"], port=me["port"]))
     try:
         return run_screen(chat)
     finally:
         STOP.set()
         server.close()
+        if args.dock:
+            herdr_api.try_request("pane.release_agent", {"pane_id": args.pane, "source": SOURCE, "agent": AGENT_ID})
+            dock.release_dock_pane(DOCK_KEY)
+
+
+# ---------------------------------------------------------------- herdr-dock 블록
+# 공용 herdr-dock workspace 의 한 칸에 talk 대화창을 두고, 접속자 수를 에이전트 목록에 보여 준다.
+# 블록을 클릭하면 그 pane 이 포커스되고 대화창이 그대로 보인다. 다른 dock plugin 과 자리 규칙을 맞춘다.
+
+DOCK_KEY = "herdr-talk"
+DOCK_REPORT_SECONDS = 2
+DOCK_TOKEN_TTL_MS = 15_000
+AGENT_ID = "talk"
+SOURCE = "plugin:herdr-talk"
+
+
+def keep_dock_block(pane_id, chat):
+    """블록에 접속자 수를 계속 알린다. 대화가 끝나 STOP 이 설정되면 멈춘다."""
+    while not STOP.is_set():
+        herdr_api.try_request("pane.report_metadata", {
+            "pane_id": pane_id,
+            "source": SOURCE,
+            "display_agent": t("dock.agent_name", count=len(chat.fresh_peers())),
+            "tokens": {},
+            "ttl_ms": DOCK_TOKEN_TTL_MS,
+        })
+        STOP.wait(DOCK_REPORT_SECONDS)
+
+
+def dock_start(_args):
+    folder = dock.plugins_folder()
+    stored = dock.read_dock_pane(folder, DOCK_KEY)
+    agents = herdr_api.cli("agent", "list").get("agents", [])
+    if stored and any(a["pane_id"] == stored and a.get("agent") == AGENT_ID for a in agents):
+        return 0  # 이미 떠 있다
+    _, pane_id = dock.ensure_dock_pane(DOCK_KEY, folder)
+    herdr_api.cli("pane", "run", pane_id, sys.executable, "-X", "utf8", os.path.abspath(__file__),
+                  "run", "--dock", "--pane", pane_id)
+    return 0
+
+
+def dock_stop(_args):
+    folder = dock.plugins_folder()
+    pane_id = dock.read_dock_pane(folder, DOCK_KEY)
+    if pane_id:
+        herdr_api.try_request("pane.release_agent", {"pane_id": pane_id, "source": SOURCE, "agent": AGENT_ID})
+        workspace_id = dock.dock_workspace_id()
+        others = [p for p in dock.workspace_panes(workspace_id) if p["pane_id"] != pane_id and not dock.is_sidebar(p)] if workspace_id else []
+        if others:
+            herdr_api.cli("pane", "close", pane_id, check=False)
+        elif workspace_id:
+            herdr_api.cli("workspace", "close", workspace_id, check=False)
+    dock.release_dock_pane(DOCK_KEY)
+    return 0
 
 
 def main(argv=None):
@@ -594,12 +664,20 @@ def main(argv=None):
     chat.add_argument("--name", default=None, help="name shown to others (random if omitted)")
     chat.add_argument("--tcp-port", type=int, default=0, help="TCP port for messages (0 = pick one)")
     chat.add_argument("--udp-port", type=int, default=UDP_PORT, help="discovery port (keep the same on every PC)")
+    chat.add_argument("--dock", action="store_true", help="show this pane as the herdr-dock block")
+    chat.add_argument("--pane", default=None, help="herdr pane id of the dock block (with --dock)")
     commands.add_parser("open", help="split the current pane and run the chat in it")
+    commands.add_parser("dock-start", help="show the chat as a block in the herdr-dock workspace")
+    commands.add_parser("dock-stop", help="remove the dock block")
     args = parser.parse_args(argv)
     if args.command == "run":
         return run(args)
     if args.command == "open":
         return open_chat(args)
+    if args.command == "dock-start":
+        return dock_start(args)
+    if args.command == "dock-stop":
+        return dock_stop(args)
     return 1
 
 

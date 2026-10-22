@@ -37,6 +37,8 @@ herdr plugin install vrwolf1004/herdr-talk
 | --- | --- |
 | `open` | Split a chat pane below the current pane (Linux/macOS) |
 | `open-windows` | Split a chat pane below the current pane (Windows) |
+| `dock-start` / `dock-start-windows` | Show the chat as a block in the `herdr-dock` workspace |
+| `dock-stop` / `dock-stop-windows` | Hide the dock block |
 
 The action must be run from a herdr pane. See the [usage guide](docs/usage.md) for direct pane opening, chat commands, and network requirements.
 
