@@ -36,7 +36,7 @@ The herdr panes run the same command without `--name`, so each pane picks its ow
 ## How the code is organized
 
 - **Discovery**: `announce()` sends the name and TCP port by UDP broadcast every `ANNOUNCE_SECONDS`. `listen_for_peers()` records each peer in `Chat.peers`. `fresh_peers()` drops peers not seen for `PEER_TIMEOUT_SECONDS`.
-- **Messages**: `send_to()` opens a TCP connection per message and sends one JSON object. `receive_messages()` accepts connections, and `receive_one()` shows the message.
+- **Messages**: `send_to()` opens a TCP connection per message and sends one JSON object. Messages go to all peers at the same time, with at most 8 sends running at once (`SEND_WORKERS`); one peer's failure does not block the others. `receive_messages()` accepts connections, and `receive_one()` shows the message.
 - **Commands**: `Chat.handle()` runs one typed line. It returns `False` to leave the chat.
 - **Screens**: `run_screen()` uses `prompt_toolkit` when it is installed. If the import fails, or the full-screen app cannot start (no usable console), it falls back to `run_ansi()`, which redraws the screen with plain ANSI codes. The help box (`HELP_BOX`) is drawn only by `run_ansi()`. `run_plain()` is not called anywhere (see [TODO](todo.md)).
 - **Idle timer**: `leave_when_idle()` (plain view) and `leave_when_idle_screen()` (full-screen view) check `Chat.last_activity`. Both views update it when a message or command output is displayed; typing without submitting does not count as activity.

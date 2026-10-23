@@ -33,9 +33,9 @@ herdr plugin install vrwolf1004/herdr-talk
 | 액션 | 기능 |
 | --- | --- |
 | `open` | 현재 pane 아래에 채팅 pane 열기 (Linux/macOS) |
+| `open-windows` | 현재 pane 아래에 채팅 pane 열기 (Windows) |
 | `dock-start` / `dock-start-windows` | `herdr-dock` 워크스페이스에 대화 블록을 띄웁니다 |
 | `dock-stop` / `dock-stop-windows` | 도크 블록을 숨깁니다 |
-| `open-windows` | 현재 pane 아래에 채팅 pane 열기 (Windows) |
 
 herdr pane 안에서 액션을 실행해야 합니다. 직접 pane을 여는 방법, 채팅 명령, 네트워크 요구 사항은 [사용법](docs/usage.ko.md)을 참고하세요.
 

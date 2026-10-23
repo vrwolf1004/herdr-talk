@@ -30,6 +30,7 @@ import threading
 import time
 import unicodedata
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import herdr_api
 
@@ -54,6 +55,7 @@ MAX_MESSAGE_BYTES = 64 * 1024
 RECEIVE_TIMEOUT_SECONDS = 5
 LOOP_POLL_SECONDS = 0.5  # 종료 신호를 이 간격으로 확인한다
 MAX_TEXT_CHARS = 2000
+SEND_WORKERS = 8  # 메시지를 동시에 보내는 피어 수의 상한
 MAX_LINES = 2000
 IDLE_LIMIT_SECONDS = 10 * 60   # leave automatically after this long without any chat activity
 
@@ -173,11 +175,15 @@ class Chat:
         if not targets:
             say(t("peers.none_hint"))
             return True
-        for info in targets.values():
-            try:
-                send_to(info, self.me, text)
-            except OSError:
-                say(t("peer.unreachable", name=info["name"]))
+        # 피어마다 따로 보낸다. 응답 없는 피어가 다른 피어 전송을 기다리게 하지 않도록 동시에 보내고,
+        # 실패 메시지는 원래 피어 순서대로 낸다. 동시에 보내는 수는 SEND_WORKERS 로 제한한다.
+        with ThreadPoolExecutor(max_workers=min(SEND_WORKERS, len(targets))) as pool:
+            sends = [(info, pool.submit(send_to, info, self.me, text)) for info in targets.values()]
+            for info, send in sends:
+                try:
+                    send.result()
+                except OSError:
+                    say(t("peer.unreachable", name=info["name"]))
         say(f"{self.me['name']} {t('chat.you')}: {text}", style="class:mine")
         return True
 
@@ -225,16 +231,17 @@ def _listen_loop(sock, chat):
         if info.get("app") != APP or info.get("id") == chat.me["id"]:
             continue
         peer_id = info.get("id", "")
+        name = peer_name(info.get("name", "unknown"))
         with chat.peers_lock:
             is_new = peer_id not in chat.peers
             chat.peers[peer_id] = {
-                "name": info.get("name", "unknown"),
+                "name": name,
                 "ip": addr[0],
                 "port": info.get("port", 0),
                 "seen": time.time(),
             }
         if is_new:
-            say(t("peer.joined", name=info.get("name", "unknown"), ip=addr[0]))
+            say(t("peer.joined", name=name, ip=addr[0]))
 
 
 def receive_messages(server):
@@ -253,6 +260,15 @@ def receive_messages(server):
 def clean_text(value, limit):
     """Replace control characters with spaces and cut to limit characters."""
     return "".join(char if char.isprintable() else " " for char in value)[:limit]
+
+
+def peer_name(value):
+    """입장 알림으로 받은 피어 이름. 메시지 보낸 사람 이름과 같은 규칙 (제어 문자 공백, 32자) 으로 정리하고,
+    정리 후 비면 unknown 을 쓴다. 이름 길이 규칙 자체는 여기서 정하지 않는다."""
+    if not isinstance(value, str):
+        return "unknown"
+    name = clean_text(value, 32)
+    return name if name.strip() else "unknown"
 
 
 def receive_one(conn):
