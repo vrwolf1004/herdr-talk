@@ -11,14 +11,25 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 IS_WINDOWS = sys.platform == "win32"
 SOCKET_TIMEOUT_SECONDS = 3
+CLI_TIMEOUT_SECONDS = 10  # herdr CLI 한 번의 최대 대기 시간. HERDR_CLI_TIMEOUT_SECONDS 로 바꿀 수 있다.
 
 
 class HerdrError(Exception):
     """herdr 호출 실패."""
+
+
+def cli_timeout():
+    """CLI 제한 시간(초). 환경 변수가 숫자가 아니거나 0 이하면 기본값을 쓴다."""
+    try:
+        value = float(os.environ.get("HERDR_CLI_TIMEOUT_SECONDS", ""))
+    except ValueError:
+        return CLI_TIMEOUT_SECONDS
+    return value if value > 0 else CLI_TIMEOUT_SECONDS
 
 
 def herdr_bin():
@@ -38,21 +49,35 @@ def socket_path():
 
 
 def cli(*args, check=True):
-    """herdr CLI 를 실행하고 JSON 응답의 result 를 돌려준다. check=False 면 실패 시 None."""
-    completed = subprocess.run(
-        [herdr_bin(), *[str(arg) for arg in args]],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    """herdr CLI 를 실행하고 JSON 응답의 result 를 돌려준다. check=False 면 실패 시 None.
+
+    출력은 파이프 대신 임시 파일로 받는다. 제한 시간이 지나 부모 프로세스를 죽여도, 그 자식이 파이프를
+    잡고 있으면 파이프 쪽이 끝나기를 기다리며 멈추기 때문이다 (Windows 의 .cmd 래퍼 등).
+    """
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            completed = subprocess.run(
+                [herdr_bin(), *[str(arg) for arg in args]],
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                timeout=cli_timeout(),
+            )
+        except subprocess.TimeoutExpired:
+            # 응답하지 않는 herdr 에 매달리지 않는다. 실패와 같은 방식으로 처리한다 (check=False 면 None).
+            if not check:
+                return None
+            raise HerdrError(f"herdr {' '.join(map(str, args))}: no response within {cli_timeout():g} s")
+        out.seek(0)  # 자식이 같은 파일 위치를 쓰므로 처음부터 읽는다
+        err.seek(0)
+        stdout = out.read().decode("utf-8", errors="replace")
+        stderr = err.read().decode("utf-8", errors="replace")
     if completed.returncode != 0:
         if not check:
             return None
-        detail = (completed.stdout + completed.stderr).strip()
+        detail = (stdout + stderr).strip()
         raise HerdrError(f"herdr {' '.join(map(str, args))}: {detail}")
-    output = completed.stdout.strip().lstrip("﻿")
+    output = stdout.strip().lstrip("﻿")
     if not output:
         return {}
     return json.loads(output).get("result", {})

@@ -84,14 +84,6 @@ def dock_marker_keys(folder):
         ]
 
 
-def wait_for_earlier(folder, own):
-    """Legacy entry point kept for plugins that call it. Waits for alphabetically earlier docks that are still claiming."""
-    earlier = [key for key in dock_marker_keys(folder) if key < own]
-    deadline = time.monotonic() + DOCK_WAIT_SECONDS
-    while any(dock_starting(folder, key) for key in earlier) and time.monotonic() < deadline:
-        time.sleep(0.2)
-
-
 def claimed_dock_panes(folder, own):
     claimed = set()
     for key in dock_marker_keys(folder):
@@ -236,32 +228,34 @@ def _layout_snapshot(workspace_id, layout):
 def save_layout_snapshot():
     """Persist the current dock pane topology for later migration or restoration."""
     folder = plugins_folder()
+    # 스냅샷은 보고용이라 배정 순서와 무관하다. herdr 조회는 잠금 밖에서 하고, 잠금 안은 저장만 한다.
+    workspace_id = dock_workspace_id()
+    if workspace_id is None:
+        raise herdr_api.HerdrError("dock workspace does not exist")
+    panes = _panes_in([workspace_id])
+    anchor = next((pane["pane_id"] for pane in panes if not is_sidebar(pane)), None)
+    if anchor is None:
+        raise herdr_api.HerdrError(f"workspace {workspace_id} has no dock pane")
+    layout = herdr_api.cli("pane", "layout", "--pane", anchor)["layout"]
+    if layout["workspace_id"] != workspace_id:
+        raise herdr_api.HerdrError("dock pane layout belongs to a different workspace")
+    snapshot = _layout_snapshot(workspace_id, layout)
     with registry_lock(folder):
         registry = load_registry(folder)
-        workspace_id = dock_workspace_id()
-        if workspace_id is None:
-            raise herdr_api.HerdrError("dock workspace does not exist")
-        panes = _panes_in([workspace_id])
-        anchor = next((pane["pane_id"] for pane in panes if not is_sidebar(pane)), None)
-        if anchor is None:
-            raise herdr_api.HerdrError(f"workspace {workspace_id} has no dock pane")
-        layout = herdr_api.cli("pane", "layout", "--pane", anchor)["layout"]
-        if layout["workspace_id"] != workspace_id:
-            raise herdr_api.HerdrError("dock pane layout belongs to a different workspace")
-        snapshot = _layout_snapshot(workspace_id, layout)
         registry.setdefault("layout_snapshots", {})[workspace_id] = snapshot
         write_registry(folder, registry)
-        return snapshot
+    return snapshot
 
 
 def get_layout_snapshot(workspace_id=None):
     """Return the most recently saved topology for a dock workspace."""
     folder = plugins_folder()
+    # herdr 조회는 잠금 밖에서 한다. 여기서 고른 워크스페이스는 읽을 스냅샷을 고르는 데만 쓴다.
+    target_workspace = workspace_id or dock_workspace_id()
+    if target_workspace is None:
+        return None
     with registry_lock(folder):
         registry = load_registry(folder)
-        target_workspace = workspace_id or dock_workspace_id()
-        if target_workspace is None:
-            return None
         snapshot = registry.get("layout_snapshots", {}).get(target_workspace)
         if snapshot is None:
             return None
@@ -545,26 +539,26 @@ def list_docks():
     folder = plugins_folder()
     with registry_lock(folder):
         registry = load_registry(folder)
-        workspaces = dock_workspaces()
-        labels = {workspace["workspace_id"]: workspace.get("label") for workspace in workspaces}
-        pane_workspaces = {
-            pane["pane_id"]: pane["workspace_id"] for pane in _panes_in(list(labels))
-        }
         keys = set(dock_marker_keys(folder)) | set(registry["docks"]) | set(registry["registrations"])
-        docks = []
-        for key in sorted(keys):
-            pane_id = read_dock_pane(folder, key)
-            workspace_id = pane_workspaces.get(pane_id)
-            docks.append({
-                "key": key,
-                "pane_id": pane_id or None,
-                "workspace_id": workspace_id,
-                "workspace": labels.get(workspace_id),
-                "live": workspace_id is not None,
-                "registered": key in registry["registrations"],
-                "definition": registry["registrations"].get(key, {}),
-            })
-        return docks
+        marker_panes = {key: read_dock_pane(folder, key) for key in keys}
+    # 보고만 하므로 herdr 조회는 잠금 밖에서 한다 (상태를 바꾸지 않는다).
+    workspaces = dock_workspaces()
+    labels = {workspace["workspace_id"]: workspace.get("label") for workspace in workspaces}
+    pane_workspaces = {pane["pane_id"]: pane["workspace_id"] for pane in _panes_in(list(labels))}
+    docks = []
+    for key in sorted(keys):
+        pane_id = marker_panes[key]
+        workspace_id = pane_workspaces.get(pane_id)
+        docks.append({
+            "key": key,
+            "pane_id": pane_id or None,
+            "workspace_id": workspace_id,
+            "workspace": labels.get(workspace_id),
+            "live": workspace_id is not None,
+            "registered": key in registry["registrations"],
+            "definition": registry["registrations"].get(key, {}),
+        })
+    return docks
 
 
 def _close_empty_extra_workspaces(folder, registry):
