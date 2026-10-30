@@ -63,3 +63,4 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 - [ ] Chat across the internet through Supabase, with end-to-end encryption.
 - [ ] Message history for peers that were offline (needs a decision on storage first).
 - [ ] Optional sound or highlight for mentions of your name.
+- [ ] **Continuous local development with Slack.** When a local task finishes, a Claude Code Stop hook posts a completion message to Slack (`chat.postMessage`, Bot Token from `SLACK_BOT_TOKEN`, channel from `SLACK_CHANNEL_ID`). The hook then polls the thread with `conversations.replies` (standard library only, no public endpoint). A reply is returned to Claude as `{"decision":"block","reason":"<reply>"}`, so the same session continues with the next step. A reply such as `종료` stops the loop. Open decisions: project scope vs. global `settings.json`, and the hook timeout. Never store the token in the repository or in chat.
