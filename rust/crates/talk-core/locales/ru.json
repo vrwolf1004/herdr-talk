@@ -20,6 +20,7 @@
   "peers.none_hint": "собеседников пока нет. Запустите herdr-talk на другом ПК в той же сети.",
   "peer.unreachable": "! не удалось связаться с {name}",
   "chat.you": "(вы)",
+  "chat.plain": "открытый текст",
   "peer.joined": "* {name} подключился ({ip})",
   "idle.left": "* вышел: нет активности {minutes} мин",
   "bye": "пока",

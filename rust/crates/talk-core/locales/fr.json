@@ -20,6 +20,7 @@
   "peers.none_hint": "aucun pair pour l'instant. Lancez herdr-talk sur un autre PC du même réseau.",
   "peer.unreachable": "! impossible de joindre {name}",
   "chat.you": "(vous)",
+  "chat.plain": "texte clair",
   "peer.joined": "* {name} a rejoint ({ip})",
   "idle.left": "* sorti : aucune activité pendant {minutes} minutes",
   "bye": "au revoir",

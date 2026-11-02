@@ -7,13 +7,17 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read # the default; jobs that publish to the release ask for write
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - run: gh release create "$GITHUB_REF_NAME" --draft --title "herdr-talk $GITHUB_REF_NAME" --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -22,6 +26,8 @@ jobs:
     needs: create-release
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -32,7 +38,9 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-latest }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
         with:
           bin: herdr-talk
@@ -47,9 +55,13 @@ jobs:
 
   # Sign the checksum files, which the installers verify before trusting the archives.
   # Needs the MINISIGN_SECRET_KEY and MINISIGN_PASSWORD secrets (the key from `minisign -G`).
+  # The secrets live in the `release` environment, so only this job can read them.
   sign:
     needs: binaries
     runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
     steps:
       - run: sudo apt-get update && sudo apt-get install -y minisign
       - name: Sign checksums
@@ -72,6 +84,8 @@ jobs:
   publish:
     needs: [binaries, sign]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
         env:

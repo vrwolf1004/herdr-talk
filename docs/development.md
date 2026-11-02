@@ -44,7 +44,7 @@ For herdr, run `bash scripts/build.sh` inside `rust/`, then link the `rust/` fol
 
 ## Wire format
 
-Keep this stable: other PCs may run an older version, including the Python 0.5.x plugin.
+Keep this stable: other PCs may run an older version, including the Python edition.
 
 - Discovery, UDP broadcast: `{"app": "herdr-talk", "id", "name", "port", "key"}`. `id` is the SHA-256 of `key` for Rust peers. `key` is absent for Python peers.
 - Message, one TCP connection each. Plain: `{"app": "herdr-talk", "id", "from", "text"}`. Encrypted: a Noise IK handshake, then one encrypted copy of the same JSON. See [configuration.md](configuration.md#encryption).

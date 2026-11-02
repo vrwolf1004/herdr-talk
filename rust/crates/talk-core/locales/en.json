@@ -20,6 +20,7 @@
   "peers.none_hint": "no peers yet. Start herdr-talk on another PC on the same network.",
   "peer.unreachable": "! could not reach {name}",
   "chat.you": "(you)",
+  "chat.plain": "plain text",
   "peer.joined": "* {name} joined ({ip})",
   "idle.left": "* left: no activity for {minutes} minutes",
   "bye": "bye",

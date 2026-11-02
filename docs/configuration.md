@@ -11,7 +11,7 @@ herdr-talk has no required settings. Everything below is optional.
 | `--udp-port` | command line | `47850` | Discovery port. Use the same value on every PC. |
 | `HERDR_TALK_LANG` | environment | not set | Language code: `en`, `ko`, `ru`, `fr`, `es`, `de`, `ja` |
 | `"lang"` | `config.json` in the plugin config folder | not set | Same as `HERDR_TALK_LANG` |
-| `"plaintext"` | `config.json` in the plugin config folder | `false` | Allow plain text to peers that do not encrypt (Python 0.5.x). See [Encryption](#encryption). |
+| `"plaintext"` | `config.json` in the plugin config folder | `false` | Allow plain text to peers that do not encrypt (the Python edition). See [Encryption](#encryption). |
 | `identity.json`, `trusted.json` | herdr-talk state folder (`HERDR_PLUGIN_STATE_DIR`) | created on first start | This PC's key and the peers you verified. Do not share `identity.json`. |
 
 Example:
@@ -48,7 +48,7 @@ Messages between herdr-talk peers are encrypted with Noise (`Noise_IK_25519_ChaC
 - **Verify before you chat.** A new peer shows a code of 32 hex digits in eight groups, for example `1a2b-3c4d-5e6f-7a8b-9c0d-1e2f-3a4b-5c6d`. The code is computed from both PCs' keys, so both screens show the same value. Compare it with the other PC's screen, then type `/trust <code>` on both sides. Only verified keys are remembered in `trusted.json`. If two different keys match one code, `/trust` refuses.
 - **Unverified peers get nothing.** Messages are not sent to them, and their messages are not shown. The handshake is refused before any reply.
 - **A changed key is refused.** A new key from an address you trusted before is shown as a warning and is not trusted.
-- **Plain text is off by default.** Peers that do not encrypt (Python 0.5.x) are skipped unless `"plaintext": true` is set in `config.json`. Even then, a peer that has a key is never sent plain text.
+- **Plain text is off by default.** Peers that do not encrypt (the Python edition) are skipped unless `"plaintext": true` is set in `config.json`. Even then, a peer that has a key is never sent plain text.
 - **Limits.** `/trust` only proves what you compared. Compare the whole code on both screens before you type it. On Windows, `identity.json` relies on the default permissions of your user profile folder.
 
 ## Discovery and timing

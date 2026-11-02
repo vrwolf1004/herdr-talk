@@ -167,6 +167,11 @@ impl Chat {
         own || self.trusted.lock().unwrap().iter().any(|trusted| trusted.key == key)
     }
 
+    /// The name the user verified this key under. None for a key that was not verified, this PC's own key included.
+    pub fn trusted_name(&self, key: &[u8]) -> Option<String> {
+        self.trusted.lock().unwrap().iter().find(|trusted| trusted.key == key).map(|trusted| trusted.name.clone())
+    }
+
     pub fn link_of(&self, peer: &Peer) -> Link {
         match &peer.key {
             None => Link::Plain,

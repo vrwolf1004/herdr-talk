@@ -20,6 +20,7 @@
   "peers.none_hint": "아직 상대가 없습니다. 같은 네트워크의 다른 PC에서 herdr-talk을 시작하세요.",
   "peer.unreachable": "! {name}에게 연결할 수 없습니다",
   "chat.you": "(나)",
+  "chat.plain": "평문",
   "peer.joined": "* {name} 입장 ({ip})",
   "idle.left": "* 나감: {minutes}분 동안 활동이 없었습니다",
   "bye": "종료합니다",

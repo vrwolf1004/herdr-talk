@@ -12,6 +12,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,7 +24,10 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_FRAME: usize = u16::MAX as usize; // a Noise frame carries a 2-byte length
 const NOISE_PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const SEND_TIMEOUT: Duration = Duration::from_secs(3);
-const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Total time one incoming connection may take, from accept to the last byte. Not per read.
+const CONNECTION_TIME: Duration = Duration::from_secs(10);
+/// Incoming connections handled at once. Each one beyond this is closed unread.
+const MAX_CONNECTIONS: usize = 16;
 const LOOP_POLL: Duration = Duration::from_millis(500); // how often loops check for the stop signal
 const ACCEPT_POLL: Duration = Duration::from_millis(50);
 
@@ -119,10 +123,19 @@ fn remember_peer(chat: &Chat, data: &[u8], ip: String) {
         None if id.len() == 64 => return,
         None => None,
     };
-    let name = peer_name(info.get("name").and_then(Value::as_str));
+    // A peer the user verified keeps the name it was verified under.
+    let verified_name = key.as_deref().and_then(|key| chat.trusted_name(key));
+    let name = verified_name.clone().unwrap_or_else(|| peer_name(info.get("name").and_then(Value::as_str)));
     let peer = Peer { id: id.to_string(), name: name.clone(), ip: ip.clone(), port, seen: Instant::now(), key: key.clone() };
     let mut peers = chat.peers.lock().unwrap();
-    if let Some(known) = peers.iter_mut().find(|known| known.id == id && known.port == port) {
+    // An unauthenticated announcement cannot move a verified peer's entry to another name or address.
+    // It only shows that the peer is still there, or adds an entry for a new address.
+    if verified_name.is_some() {
+        if let Some(known) = peers.iter_mut().find(|known| known.id == id && known.port == port && known.ip == ip) {
+            known.seen = Instant::now();
+            return;
+        }
+    } else if let Some(known) = peers.iter_mut().find(|known| known.id == id && known.port == port) {
         *known = peer;
         return;
     }
@@ -143,6 +156,7 @@ fn remember_peer(chat: &Chat, data: &[u8], ip: String) {
 
 /// Accept TCP connections. Each connection carries one message.
 fn receive_messages(server: TcpListener, chat: Arc<Chat>) {
+    let open = Arc::new(AtomicUsize::new(0));
     while !chat.stop.is_set() {
         match server.accept() {
             Ok((conn, address)) => {
@@ -150,11 +164,12 @@ fn receive_messages(server: TcpListener, chat: Arc<Chat>) {
                 if !chat.admit_sender(&address.ip().to_string()) {
                     continue;
                 }
+                // Too many open connections: close this one unread.
+                let Some(slot) = Slot::take(&open) else { continue };
                 let chat = chat.clone();
                 thread::spawn(move || {
-                    // A stuck connection must not hold a thread.
-                    let ready = conn.set_nonblocking(false).and(conn.set_read_timeout(Some(RECEIVE_TIMEOUT)));
-                    if ready.is_ok() {
+                    let _slot = slot; // given back when this thread ends
+                    if let Ok(conn) = Deadline::new(conn, CONNECTION_TIME) {
                         receive_one(conn, &chat);
                     }
                 });
@@ -162,6 +177,66 @@ fn receive_messages(server: TcpListener, chat: Arc<Chat>) {
             Err(error) if error.kind() == ErrorKind::WouldBlock => chat.stop.wait(ACCEPT_POLL),
             Err(_) => return,
         }
+    }
+}
+
+/// One of the MAX_CONNECTIONS slots for incoming connections. Given back when dropped.
+struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    fn take(open: &Arc<AtomicUsize>) -> Option<Slot> {
+        if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+            open.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Slot(open.clone()))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// A TCP connection that must finish within its time in total. Each read or write gets only the time left,
+/// so a peer that drips bytes slowly cannot hold the thread.
+struct Deadline {
+    stream: TcpStream,
+    until: Instant,
+}
+
+impl Deadline {
+    fn new(stream: TcpStream, time: Duration) -> io::Result<Self> {
+        stream.set_nonblocking(false)?;
+        Ok(Deadline { stream, until: Instant::now() + time })
+    }
+
+    fn arm(&self) -> io::Result<()> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(ErrorKind::TimedOut, "connection took too long"));
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        self.stream.set_write_timeout(Some(left))
+    }
+}
+
+impl Read for Deadline {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.arm()?;
+        self.stream.read(buf)
+    }
+}
+
+impl Write for Deadline {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.arm()?;
+        self.stream.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
     }
 }
 
@@ -244,7 +319,13 @@ fn deliver(data: &[u8], key: Option<&[u8]>, chat: &Chat) {
     if body.trim().is_empty() {
         return;
     }
-    chat.say(format!("{}: {body}", if sender.is_empty() { "unknown" } else { &sender }));
+    let sender = if sender.is_empty() { "unknown".to_string() } else { sender };
+    // A verified message shows the name the user verified, not the "from" it claims. A plain one is marked.
+    let shown = match key {
+        Some(key) => chat.trusted_name(key).unwrap_or(sender),
+        None => format!("{sender} ({})", t("chat.plain", &[])),
+    };
+    chat.say(format!("{shown}: {body}"));
 }
 
 /// Send one message. A peer with a key only ever gets the encrypted form.
@@ -340,7 +421,7 @@ mod tests {
     fn valid_message_is_shown() {
         let chat = chat_with_plain_text();
         deliver_plain(&chat, r#"{"app":"herdr-talk","from":"Bob","text":"hi"}"#);
-        assert_eq!(texts(&chat), ["Bob: hi"]);
+        assert_eq!(texts(&chat), [format!("Bob ({}): hi", t("chat.plain", &[]))]);
     }
 
     #[test]
@@ -386,7 +467,7 @@ mod tests {
     fn sender_of_only_control_characters_keeps_the_spaces() {
         let chat = chat_with_plain_text();
         deliver_plain(&chat, &json!({"app": APP, "from": "\x07\x02", "text": "hi"}).to_string());
-        assert_eq!(texts(&chat), ["  : hi"]);
+        assert_eq!(texts(&chat), [format!("{} ({}): hi", "  ", t("chat.plain", &[]))]);
     }
 
     #[test]
@@ -543,5 +624,85 @@ mod tests {
         first.stop.set();
         second.stop.set();
         fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn verified_message_shows_the_verified_name_not_the_claimed_one() {
+        // Sender 'first' is verified as "A". Its message claims to be "Mallory" and must show as "A".
+        let (first, second, to_second, _, base) = pair(true);
+        let me = first.me.lock().unwrap().clone();
+        let claimed = json!({"app": APP, "id": me.id, "from": "Mallory", "text": "hi"}).to_string();
+        let mut conn = TcpStream::connect(("127.0.0.1", to_second.port)).unwrap();
+        send_encrypted(&mut conn, &me, to_second.key.as_deref().unwrap(), claimed.as_bytes()).unwrap();
+        wait_for_lines(&second, 1);
+        assert_eq!(texts(&second), ["A: hi"]);
+        first.stop.set();
+        second.stop.set();
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn announcement_cannot_move_a_verified_peer() {
+        let chat = chat();
+        let key = [3u8; 32];
+        let id = store::peer_id(&key);
+        chat.trusted.lock().unwrap().push(Trusted { name: "Bob".into(), key: key.to_vec(), ip: "10.0.0.5".into() });
+        let announce = |name: &str| json!({"app": APP, "id": id, "name": name, "port": 9, "key": store::to_hex(&key)}).to_string();
+        remember_peer(&chat, announce("Bob").as_bytes(), "10.0.0.5".into());
+        remember_peer(&chat, announce("Mallory").as_bytes(), "10.0.0.5".into());
+        remember_peer(&chat, announce("Mallory").as_bytes(), "10.0.0.66".into());
+        let peers = chat.peers.lock().unwrap().clone();
+        // Same address: only refreshed. Another address: a new entry. The old entry keeps its address and name.
+        assert_eq!(peers.len(), 2);
+        assert!(peers.iter().all(|peer| peer.name == "Bob"));
+        assert_eq!(peers[0].ip, "10.0.0.5");
+        assert_eq!(peers[1].ip, "10.0.0.66");
+    }
+
+    fn stream_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    #[test]
+    fn a_silent_connection_is_cut_at_its_deadline() {
+        let (_client, server) = stream_pair();
+        let mut conn = Deadline::new(server, Duration::from_millis(200)).unwrap();
+        let started = Instant::now();
+        let mut byte = [0; 1];
+        assert!(conn.read_exact(&mut byte).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn the_deadline_covers_the_whole_connection_not_each_read() {
+        // One byte every 100 ms: every read is quick, but the connection runs past its 300 ms in total.
+        let (mut client, server) = stream_pair();
+        let dripper = thread::spawn(move || {
+            for _ in 0..50 {
+                if client.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let mut conn = Deadline::new(server, Duration::from_millis(300)).unwrap();
+        let mut bytes = [0; 20];
+        let started = Instant::now();
+        assert!(conn.read_exact(&mut bytes).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(conn);
+        dripper.join().unwrap();
+    }
+
+    #[test]
+    fn connections_beyond_the_limit_are_refused() {
+        let open = Arc::new(AtomicUsize::new(0));
+        let slots: Vec<Slot> = (0..MAX_CONNECTIONS).map(|_| Slot::take(&open).unwrap()).collect();
+        assert!(Slot::take(&open).is_none());
+        drop(slots);
+        assert!(Slot::take(&open).is_some());
     }
 }

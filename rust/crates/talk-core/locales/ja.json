@@ -20,6 +20,7 @@
   "peers.none_hint": "まだ相手がいません。同じネットワークの別のPCで herdr-talk を開始してください。",
   "peer.unreachable": "! {name} に接続できません",
   "chat.you": "(自分)",
+  "chat.plain": "平文",
   "peer.joined": "* {name} が参加 ({ip})",
   "idle.left": "* 退出: {minutes}分間操作がなかったため",
   "bye": "終了します",
