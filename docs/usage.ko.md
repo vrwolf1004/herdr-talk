@@ -7,21 +7,20 @@
 GitHub에서 설치합니다:
 
 ```sh
-herdr plugin install vrwolf1004/herdr-talk
+herdr plugin install vrwolf1004/herdr-talk/rust
 ```
 
-요구 사항: herdr 0.9.0 이상, Python 3, 두 PC가 같은 네트워크에 있어야 합니다. 플러그인은 Python 표준 라이브러리만 쓰며, 선택 사항인 `prompt_toolkit`을 설치하면 전체 화면 보기를 사용할 수 있습니다.
+요구 사항: herdr 0.9.0 이상, 두 PC가 같은 네트워크에 있어야 합니다. 설치할 때 빌드된 바이너리를 받으므로 다른 준비물은 없습니다.
 
 ## 2. 채팅 시작
 
 각 PC의 herdr pane에서 `open` 액션을 실행해 현재 pane 아래에 채팅 pane을 나눕니다:
 
 ```sh
-herdr plugin action invoke open-windows --plugin herdr-talk   # Windows
 herdr plugin action invoke open --plugin herdr-talk           # Linux, macOS
 ```
 
-이 액션은 현재 herdr pane의 `HERDR_PANE_ID`가 필요합니다. 채팅 pane을 직접 열 수도 있습니다: `herdr plugin pane open --plugin herdr-talk --entrypoint chat-windows` (Windows) 또는 `--entrypoint chat` (Linux/macOS). Ctrl+C를 누르면 채팅 명령이 끝나고 나뉜 pane은 셸 프롬프트로 돌아옵니다.
+이 액션은 현재 herdr pane의 `HERDR_PANE_ID`가 필요합니다. 채팅 pane을 직접 열 수도 있습니다: `herdr plugin pane open --plugin herdr-talk --entrypoint chat`. Ctrl+C를 누르면 채팅 명령이 끝나고 나뉜 pane은 셸 프롬프트로 돌아옵니다.
 
 pane이 시작되면 고른 이름과 TCP 포트를 보여 줍니다:
 
@@ -58,8 +57,9 @@ Haruto (you): hello!
 | `<text>` | 모든 상대에게 보냅니다 |
 | `/name <new>` | 내 이름을 바꿉니다 (최대 32자) |
 | `/lang <code>` | 그 언어의 이름 목록에서 새 이름을 무작위로 고릅니다 |
-| `/peers` | 최근에 보인 상대를 주소와 포트와 함께 보여 줍니다 |
-| `/help` | 명령과 단축키를 보여 줍니다. 기본 화면에서는 상자로, 전체 화면에서는 한 줄로 나옵니다 (아무 키나 누르면 상자가 닫힙니다). |
+| `/peers` | 최근에 보인 상대를 주소와 포트, 상태(확인됨, 또는 확인할 코드)와 함께 보여 줍니다 |
+| `/trust <코드>` | 코드가 맞는 상대를 확인 완료로 등록합니다. 먼저 두 화면의 코드를 비교하세요. [설정: 암호화](configuration.md#encryption) 참고 |
+| `/help` | 명령과 키를 보여 줍니다. |
 | `/quit` | 채팅을 나갑니다 |
 
 `/lang`에 쓰는 언어 코드: `ko en zh ja vi fr de es ru id pt`.
@@ -68,16 +68,13 @@ Haruto (you): hello!
 
 ## 5. 단축키
 
-기본 화면(`prompt_toolkit`이 설치되지 않은 경우, 기본 설정)에서:
-
 | 키 | 동작 |
 |----|------|
 | Enter | 줄을 보내거나 명령을 실행합니다 |
 | Backspace | 글자 하나를 지웁니다 |
 | Ctrl+L | 화면의 메시지 목록을 지웁니다 |
+| Ctrl+N | 입력줄에 `/name `을 채웁니다 |
 | Ctrl+C, Ctrl+D | 종료합니다 |
-
-`prompt_toolkit`이 설치되어 있으면 전체 화면으로 동작합니다. 이때 **Ctrl+N**을 누르면 입력줄에 `/name `이 채워져 새 이름을 바로 입력할 수 있고, **Ctrl+C** 또는 **Ctrl+D**로 종료합니다.
 
 ## 6. 이름
 
@@ -92,7 +89,7 @@ Haruto (you): hello!
 스크립트를 직접 실행할 때 이름을 정하려면:
 
 ```sh
-python -X utf8 src/talk.py run --name my-laptop
+bin/herdr-talk run --name my-laptop
 ```
 
 ## 7. 나가기
@@ -115,17 +112,18 @@ python -X utf8 src/talk.py run --name my-laptop
 - 두 PC가 같은 네트워크에 있어야 하고, 클라이언트 격리(client isolation)가 없어야 합니다.
 - 탐색은 UDP `47850` 포트를 쓰고, 메시지는 채팅마다 시작할 때 고르는 임의의 TCP 포트를 씁니다.
 - 방화벽에서 둘 다 허용하세요. 상대 목록이 계속 비어 있으면 방화벽부터 확인하세요.
-- UDP 브로드캐스트로 상대를 찾고 TCP로 메시지를 직접 전송합니다. 트래픽은 암호화되지 않으므로 신뢰할 수 있는 네트워크에서만 사용하세요.
+- UDP 브로드캐스트로 상대를 찾고 TCP로 메시지를 직접 전송합니다. 확인된 상대와의 메시지는 암호화됩니다. 암호화하지 않는 상대에게 보내는 평문은 기본으로 꺼져 있습니다. [설정: 암호화](configuration.md#encryption) 참고.
+- 상대로 발견된 주소에서 온 메시지만 받으며, 한 주소당 10초에 20개를 넘는 메시지는 알림 없이 버립니다.
 
 ## 10. 도크 블록
 
-`dock-start`(Linux/macOS) 또는 `dock-start-windows`(Windows)를 실행하면 공용 `herdr-dock` 워크스페이스에 대화 블록이 뜹니다. 에이전트 목록에는 `talk: 접속 N명`으로 보입니다. 블록을 클릭하면 그 pane이 포커스되고, 대화창이 바로 그 pane입니다.
+`dock-start`를 실행하면 공용 `herdr-dock` 워크스페이스에 대화 블록이 뜹니다. 에이전트 목록에는 `talk: 접속 N명`으로 보입니다. 블록을 클릭하면 그 pane이 포커스되고, 대화창이 바로 그 pane입니다.
 
 - 채팅 활동이 10분 동안 없으면 블록도 사라집니다. 다시 띄우려면 `dock-start`를 실행하세요.
 - `dock-stop`은 블록을 숨기고 자리를 놓습니다.
 - herdr 시작 때도 블록이 자동으로 뜹니다.
 
-> `herdr-dock-grid` 연결은 선택입니다. 없으면 플러그인의 `src/dock_layout.py` 복사본으로 똑같이 동작합니다.
+> `herdr-dock-grid`는 없어도 됩니다. 플러그인이 같은 규칙으로 도크 칸을 잡습니다.
 
 ## 11. 문제 해결
 

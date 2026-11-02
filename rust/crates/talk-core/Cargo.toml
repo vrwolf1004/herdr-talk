@@ -1,0 +1,14 @@
+[package]
+name = "talk-core"
+version.workspace = true
+edition.workspace = true
+description = "Peer discovery, messages and chat commands shared by herdr-talk front ends"
+
+[dependencies]
+fastrand = "2"
+serde_json = "1"
+sha2 = "0.10"
+snow = "0.10"
+socket2 = "0.5"
+sys-locale = "0.3"
+unicode-width = "0.2"

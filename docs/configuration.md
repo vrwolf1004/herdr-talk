@@ -11,11 +11,13 @@ herdr-talk has no required settings. Everything below is optional.
 | `--udp-port` | command line | `47850` | Discovery port. Use the same value on every PC. |
 | `HERDR_TALK_LANG` | environment | not set | Language code: `en`, `ko`, `ru`, `fr`, `es`, `de`, `ja` |
 | `"lang"` | `config.json` in the plugin config folder | not set | Same as `HERDR_TALK_LANG` |
+| `"plaintext"` | `config.json` in the plugin config folder | `false` | Allow plain text to peers that do not encrypt (Python 0.5.x). See [Encryption](#encryption). |
+| `identity.json`, `trusted.json` | herdr-talk state folder (`HERDR_PLUGIN_STATE_DIR`) | created on first start | This PC's key and the peers you verified. Do not share `identity.json`. |
 
 Example:
 
 ```sh
-python -X utf8 src/talk.py run --name my-laptop --tcp-port 47900
+bin/herdr-talk run --name my-laptop --tcp-port 47900
 ```
 
 ## Language
@@ -35,13 +37,23 @@ Example `config.json`:
 }
 ```
 
-Translations live in `src/locales/<language>.json`. Missing keys fall back to English.
+Translations live in `rust/crates/talk-core/locales/<language>.json`. Missing keys fall back to English.
 
 The language does not change the random name list. Names come from the PC's locale, or from the `/lang` command. See [Usage: Names](usage.md#6-names).
 
+## Encryption
+
+Messages between herdr-talk peers are encrypted with Noise (`Noise_IK_25519_ChaChaPoly_BLAKE2s`). Each PC has a key pair, stored in `identity.json` in the state folder. Its peers see the public half in the discovery announcement.
+
+- **Verify before you chat.** A new peer shows a code of 32 hex digits in eight groups, for example `1a2b-3c4d-5e6f-7a8b-9c0d-1e2f-3a4b-5c6d`. The code is computed from both PCs' keys, so both screens show the same value. Compare it with the other PC's screen, then type `/trust <code>` on both sides. Only verified keys are remembered in `trusted.json`. If two different keys match one code, `/trust` refuses.
+- **Unverified peers get nothing.** Messages are not sent to them, and their messages are not shown. The handshake is refused before any reply.
+- **A changed key is refused.** A new key from an address you trusted before is shown as a warning and is not trusted.
+- **Plain text is off by default.** Peers that do not encrypt (Python 0.5.x) are skipped unless `"plaintext": true` is set in `config.json`. Even then, a peer that has a key is never sent plain text.
+- **Limits.** `/trust` only proves what you compared. Compare the whole code on both screens before you type it. On Windows, `identity.json` relies on the default permissions of your user profile folder.
+
 ## Discovery and timing
 
-These values are constants in `src/talk.py`. Change them only if you have a reason to.
+These values are constants in `rust/crates/talk-core/src/net.rs` and `chat.rs`. Change them only if you have a reason to.
 
 | Constant | Value | Meaning |
 |----------|-------|---------|

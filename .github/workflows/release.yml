@@ -1,0 +1,78 @@
+name: release
+
+# On a v* tag, build each platform's binary and attach it to the release,
+# where the plugin's installers (rust/herdr/install.sh, rust/herdr/install.ps1) download it.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: gh release create "$GITHUB_REF_NAME" --draft --title "herdr-talk $GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  binaries:
+    needs: create-release
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
+        with:
+          bin: herdr-talk
+          manifest-path: rust/Cargo.toml
+          target: ${{ matrix.target }}
+          archive: $bin-$target
+          tar: unix
+          zip: windows
+          checksum: sha256
+          draft: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Sign the checksum files, which the installers verify before trusting the archives.
+  # Needs the MINISIGN_SECRET_KEY and MINISIGN_PASSWORD secrets (the key from `minisign -G`).
+  sign:
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Sign checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/sign"
+          mkdir -p "$work" && cd "$work"
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > secret.key && chmod 600 secret.key
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern '*.sha256'
+          for f in *.sha256; do
+            printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -q -s secret.key -m "$f" -x "$f.minisig"
+          done
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber ./*.sha256.minisig
+
+  # Publish last: a failed target leaves a draft, never a release that installs 404.
+  publish:
+    needs: [binaries, sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

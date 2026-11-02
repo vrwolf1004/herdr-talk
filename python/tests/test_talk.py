@@ -60,7 +60,8 @@ class ChatHandleTest(CollectSayTest):
 
     def test_help_prints_the_box(self):
         self.assertTrue(self.make_chat().handle("/help"))
-        self.assertEqual(self.lines, talk.HELP_BOX)
+        # The command is echoed first, then the box, as in the Rust edition.
+        self.assertEqual(self.lines, ["> /help"] + talk.HELP_BOX)
 
     def test_name_change_is_announced(self):
         chat = self.make_chat()

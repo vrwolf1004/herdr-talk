@@ -7,10 +7,10 @@ How to install, chat, what each command does, and how names and languages work.
 Install from GitHub:
 
 ```sh
-herdr plugin install vrwolf1004/herdr-talk
+herdr plugin install vrwolf1004/herdr-talk/rust
 ```
 
-Requirements: herdr 0.9.0 or later, Python 3, and both PCs on the same network. The plugin uses only the Python standard library; optional `prompt_toolkit` enables the full-screen view.
+Requirements: herdr 0.9.0 or later, and both PCs on the same network. The install downloads a prebuilt binary, so nothing else is needed.
 
 ## 2. Start a chat
 
@@ -18,13 +18,12 @@ From a herdr pane on each PC, run the `open` action to split a chat pane below
 the current pane:
 
 ```sh
-herdr plugin action invoke open-windows --plugin herdr-talk   # Windows
 herdr plugin action invoke open --plugin herdr-talk           # Linux, macOS
 ```
 
 The action requires a current herdr pane (`HERDR_PANE_ID`). You can also open
 the chat pane directly with `herdr plugin pane open --plugin herdr-talk
---entrypoint chat-windows` (Windows) or `--entrypoint chat` (Linux/macOS).
+--entrypoint chat`.
 After Ctrl+C, the chat command exits and the split pane returns to its shell
 prompt.
 
@@ -63,8 +62,9 @@ Limits:
 | `<text>` | Send to every peer |
 | `/name <new>` | Change your name (up to 32 characters) |
 | `/lang <code>` | Pick a random new name from the list for a language |
-| `/peers` | List peers seen recently, with their address and port |
-| `/help` | Show the commands and keys. In the plain view it is a box (any key closes it). In the full-screen view it is one line. |
+| `/peers` | List peers seen recently, with their address, port and state (verified, or the code to check) |
+| `/trust <code>` | Verify the peer whose code matches. Compare the code on both screens first. See [Configuration: Encryption](configuration.md#encryption) |
+| `/help` | Show the commands and keys. |
 | `/quit` | Leave the chat |
 
 Language codes for `/lang`: `ko en zh ja vi fr de es ru id pt`.
@@ -73,16 +73,13 @@ Language codes for `/lang`: `ko en zh ja vi fr de es ru id pt`.
 
 ## 5. Keys
 
-In the plain view (used when `prompt_toolkit` is not installed, which is the default):
-
 | Key | What it does |
 |-----|--------------|
 | Enter | Send the line, or run the command |
 | Backspace | Delete one character |
 | Ctrl+L | Clear the message list on screen |
+| Ctrl+N | Fill the input with `/name ` |
 | Ctrl+C, Ctrl+D | Quit |
-
-If `prompt_toolkit` is installed, the chat uses a full-screen view instead. There, **Ctrl+N** fills the input with `/name ` so you can type a new name, and **Ctrl+C** or **Ctrl+D** quits.
 
 ## 6. Names
 
@@ -97,7 +94,7 @@ Names are not checked for uniqueness, so two PCs can show the same name by chanc
 To choose the name when starting the script directly:
 
 ```sh
-python -X utf8 src/talk.py run --name my-laptop
+bin/herdr-talk run --name my-laptop
 ```
 
 ## 7. Leaving
@@ -120,17 +117,18 @@ Languages: `en`, `ko`, `ru`, `fr`, `es`, `de`, `ja`. Other languages fall back t
 - Both PCs must be on the same network with no client isolation.
 - Discovery uses UDP port `47850`, and messages use a random TCP port that each chat picks at start.
 - Allow both in the firewall. If the peer list stays empty, check the firewall first.
-- Discovery is UDP broadcast and messages go directly over TCP. Traffic is not encrypted; use it only on a network you trust.
+- Discovery is UDP broadcast and messages go directly over TCP. Messages to verified peers are encrypted. Plain text is off unless you turn it on for peers that do not encrypt. See [Configuration: Encryption](configuration.md#encryption).
+- Messages are accepted only from an address that announced itself as a peer, and at most 20 messages per address in 10 seconds are kept. Others are dropped without a notice.
 
 ## 10. Dock block
 
-Run `dock-start` (Linux/macOS) or `dock-start-windows` (Windows) to show a chat block in the shared `herdr-dock` workspace. The block shows `talk: N online` in the agents list. Clicking it focuses the pane, and the chat window is that pane.
+Run `dock-start` to show a chat block in the shared `herdr-dock` workspace. The block shows `talk: N online` in the agents list. Clicking it focuses the pane, and the chat window is that pane.
 
 - The block leaves after 10 minutes without chat activity, as in a normal chat. Run `dock-start` again to bring it back.
 - `dock-stop` hides the block and releases its slot.
 - The plugin starts the block on herdr startup as well.
 
-> `herdr-dock-grid` link is optional. Without it, the plugin uses its own `src/dock_layout.py` copy and works the same way.
+> `herdr-dock-grid` is optional. The plugin allocates its dock pane by the same rules without it.
 
 ## 11. Troubleshooting
 

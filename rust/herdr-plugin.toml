@@ -1,0 +1,45 @@
+id = "herdr-talk"
+name = "herdr-talk"
+version = "0.7.0"
+min_herdr_version = "0.9.0"
+platforms = ["windows", "linux", "macos"]
+description = "Chat with people on other PCs from inside herdr. Works directly on the same network without a server. Messages are plain text and not stored, so use it only on trusted networks. Internet relay is planned, not yet available."
+
+# Install downloads this platform's binary from the GitHub release into bin/; `plugin link` skips it,
+# so run scripts/build.sh after linking a local copy.
+# Open the chat pane from herdr: herdr plugin pane open --plugin herdr-talk --entrypoint chat
+
+[[build]]
+platforms = ["linux", "macos"]
+command = ["bash", "herdr/install.sh"]
+
+[[build]]
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "herdr/install.ps1"]
+
+[[actions]]
+id = "open"
+title = "talk: open chat"
+contexts = ["global", "pane", "workspace"]
+command = ["bin/herdr-talk", "open"]
+
+[[panes]]
+id = "chat"
+title = "talk"
+placement = "split"
+command = ["bin/herdr-talk", "run"]
+
+[[startup]]
+command = ["bin/herdr-talk", "dock-start"]
+
+[[actions]]
+id = "dock-start"
+title = "talk: show chat block in dock"
+contexts = ["global"]
+command = ["bin/herdr-talk", "dock-start"]
+
+[[actions]]
+id = "dock-stop"
+title = "talk: hide chat block"
+contexts = ["global"]
+command = ["bin/herdr-talk", "dock-stop"]

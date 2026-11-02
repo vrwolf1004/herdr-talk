@@ -3,90 +3,68 @@
 ## Layout
 
 ```
-herdr-talk/
-├── README.md, README.ko.md     short overview (English, Korean)
-├── herdr-plugin.toml           herdr manifest: open actions and chat panes for each OS
-├── docs/
-│   ├── usage.md                how to install, chat, commands, keys, names, language, network
-│   ├── usage.ko.md             same as usage.md, in Korean
-│   ├── configuration.md        settings, language order, timing constants
-│   ├── troubleshooting.md      symptoms and checks
-│   ├── development.md          this file
-│   └── todo.md                 improvement list
-└── src/
-    ├── talk.py                 entry point: discovery, messages, screens, commands
-    ├── i18n.py                 language choice and t(key, **values)
-    └── locales/<language>.json translated strings (en, ko, ru, fr, es, de, ja)
+herdr-talk/                      repository
+├── .github/workflows/          release.yml builds binaries and signs checksums on a v* tag
+├── docs/                       shared documentation
+├── python/                     Python edition (plugin folder, no build)
+│   ├── herdr-plugin.toml
+│   └── src/talk.py
+└── rust/                       Rust edition (plugin folder)
+    ├── herdr-plugin.toml       herdr manifest
+    ├── Cargo.toml              workspace
+    ├── herdr/install.sh, .ps1  download the release binary into bin/ at install, or build from source
+    ├── scripts/build.sh        build into bin/ for a linked local copy
+    └── crates/
+        ├── talk-core/          no herdr or terminal code
+        │   ├── src/net.rs      discovery, messages, encryption
+        │   ├── src/chat.rs     shared state, commands, names, help box
+        │   ├── src/store.rs    identity key, verified peers, fingerprint
+        │   ├── src/text.rs     cleaning, width, wrapping
+        │   ├── src/i18n.rs     language choice and t(key, values)
+        │   └── locales/<language>.json
+        └── herdr-talk/         the plugin binary
+            ├── src/main.rs     command line, dock block
+            ├── src/screen.rs   full-screen chat
+            ├── src/dock.rs     dock pane allocation
+            └── src/herdr_api.rs herdr CLI and socket
 ```
+
+The plan beyond this is in [rust-roadmap.md](rust-roadmap.md). Paths below are relative to `rust/` unless they start with the repository root.
 
 ## Running locally
 
-Run the script directly. Use `-X utf8` so Korean and Japanese text prints correctly.
-
 ```sh
-python -X utf8 src/talk.py run --name test
+cd rust
+cargo run -p herdr-talk -- run --name test
 ```
 
-Run it in a real terminal. The full-screen view needs a console.
+Run it in a real terminal. To test on one machine, start two instances with different names.
 
-To test on one machine, start two instances with different names. Both see each other, because discovery works through UDP broadcast on the same machine.
+For herdr, run `bash scripts/build.sh` inside `rust/`, then link the `rust/` folder. `plugin link` skips the `[[build]]` step, so rebuild after a change, then close and reopen the pane.
 
-The herdr panes run the same command without `--name`, so each pane picks its own name. A pane keeps the code it started with, so close and reopen it after a change.
+## Wire format
 
-## How the code is organized
+Keep this stable: other PCs may run an older version, including the Python 0.5.x plugin.
 
-- **Discovery**: `announce()` sends the name and TCP port by UDP broadcast every `ANNOUNCE_SECONDS`. `listen_for_peers()` records each peer in `Chat.peers`. `fresh_peers()` drops peers not seen for `PEER_TIMEOUT_SECONDS`.
-- **Messages**: `send_to()` opens a TCP connection per message and sends one JSON object. Messages go to all peers at the same time, with at most 8 sends running at once (`SEND_WORKERS`); one peer's failure does not block the others. `receive_messages()` accepts connections, and `receive_one()` shows the message.
-- **Commands**: `Chat.handle()` runs one typed line. It returns `False` to leave the chat.
-- **Screens**: `run_screen()` uses `prompt_toolkit` when it is installed. If the import fails, or the full-screen app cannot start (no usable console), it falls back to `run_ansi()`, which redraws the screen with plain ANSI codes. The help box (`HELP_BOX`) is drawn only by `run_ansi()`. `run_plain()` is not called anywhere (see [TODO](todo.md)).
-- **Idle timer**: `leave_when_idle()` (plain view) and `leave_when_idle_screen()` (full-screen view) check `Chat.last_activity`. Both views update it when a message or command output is displayed; typing without submitting does not count as activity.
-- **Names**: `NAMES_BY_LANGUAGE` maps a language code to its Windows language name and a list of names. `default_name()` picks from the list that matches the PC's locale.
-
-## Adding a language for names
-
-1. Add an entry to `NAMES_BY_LANGUAGE` in `src/talk.py`, with the code, the Windows language name, and 10 names.
-2. If the chat text should also be in that language, add it to `src/i18n.py` (`SUPPORTED`) and add `src/locales/<code>.json`.
+- Discovery, UDP broadcast: `{"app": "herdr-talk", "id", "name", "port", "key"}`. `id` is the SHA-256 of `key` for Rust peers. `key` is absent for Python peers.
+- Message, one TCP connection each. Plain: `{"app": "herdr-talk", "id", "from", "text"}`. Encrypted: a Noise IK handshake, then one encrypted copy of the same JSON. See [configuration.md](configuration.md#encryption).
 
 ## Adding or changing a message
 
-Every language file in `src/locales/` must have the same keys.
-
-1. Add the key to all seven files. Keep the same placeholders (`{name}`, `{ip}`, and so on) in each one.
-2. Use it with `t("key", name=...)` in `src/talk.py`.
-3. Check the width of help box lines. Each line uses display width, so Korean and Japanese characters count as two columns.
-
-Quick check that the keys match:
-
-```sh
-python -X utf8 -c "
-import json, glob
-en = set(json.load(open('src/locales/en.json', encoding='utf-8')))
-for f in sorted(glob.glob('src/locales/*.json')):
-    keys = set(json.load(open(f, encoding='utf-8')))
-    print(f, 'missing:', sorted(en - keys), 'extra:', sorted(keys - en))
-"
-```
+Every file in `rust/crates/talk-core/locales/` must have the same keys and placeholders. A test checks the keys. Use a message with `t("key", &[("name", value)])`.
 
 ## Adding a command
 
-1. Add a branch to `Chat.handle()` in `src/talk.py`.
-2. Add a line to the help box (`help.*` keys in every locale file), and update `help.oneline` for the full-screen view.
-3. Document it in `docs/usage.md` and in both READMEs.
+1. Add a branch to `Chat::handle_with()` in `chat.rs`.
+2. Add a line to `help_box()` and a `help.*` key in every locale file.
+3. Document it in both usage guides.
 
-## herdr panes
+## Releasing
 
-`herdr-plugin.toml` defines an `open` action (`open-windows` on Windows) and
-two direct chat panes:
-
-- `chat-windows` for Windows, which runs `python`
-- `chat` for Linux and macOS, which runs `python3`
-
-Both panes use `split` placement and run `src/talk.py run`. The `open` action
-requires a current herdr pane, splits a new pane below it, then runs the same
-chat command there with `pane.run`.
+Set the same version in `rust/herdr-plugin.toml` and `rust/Cargo.toml`, then push the tag `v<version>`. The release workflow builds the binaries, signs the checksums, and publishes the release. The installers download the release matching the manifest version.
 
 ## Checks before a commit
 
-- `python -m py_compile src/talk.py src/i18n.py`
-- The key check above prints no missing or extra keys.
+- `cd rust && cargo test --workspace`
+- `cd rust && cargo clippy --workspace --all-targets -- -D warnings`
 - Run the chat once and check the changed screen or command.

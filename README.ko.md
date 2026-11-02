@@ -20,22 +20,29 @@ Haruto (나): hello!
 >
 ```
 
-이 플러그인은 Agents 사이드바 블록 대신 채팅 pane을 사용합니다. 현재 구현은 같은 LAN에서만 동작하며 UDP 브로드캐스트로 상대를 찾고 TCP로 메시지를 직접 보냅니다. 메시지는 저장되거나 암호화되지 않으므로 신뢰할 수 있는 네트워크에서만 사용하세요.
+이 플러그인은 Agents 사이드바 블록 대신 채팅 pane을 사용합니다. 현재 구현은 같은 LAN에서만 동작하며 UDP 브로드캐스트로 상대를 찾고 TCP로 메시지를 직접 보냅니다. 확인된 상대와의 메시지는 암호화됩니다(Noise). 메시지는 저장되지 않습니다. 자세한 내용은 [설정: 암호화](docs/configuration.md#encryption)를 참고하세요.
 
 ## 설치
 
 ```sh
-herdr plugin install vrwolf1004/herdr-talk
+herdr plugin install vrwolf1004/herdr-talk/rust
 ```
+
+Rust 도구 체인이 없거나 실행 파일 내려받기를 피하려면 Python 판을 쓰세요. Python 3만 있으면 됩니다.
+
+```sh
+herdr plugin install vrwolf1004/herdr-talk/python
+```
+
+Python 판은 평문만 보냅니다. Rust 판과 대화하려면 Rust 쪽 `config.json`에 `"plaintext": true`를 설정해야 합니다.
 
 ## 액션
 
 | 액션 | 기능 |
 | --- | --- |
-| `open` | 현재 pane 아래에 채팅 pane 열기 (Linux/macOS) |
-| `open-windows` | 현재 pane 아래에 채팅 pane 열기 (Windows) |
-| `dock-start` / `dock-start-windows` | `herdr-dock` 워크스페이스에 대화 블록을 띄웁니다 |
-| `dock-stop` / `dock-stop-windows` | 도크 블록을 숨깁니다 |
+| `open` | 현재 pane 아래에 채팅 pane 열기 |
+| `dock-start` | `herdr-dock` 워크스페이스에 대화 블록을 띄웁니다 |
+| `dock-stop` | 도크 블록을 숨깁니다 |
 
 herdr pane 안에서 액션을 실행해야 합니다. 직접 pane을 여는 방법, 채팅 명령, 네트워크 요구 사항은 [사용법](docs/usage.ko.md)을 참고하세요.
 
@@ -43,9 +50,11 @@ herdr pane 안에서 액션을 실행해야 합니다. 직접 pane을 여는 방
 
 - Windows, Linux, macOS
 - herdr 0.9.0 이상
-- Python 3, 표준 라이브러리만 사용
 - 두 PC가 같은 네트워크에 있고 방화벽에서 탐색과 TCP 통신을 허용해야 함
-- 선택 사항인 `prompt_toolkit`을 설치하면 전체 화면 채팅을 사용하며, 없으면 기본 터미널 화면을 사용
+
+## 언어
+
+채팅 화면 문구는 PC의 언어를 따릅니다. 영어, 한국어, 러시아어, 프랑스어, 스페인어, 독일어, 일본어를 지원하며, 그 밖의 언어는 영어로 표시합니다. `HERDR_TALK_LANG` 환경 변수나 `config.json`의 `"lang"`으로 바꿀 수 있습니다. 자세한 내용은 [설정](docs/configuration.md#language)을 참고하세요.
 
 ## 문서
 

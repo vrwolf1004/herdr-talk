@@ -6,8 +6,7 @@ How it works
   - A message is sent straight to each peer over TCP. Nothing is stored.
 
 Screen
-  - With prompt_toolkit installed: messages scroll in the upper area, the input line stays at the bottom.
-  - Without it (or without a usable console): plain line-by-line chat.
+  - One screen on every console, the same layout as the Rust edition: a status row, messages, a divider, and the input row at the bottom.
 
 Commands (typed in the input line)
   <text>     send to every peer
@@ -17,7 +16,6 @@ Commands (typed in the input line)
 """
 
 import argparse
-import asyncio
 import json
 import locale
 import os
@@ -93,15 +91,16 @@ def default_name(taken=()):
 _sink_lock = threading.Lock()
 STOP = threading.Event()  # run() 이 끝날 때 설정한다. 네트워크 스레드는 이것을 보고 멈춘다.
 _sink = None  # where say() writes; set by run()
+_restore_screen = None  # undoes the full-screen mode while the chat runs; leave_when_idle() calls it
 
 
-def say(line, style=""):
-    """Show one line in the chat (scrolling area, or plain stdout). style is a prompt_toolkit style class."""
+def say(line, mine=False):
+    """Show one line in the chat (on screen, or plain stdout). mine marks a line the user sent."""
     with _sink_lock:
         if _sink is None:
             print(line, flush=True)
         else:
-            _sink(line, style)
+            _sink(line, mine)
 
 
 class Chat:
@@ -113,20 +112,21 @@ class Chat:
         self.peers_lock = threading.Lock()
         self.lines = []
         self.lines_lock = threading.Lock()  # 네트워크 스레드와 화면이 같은 목록을 쓴다
-        self.app = None
         self.last_activity = time.time()
 
     def touch(self):
         """Mark activity so the idle timer restarts. Used by every view, not only add_line()."""
         self.last_activity = time.time()
 
-    def add_line(self, line, style=""):
+    def add_line(self, line, mine=False):
         self.touch()
         with self.lines_lock:
-            self.lines.append((style, line))
+            self.lines.append((line, mine))
             del self.lines[:-MAX_LINES]
-        if self.app is not None:
-            self.app.invalidate()
+
+    def clear_lines(self):
+        with self.lines_lock:
+            self.lines.clear()
 
     def fresh_peers(self):
         cutoff = time.time() - PEER_TIMEOUT_SECONDS
@@ -138,6 +138,9 @@ class Chat:
         text = text.strip()
         if not text:
             return True
+        # Commands are echoed before they run, as in the Rust edition. Chat messages are not echoed.
+        if text.startswith("/"):
+            say(f"> {text}")
         if text == "/quit":
             return False
         if text == "/help":
@@ -168,7 +171,7 @@ class Chat:
             if not found:
                 say(t("peers.none"))
             for info in found.values():
-                say(f"- {info['name']} ({info['ip']}:{info['port']})")
+                say(f"- {clean_text(info['name'], 32)} ({info['ip']}:{info['port']})")
             return True
         text = text[:MAX_TEXT_CHARS].replace("\n", " ")
         targets = self.fresh_peers()
@@ -184,7 +187,7 @@ class Chat:
                     send.result()
                 except OSError:
                     say(t("peer.unreachable", name=info["name"]))
-        say(f"{self.me['name']} {t('chat.you')}: {text}", style="class:mine")
+        say(f"{self.me['name']} {t('chat.you')}: {text}", mine=True)
         return True
 
 
@@ -228,16 +231,23 @@ def _listen_loop(sock, chat):
             info = json.loads(data.decode("utf-8"))
         except ValueError:
             continue
-        if info.get("app") != APP or info.get("id") == chat.me["id"]:
+        # Only a well-formed announcement is kept: an int port in range and a string id.
+        # Anything else could put odd values on screen (via /peers) or crash this thread.
+        if not isinstance(info, dict) or info.get("app") != APP or info.get("id") == chat.me["id"]:
             continue
-        peer_id = info.get("id", "")
+        peer_id = info.get("id")
+        port = info.get("port")
+        if not isinstance(peer_id, str) or not peer_id:
+            continue
+        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            continue
         name = peer_name(info.get("name", "unknown"))
         with chat.peers_lock:
             is_new = peer_id not in chat.peers
             chat.peers[peer_id] = {
                 "name": name,
                 "ip": addr[0],
-                "port": info.get("port", 0),
+                "port": port,
                 "seen": time.time(),
             }
         if is_new:
@@ -306,10 +316,12 @@ def send_to(peer, me, text):
 
 
 def leave_when_idle(chat):
-    """Plain mode: exit the process after IDLE_LIMIT_SECONDS without activity."""
+    """Exit after IDLE_LIMIT_SECONDS without activity. The full-screen mode is undone first, so the shell is left clean."""
     while True:
         time.sleep(10)
         if time.time() - chat.last_activity >= IDLE_LIMIT_SECONDS:
+            if _restore_screen is not None:
+                _restore_screen()
             print(t("idle.left", minutes=IDLE_LIMIT_SECONDS // 60), flush=True)
             os._exit(0)
 
@@ -381,8 +393,6 @@ HELP_LINES = [
     t("help.backspace"),
     t("help.ctrl_l"),
     t("help.ctrl_c"),
-    "",
-    t("help.close"),
 ]
 HELP_WIDTH = max(char_width(line) for line in HELP_LINES)
 HELP_BORDER = "+" + "-" * (HELP_WIDTH + 2) + "+"
@@ -390,178 +400,130 @@ HELP_BORDER = "+" + "-" * (HELP_WIDTH + 2) + "+"
 HELP_BOX = [HELP_BORDER] + [f"| {line}{' ' * (HELP_WIDTH - char_width(line))} |" for line in HELP_LINES] + [HELP_BORDER]
 
 
-def run_ansi(chat):
-    """Chat with the input line fixed on the bottom row, without prompt_toolkit.
-    Every change redraws the screen from our own message list, with absolute cursor positions and no scroll region."""
-    global _sink
+def fit(text, cols):
+    """The start of text that fits in cols terminal columns."""
+    out, width = "", 0
+    for ch in text:
+        width += char_width(ch)
+        if width > cols:
+            break
+        out += ch
+    return out
+
+
+def tail(text, cols):
+    """The end of text that fits in cols columns, so the cursor stays visible."""
+    out, width = "", 0
+    for ch in reversed(text):
+        width += char_width(ch)
+        if width > cols:
+            break
+        out = ch + out
+    return out
+
+
+def screen_frame(lines, status, typed, cols, rows):
+    """The whole chat screen as one string of ANSI codes, laid out like the Rust edition (screen.rs):
+    a grey status row, the messages, a divider, and the input row at the bottom.
+    Messages go from the top; mine are bold blue. Pure, so tests can check the layout."""
+    cols, rows = max(20, cols), max(5, rows)
+    area = rows - 3
+    wrapped = [(row, mine) for line, mine in lines for row in wrap_line(line, cols - 1)]
+    visible = wrapped[max(0, len(wrapped) - area):]
+    status = fit(status, cols)
+    out = ["\x1b[?25l", f"\x1b[1;1H\x1b[100m\x1b[37m{status}{' ' * (cols - char_width(status))}\x1b[0m"]
+    for index in range(area):
+        out.append(f"\x1b[{index + 2};1H\x1b[2K")
+        if index < len(visible):
+            row, mine = visible[index]
+            out.append(f"\x1b[1m\x1b[34m{row}\x1b[0m" if mine else row)
+    out.append(f"\x1b[{rows - 1};1H\x1b[90m{'-' * cols}\x1b[0m")
+    out.append(f"\x1b[{rows};1H\x1b[2K> {tail(typed, cols - 3)}\x1b[?25h")
+    return "".join(out)
+
+
+def _enter_screen():
+    """Switch to the alternate screen with the cursor hidden. On POSIX also read keys one at a time (raw mode).
+    Windows reads keys with msvcrt and needs no mode change. Returns the function that undoes all of it."""
     enable_vt()
-    history = []
-    buffer = []
-    lock = threading.Lock()
-    help_open = False
+    sys.stdout.write("\x1b[?1049h\x1b[?25l")
+    sys.stdout.flush()
+    saved = None
+    if os.name != "nt":
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+        tty.setraw(fd)
+    done = []
 
-    def render():
-        size = shutil.get_terminal_size((80, 24))
-        cols, rows = max(20, size.columns), max(5, size.lines)
-        wrapped = []
-        for line in history:
-            wrapped += wrap_line(line, cols - 1)
-        visible = wrapped[-(rows - 1):]
-        visible = [""] * (rows - 1 - len(visible)) + visible
-        if help_open and len(visible) >= len(HELP_BOX) and cols >= len(HELP_BORDER):
-            top = (len(visible) - len(HELP_BOX)) // 2
-            visible[top:top + len(HELP_BOX)] = HELP_BOX
-        text = "".join(buffer)
-        # Plain newlines between rows (no cursor jumps), so the input row stays on the last line.
-        sys.stdout.write("\x1b[H\x1b[2J" + "\n".join(visible) + "\n> " + text)
+    def leave():
+        if done:
+            return
+        done.append(True)
+        sys.stdout.write("\x1b[0m\x1b[?25h\x1b[?1049l")
         sys.stdout.flush()
+        if saved is not None:
+            import termios
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
 
-    def add_message(line, style=""):
-        chat.touch()
-        with lock:
-            history.append(line)
-            del history[:-MAX_LINES]
-            render()
+    return leave
+
+
+def on_key(ch, chat, typed):
+    """Apply one key to the typed text (a one-item list, changed in place). The keys are the Rust edition's.
+    Return False to leave the chat."""
+    if ch in ("\x03", "\x04"):    # Ctrl+C, Ctrl+D
+        return False
+    if ch == "\x0c":              # Ctrl+L: clear the messages on screen
+        chat.clear_lines()
+    elif ch == "\x0e":            # Ctrl+N: start a rename
+        typed[0] = "/name "
+    elif ch in ("\r", "\n"):      # Enter: send, or run a command
+        text, typed[0] = typed[0], ""
+        return chat.handle(text)
+    elif ch in ("\x08", "\x7f"):  # Backspace
+        typed[0] = typed[0][:-1]
+    elif ch and ch.isprintable():
+        typed[0] += ch
+    return True
+
+
+def run_ansi(chat):
+    """The one chat screen, drawn with ANSI codes and the standard library only, so it looks the same on every console."""
+    global _sink, _restore_screen
+    leave = _enter_screen()
+    typed = [""]
+    screen_lock = threading.Lock()
+
+    def redraw():
+        size = shutil.get_terminal_size((80, 24))
+        status = t("status.line", name=chat.me["name"], peers=len(chat.fresh_peers()))
+        with chat.lines_lock:
+            lines = list(chat.lines)
+        frame = screen_frame(lines, status, typed[0], size.columns, size.lines)
+        with screen_lock:
+            sys.stdout.write(frame)
+            sys.stdout.flush()
+
+    def add(line, mine=False):
+        chat.add_line(line, mine)
+        redraw()
 
     with _sink_lock:
-        _sink = add_message
-    with lock:
-        render()
+        _sink = add
+    _restore_screen = leave
+    redraw()
     threading.Thread(target=leave_when_idle, args=(chat,), daemon=True).start()
     try:
-        while True:
-            ch = read_char()
-            if help_open and ch not in ("\x03", "\x04"):   # any key closes the help box
-                help_open = False
-                with lock:
-                    render()
-                continue
-            if ch in ("\r", "\n"):
-                text = "".join(buffer)
-                buffer.clear()
-                if text.strip() == "/help":
-                    help_open = True
-                    with lock:
-                        render()
-                    continue
-                # Chat messages come back from chat.handle() as "name (you): text", so echo only commands here.
-                if text.startswith("/"):
-                    with lock:
-                        history.append(f"> {text}")
-                        del history[:-MAX_LINES]
-                        render()
-                if not chat.handle(text):
-                    break
-                with lock:
-                    render()
-            elif ch in ("\x08", "\x7f"):
-                if buffer:
-                    buffer.pop()
-                with lock:
-                    render()
-            elif ch in ("\x03", "\x04"):   # Ctrl+C, Ctrl+D
-                break
-            elif ch == "\x0c":             # Ctrl+L: clear the messages on screen
-                with lock:
-                    history.clear()
-                    render()
-            elif ch and ch.isprintable():
-                buffer.append(ch)
-                with lock:
-                    render()
+        while on_key(read_char(), chat, typed):
+            redraw()
     finally:
         with _sink_lock:
             _sink = None
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+        _restore_screen = None
+        leave()
     say(t("bye"))
-    return 0
-
-
-def run_screen(chat):
-    """Full-screen chat: messages above, input line below. Falls back to run_ansi() if prompt_toolkit cannot start."""
-    try:
-        from prompt_toolkit.application import Application
-        from prompt_toolkit.buffer import Buffer
-        from prompt_toolkit.key_binding import KeyBindings
-        from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
-        from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
-        from prompt_toolkit.styles import Style
-    except ImportError:
-        return run_ansi(chat)
-
-    def messages_text():
-        with chat.lines_lock:
-            snapshot = list(chat.lines)
-        return [(style, line + "\n") for style, line in snapshot]
-
-    def scroll_to_bottom(window):
-        info = window.render_info
-        if info is None:
-            return 0
-        return max(0, info.content_height - info.window_height)
-
-    def status_text():
-        peers = len(chat.fresh_peers())
-        return t("status.line", name=chat.me["name"], peers=peers)
-
-    message_window = Window(content=FormattedTextControl(messages_text), wrap_lines=True, always_hide_cursor=True)
-    message_window.get_vertical_scroll = scroll_to_bottom
-    status_window = Window(content=FormattedTextControl(status_text), height=1, style="class:status")
-    divider = Window(height=1, char="-", style="class:divider")
-
-    app = None
-
-    def accept(buffer):
-        text = buffer.text
-        buffer.text = ""
-        if not chat.handle(text) and app is not None:
-            app.exit()
-        return True
-
-    input_buffer = Buffer(multiline=False, accept_handler=accept)
-    input_window = Window(content=BufferControl(buffer=input_buffer), height=1, dont_extend_height=True)
-    prompt_window = Window(content=FormattedTextControl("> "), width=2, dont_extend_width=True)
-
-    root = HSplit([status_window, message_window, divider, VSplit([prompt_window, input_window])])
-    keys = KeyBindings()
-
-    @keys.add("c-c")
-    @keys.add("c-d")
-    def _quit(event):
-        event.app.exit()
-
-    @keys.add("c-n")
-    def _rename(event):
-        input_buffer.text = "/name "
-        input_buffer.cursor_position = len(input_buffer.text)
-
-    style = Style.from_dict({
-        "status": "bg:#3a3a3a #ffffff",
-        "divider": "#666666",
-        "mine": "bold #58a6ff",
-    })
-    try:
-        app = Application(
-            layout=Layout(root, focused_element=input_window),
-            key_bindings=keys,
-            style=style,
-            full_screen=True,
-        )
-    except Exception:  # no usable console for prompt_toolkit
-        return run_ansi(chat)
-
-    async def leave_when_idle_screen():
-        while True:
-            await asyncio.sleep(10)
-            if time.time() - chat.last_activity >= IDLE_LIMIT_SECONDS:
-                chat.add_line(t("idle.left", minutes=IDLE_LIMIT_SECONDS // 60))
-                app.exit()
-                return
-
-    chat.app = app
-    app.create_background_task(leave_when_idle_screen())
-    app.run()
     return 0
 
 
@@ -613,7 +575,7 @@ def run(args):
         threading.Thread(target=keep_dock_block, args=(args.pane, chat), daemon=True).start()
     say(t("start.hello", name=me["name"], port=me["port"]))
     try:
-        return run_screen(chat)
+        return run_ansi(chat)
     finally:
         STOP.set()
         server.close()
@@ -626,11 +588,11 @@ def run(args):
 # 공용 herdr-dock workspace 의 한 칸에 talk 대화창을 두고, 접속자 수를 에이전트 목록에 보여 준다.
 # 블록을 클릭하면 그 pane 이 포커스되고 대화창이 그대로 보인다. 다른 dock plugin 과 자리 규칙을 맞춘다.
 
-DOCK_KEY = "herdr-talk"
+DOCK_KEY = "herdr-talk-python"
 DOCK_REPORT_SECONDS = 2
 DOCK_TOKEN_TTL_MS = 15_000
 AGENT_ID = "talk"
-SOURCE = "plugin:herdr-talk"
+SOURCE = "plugin:herdr-talk-python"
 
 
 def keep_dock_block(pane_id, chat):

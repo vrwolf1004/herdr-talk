@@ -1,2 +1,5 @@
+# Rust build output (rust/target, rust/bin)
+target/
+bin/
 __pycache__/
 *.pyc

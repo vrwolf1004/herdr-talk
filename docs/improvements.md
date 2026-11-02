@@ -1,5 +1,7 @@
 # Improvements
 
+> 2026-11-02: code moved from Python to Rust. Paths below refer to the Python code. See [rust-roadmap.md](rust-roadmap.md).
+
 - Written: 2026-10-22, commit `a15c974` (`git log -1 --format=%h`)
 - Shared dock module: `src/dock_layout.py` is a copy. `load_dock_layout()` (`src/talk.py:37`) uses the installed herdr-dock-grid original first and falls back to this copy. The copy matches the herdr-dock-grid 0.7.1 original (checked with diff).
 - Task list: [todo.md](todo.md). Items already listed there are linked, not moved.
