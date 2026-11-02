@@ -54,7 +54,7 @@ fn render(out: &mut Stdout, chat: &Chat, input: &str) -> io::Result<()> {
     let area = rows - 3;
     let mut wrapped = Vec::new();
     for line in chat.lines() {
-        wrapped.extend(wrap_line(&line.text, width - 1).into_iter().map(|row| (row, line.mine)));
+        wrapped.extend(wrap_line(&line.render(), width - 1).into_iter().map(|row| (row, line.mine)));
     }
     let visible = &wrapped[wrapped.len().saturating_sub(usize::from(area))..];
 

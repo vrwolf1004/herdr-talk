@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0, checked with: git ls-remote --tags https://github.com/actions/checkout
         with:
           persist-credentials: false
       - run: gh release create "$GITHUB_REF_NAME" --draft --title "herdr-talk $GITHUB_REF_NAME" --generate-notes
@@ -38,7 +38,7 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-latest }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0, checked with: git ls-remote --tags https://github.com/actions/checkout
         with:
           persist-credentials: false
       - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
@@ -62,12 +62,18 @@ jobs:
     environment: release
     permissions:
       contents: write
+    # Without the key, signing is skipped and the job succeeds, so publish still runs. With the key, a failed signature fails the job.
+    env:
+      MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
     steps:
       - run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Skip signing (no MINISIGN_SECRET_KEY)
+        if: env.MINISIGN_SECRET_KEY == ''
+        run: echo "::warning::MINISIGN_SECRET_KEY is not set in the release environment; the checksums are not signed."
       - name: Sign checksums
+        if: env.MINISIGN_SECRET_KEY != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
         run: |
           set -euo pipefail

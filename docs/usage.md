@@ -12,6 +12,8 @@ herdr plugin install vrwolf1004/herdr-talk/rust
 
 Requirements: herdr 0.9.0 or later, and both PCs on the same network. The install downloads a prebuilt binary, so nothing else is needed.
 
+The install checks the binary's SHA-256 checksum. Releases are not signed yet, so the checksum catches a damaged download but not a release replaced on GitHub. This is the same trust as installing any plugin from its GitHub repository. If you prefer, build from source with `HERDR_TALK_BUILD_FROM_SOURCE=1`, or use the Python edition.
+
 ## 2. Start a chat
 
 From a herdr pane on each PC, run the `open` action to split a chat pane below

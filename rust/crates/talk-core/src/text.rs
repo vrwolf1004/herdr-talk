@@ -30,6 +30,29 @@ pub fn peer_name(value: Option<&str>) -> String {
     if name.trim().is_empty() { "unknown".to_string() } else { name }
 }
 
+/// Collapse each run of spaces to one space.
+pub fn squeeze_spaces(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch == ' ' && out.ends_with(' ') {
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// A sender name as shown: cleaned, spaces squeezed, trimmed, and "unknown" when nothing is left.
+pub fn sender_name(value: &str) -> String {
+    let name = squeeze_spaces(&clean_text(value, 32)).trim().to_string();
+    if name.is_empty() { "unknown".to_string() } else { name }
+}
+
+/// The sender of a plain message. Colons are removed, so the name cannot pass for the start of the text.
+pub fn plain_sender(value: &str) -> String {
+    sender_name(&clean_text(value, 32).replace([':', '：'], ""))
+}
+
 /// Terminal columns used by text. East Asian wide characters count as two.
 pub fn char_width(text: &str) -> usize {
     text.width()
@@ -85,6 +108,15 @@ mod tests {
         assert_eq!(char_width("가나"), 4);
         assert_eq!(char_width("abc"), 3);
         assert!(wrap_line("가나다라마바사", 4).iter().all(|row| char_width(row) <= 4));
+    }
+
+    #[test]
+    fn spaces_are_squeezed_and_plain_senders_lose_colons() {
+        assert_eq!(squeeze_spaces("a    b  c"), "a b c");
+        assert_eq!(plain_sender("Bob: x"), "Bob x");
+        assert_eq!(plain_sender("Bob：x"), "Bobx");
+        assert_eq!(plain_sender(" : "), "unknown");
+        assert_eq!(sender_name("Bob: x"), "Bob: x");
     }
 
     #[test]

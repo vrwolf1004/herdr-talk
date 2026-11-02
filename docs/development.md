@@ -61,7 +61,7 @@ Every file in `rust/crates/talk-core/locales/` must have the same keys and place
 
 ## Releasing
 
-Set the same version in `rust/herdr-plugin.toml` and `rust/Cargo.toml`, then push the tag `v<version>`. The release workflow builds the binaries, signs the checksums, and publishes the release. The installers download the release matching the manifest version.
+Set the same version in `rust/herdr-plugin.toml` and `rust/Cargo.toml`, then push the tag `v<version>`. The release workflow builds the binaries, signs the checksums when the `MINISIGN_SECRET_KEY` secret exists in the `release` environment, and publishes the release. Without the secret, the release is published unsigned and the installers check only the SHA-256. The installers download the release matching the manifest version.
 
 ## Checks before a commit
 

@@ -13,7 +13,7 @@ $Name = 'herdr-talk'
 $Say = 'talk'
 $Repo = 'vrwolf1004/herdr-talk'
 # minisign public key that signs the release checksums (herdr/install.sh has the same key).
-# Empty until the release key exists; the install stops until it is set.
+# Empty until the release key exists; until then only the SHA-256 is checked (see below).
 $MinisignPubKey = ''
 
 # The root from this script's place: herdr runs the build without the runtime env.
@@ -43,11 +43,20 @@ if ($env:HERDR_TALK_BUILD_FROM_SOURCE -eq '1') {
     exit 0
 }
 
+# The signature is checked when minisign is installed and the release key is set. Otherwise only the
+# SHA-256 is checked, and the install says so. A signature that is checked and fails always stops the install.
+$verifySignature = $true
+$unsignedReason = ''
 if (-not $MinisignPubKey) {
-    Fail 'no release signing key is set in herdr\install.ps1; use HERDR_TALK_BUILD_FROM_SOURCE=1 to build instead'
+    $verifySignature = $false
+    $unsignedReason = 'no release signing key is set in herdr\install.ps1'
+} elseif (-not (Get-Command minisign -ErrorAction SilentlyContinue)) {
+    $verifySignature = $false
+    $unsignedReason = 'minisign is not installed (winget install jedisct1.minisign)'
 }
-if (-not (Get-Command minisign -ErrorAction SilentlyContinue)) {
-    Fail 'minisign is needed to verify the release (winget install jedisct1.minisign); or set HERDR_TALK_BUILD_FROM_SOURCE=1'
+if (-not $verifySignature) {
+    [Console]::Error.WriteLine("${Say}: WARNING: SIGNATURE NOT CHECKED ($unsignedReason).")
+    [Console]::Error.WriteLine("${Say}: WARNING: only the SHA-256 from the same release is checked. That does not prove the release is authentic.")
 }
 
 # Release-asset downloads are eventually-consistent: GitHub's CDN can 404 for a few minutes
@@ -93,13 +102,15 @@ try {
     Write-Output "${Say}: downloading $Archive ($Tag)"
     Get-Asset "$Base/$Archive" (Join-Path $Tmp $Archive)
     Get-Asset "$Base/$Checksum" (Join-Path $Tmp $Checksum)
-    Get-Asset "$Base/$Checksum.minisig" (Join-Path $Tmp "$Checksum.minisig")
 
     # The signature covers the checksum file, so checking the archive against it proves the release.
-    Write-Output "${Say}: verifying signature"
-    & minisign -q -V -P $MinisignPubKey -m (Join-Path $Tmp $Checksum) -x (Join-Path $Tmp "$Checksum.minisig") | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Fail "signature check failed for $Checksum"
+    if ($verifySignature) {
+        Get-Asset "$Base/$Checksum.minisig" (Join-Path $Tmp "$Checksum.minisig")
+        Write-Output "${Say}: verifying signature"
+        & minisign -q -V -P $MinisignPubKey -m (Join-Path $Tmp $Checksum) -x (Join-Path $Tmp "$Checksum.minisig") | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Fail "signature check failed for $Checksum; nothing installed"
+        }
     }
 
     Write-Output "${Say}: verifying checksum"
@@ -122,7 +133,11 @@ try {
     $final = Join-Path $BinDir "$Name.exe"
     Move-Item -LiteralPath $exe -Destination $staged -Force
     Move-Item -LiteralPath $staged -Destination $final -Force
-    Write-Output "${Say}: installed $final"
+    if ($verifySignature) {
+        Write-Output "${Say}: installed $final (signature checked)"
+    } else {
+        Write-Output "${Say}: installed $final WITHOUT a signature check (see the WARNING above)"
+    }
 } catch {
     Fail $_.Exception.Message
 } finally {

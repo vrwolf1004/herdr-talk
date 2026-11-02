@@ -7,7 +7,7 @@ NAME="herdr-talk"
 SAY="talk"
 REPO="vrwolf1004/herdr-talk"
 # minisign public key that signs the release checksums (herdr/install.ps1 has the same key).
-# Empty until the release key exists; the install stops until it is set.
+# Empty until the release key exists; until then only the SHA-256 is checked (see below).
 MINISIGN_PUBKEY=""
 
 # The root from this script's place: build commands may not receive herdr's runtime env.
@@ -24,14 +24,21 @@ if [ "${HERDR_TALK_BUILD_FROM_SOURCE:-}" = "1" ]; then
   exit 0
 fi
 
+# The signature is checked when minisign is installed and the release key is set. Otherwise only the
+# SHA-256 is checked, and the install says so. A signature that is checked and fails always stops the install.
+verify_signature=1
+unsigned_reason=""
 if [ -z "$MINISIGN_PUBKEY" ]; then
-  echo "$SAY: no release signing key is set in herdr/install.sh; use HERDR_TALK_BUILD_FROM_SOURCE=1 to build instead" >&2
-  exit 1
+  verify_signature=0
+  unsigned_reason="no release signing key is set in herdr/install.sh"
+elif ! command -v minisign >/dev/null 2>&1; then
+  verify_signature=0
+  unsigned_reason="minisign is not installed (brew install minisign, apt install minisign)"
 fi
-command -v minisign >/dev/null 2>&1 || {
-  echo "$SAY: minisign is needed to verify the release (brew install minisign, apt install minisign); or set HERDR_TALK_BUILD_FROM_SOURCE=1" >&2
-  exit 1
-}
+if [ "$verify_signature" = 0 ]; then
+  echo "$SAY: WARNING: SIGNATURE NOT CHECKED ($unsigned_reason)." >&2
+  echo "$SAY: WARNING: only the SHA-256 from the same release is checked. That does not prove the release is authentic." >&2
+fi
 
 # The release tag matches the manifest version, so a checkout always pulls its own release.
 VERSION="$(grep -m1 '^version' "$ROOT/herdr-plugin.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
@@ -72,12 +79,14 @@ dl() {
 echo "$SAY: downloading $archive ($TAG)"
 dl "$base/$archive" "$tmp/$archive"
 dl "$base/$checksum" "$tmp/$checksum"
-dl "$base/$checksum.minisig" "$tmp/$checksum.minisig"
 
 # The signature covers the checksum file, so checking the archive against it proves the release.
-echo "$SAY: verifying signature"
-minisign -q -V -P "$MINISIGN_PUBKEY" -m "$tmp/$checksum" -x "$tmp/$checksum.minisig" ||
-  { echo "$SAY: signature check failed for $checksum" >&2; exit 1; }
+if [ "$verify_signature" = 1 ]; then
+  dl "$base/$checksum.minisig" "$tmp/$checksum.minisig"
+  echo "$SAY: verifying signature"
+  minisign -q -V -P "$MINISIGN_PUBKEY" -m "$tmp/$checksum" -x "$tmp/$checksum.minisig" ||
+    { echo "$SAY: signature check failed for $checksum; nothing installed" >&2; exit 1; }
+fi
 
 echo "$SAY: verifying checksum"
 expected="$(awk '{print $1}' "$tmp/$checksum")"
@@ -94,4 +103,8 @@ fi
 mkdir -p "$BIN_DIR"
 tar -xzf "$tmp/$archive" -C "$tmp"
 install -m 0755 "$tmp/$NAME" "$BIN_DIR/$NAME"
-echo "$SAY: installed $BIN_DIR/$NAME"
+if [ "$verify_signature" = 0 ]; then
+  echo "$SAY: installed $BIN_DIR/$NAME WITHOUT a signature check (see the WARNING above)"
+else
+  echo "$SAY: installed $BIN_DIR/$NAME (signature checked)"
+fi

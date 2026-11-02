@@ -3,16 +3,17 @@
 //! - plain (only with "plaintext": true): one JSON object, as the Python 0.5.x versions sent it.
 //!   Never used for a peer that has a key.
 
-use crate::chat::{default_name, Chat, Me, Peer, MAX_TEXT_CHARS};
+use crate::chat::{default_name, Chat, Line, Me, Peer, MAX_TEXT_CHARS};
 use crate::i18n::t;
 use crate::store::{self, Identity};
-use crate::text::{clean_text, peer_name};
+use crate::text::{clean_text, peer_name, plain_sender, sender_name, squeeze_spaces};
 use serde_json::{json, Value};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,10 +25,12 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_FRAME: usize = u16::MAX as usize; // a Noise frame carries a 2-byte length
 const NOISE_PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const SEND_TIMEOUT: Duration = Duration::from_secs(3);
-/// Total time one incoming connection may take, from accept to the last byte. Not per read.
-const CONNECTION_TIME: Duration = Duration::from_secs(10);
-/// Incoming connections handled at once. Each one beyond this is closed unread.
+/// Total time for one incoming connection: its first byte, the handshake and the message. Not per read.
+const CONNECTION_TIME: Duration = Duration::from_secs(3);
+/// Incoming connections handled at once, all addresses together. Each one beyond this is closed unread.
 const MAX_CONNECTIONS: usize = 16;
+/// Incoming connections handled at once from one address. Each one beyond this is closed unread.
+const MAX_PER_IP: usize = 3;
 const LOOP_POLL: Duration = Duration::from_millis(500); // how often loops check for the stop signal
 const ACCEPT_POLL: Duration = Duration::from_millis(50);
 
@@ -123,14 +126,17 @@ fn remember_peer(chat: &Chat, data: &[u8], ip: String) {
         None if id.len() == 64 => return,
         None => None,
     };
-    // A peer the user verified keeps the name it was verified under.
-    let verified_name = key.as_deref().and_then(|key| chat.trusted_name(key));
-    let name = verified_name.clone().unwrap_or_else(|| peer_name(info.get("name").and_then(Value::as_str)));
+    // This PC's own key belongs to another pane here. Only an announcement from a local address is taken.
+    if key.as_deref() == Some(me.key.as_slice()) && !is_local_address(&ip) {
+        return;
+    }
+    // A key the user trusts: an announcement may not rename its entry or move it to another address.
+    let trusted = key.as_deref().is_some_and(|key| chat.trusts(key));
+    let name = key.as_deref().and_then(|key| chat.trusted_name(key)).unwrap_or_else(|| peer_name(info.get("name").and_then(Value::as_str)));
     let peer = Peer { id: id.to_string(), name: name.clone(), ip: ip.clone(), port, seen: Instant::now(), key: key.clone() };
     let mut peers = chat.peers.lock().unwrap();
-    // An unauthenticated announcement cannot move a verified peer's entry to another name or address.
-    // It only shows that the peer is still there, or adds an entry for a new address.
-    if verified_name.is_some() {
+    if trusted {
+        // Only refreshes an entry at the same address. A new address adds an entry; the old one stays as it was.
         if let Some(known) = peers.iter_mut().find(|known| known.id == id && known.port == port && known.ip == ip) {
             known.seen = Instant::now();
             return;
@@ -156,16 +162,17 @@ fn remember_peer(chat: &Chat, data: &[u8], ip: String) {
 
 /// Accept TCP connections. Each connection carries one message.
 fn receive_messages(server: TcpListener, chat: Arc<Chat>) {
-    let open = Arc::new(AtomicUsize::new(0));
+    let open = Arc::new(Mutex::new(Open::default()));
     while !chat.stop.is_set() {
         match server.accept() {
             Ok((conn, address)) => {
+                let ip = address.ip().to_string();
                 // Connections from unknown addresses or over the rate limit are closed unread.
-                if !chat.admit_sender(&address.ip().to_string()) {
+                if !chat.admit_sender(&ip) {
                     continue;
                 }
-                // Too many open connections: close this one unread.
-                let Some(slot) = Slot::take(&open) else { continue };
+                // Too many open connections, from this address or in all: close this one unread.
+                let Some(slot) = Slot::take(&open, &ip) else { continue };
                 let chat = chat.clone();
                 thread::spawn(move || {
                     let _slot = slot; // given back when this thread ends
@@ -180,22 +187,42 @@ fn receive_messages(server: TcpListener, chat: Arc<Chat>) {
     }
 }
 
-/// One of the MAX_CONNECTIONS slots for incoming connections. Given back when dropped.
-struct Slot(Arc<AtomicUsize>);
+/// Open incoming connections, in all and per address.
+#[derive(Default)]
+struct Open {
+    total: usize,
+    per_ip: HashMap<String, usize>,
+}
+
+/// One open incoming connection. Given back when dropped.
+struct Slot {
+    open: Arc<Mutex<Open>>,
+    ip: String,
+}
 
 impl Slot {
-    fn take(open: &Arc<AtomicUsize>) -> Option<Slot> {
-        if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-            open.fetch_sub(1, Ordering::SeqCst);
+    fn take(open: &Arc<Mutex<Open>>, ip: &str) -> Option<Slot> {
+        let mut counts = open.lock().unwrap();
+        let from_ip = counts.per_ip.get(ip).copied().unwrap_or(0);
+        if counts.total >= MAX_CONNECTIONS || from_ip >= MAX_PER_IP {
             return None;
         }
-        Some(Slot(open.clone()))
+        counts.total += 1;
+        counts.per_ip.insert(ip.to_string(), from_ip + 1);
+        Some(Slot { open: open.clone(), ip: ip.to_string() })
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        let mut counts = self.open.lock().unwrap();
+        counts.total -= 1;
+        let left = counts.per_ip.get(&self.ip).copied().unwrap_or(1) - 1;
+        if left == 0 {
+            counts.per_ip.remove(&self.ip);
+        } else {
+            counts.per_ip.insert(self.ip.clone(), left);
+        }
     }
 }
 
@@ -314,18 +341,35 @@ fn deliver(data: &[u8], key: Option<&[u8]>, chat: &Chat) {
     let (Some(sender), Some(body)) = (message.get("from").and_then(Value::as_str), message.get("text").and_then(Value::as_str)) else {
         return;
     };
-    let sender = clean_text(sender, 32);
-    let body = clean_text(body, MAX_TEXT_CHARS);
-    if body.trim().is_empty() {
+    // Rows are kept as sent, one per line, within the text limit. Each row is cleaned and spaces squeezed.
+    let rows: Vec<String> = body.chars().take(MAX_TEXT_CHARS).collect::<String>()
+        .split('\n')
+        .map(|row| squeeze_spaces(&clean_text(row, MAX_TEXT_CHARS)))
+        .collect();
+    if rows.iter().all(|row| row.trim().is_empty()) {
         return;
     }
-    let sender = if sender.is_empty() { "unknown".to_string() } else { sender };
-    // A verified message shows the name the user verified, not the "from" it claims. A plain one is marked.
-    let shown = match key {
-        Some(key) => chat.trusted_name(key).unwrap_or(sender),
-        None => format!("{sender} ({})", t("chat.plain", &[])),
+    let lines = match key {
+        // Verified: the name the user verified, not the one the message claims. One line, as before.
+        Some(key) => vec![Line { sender: Some(chat.trusted_name(key).unwrap_or_else(|| sender_name(sender))), text: squeeze_spaces(&rows.join(" ")), mine: false }],
+        // Plain: no key to check. Every row carries the plain sender's label, so no row can pass for another sender.
+        None => {
+            let label = format!("{} ({})", plain_sender(sender), t("chat.plain", &[]));
+            rows.into_iter().map(|row| Line { sender: Some(label.clone()), text: row, mine: false }).collect()
+        }
     };
-    chat.say(format!("{shown}: {body}"));
+    chat.add(lines);
+}
+
+/// True for this PC's own addresses: loopback, and the address this PC uses to reach the LAN.
+fn is_local_address(ip: &str) -> bool {
+    let Ok(ip) = ip.parse::<IpAddr>() else { return false };
+    if ip.is_loopback() {
+        return true;
+    }
+    // Connecting a UDP socket sends nothing. It only picks the address this PC sends from.
+    let Ok(probe) = UdpSocket::bind(("0.0.0.0", 0)) else { return false };
+    probe.connect(("192.0.2.1", 9)).is_ok() && probe.local_addr().is_ok_and(|local| local.ip() == ip)
 }
 
 /// Send one message. A peer with a key only ever gets the encrypted form.
@@ -400,7 +444,7 @@ mod tests {
     }
 
     fn texts(chat: &Chat) -> Vec<String> {
-        chat.lines().into_iter().map(|line| line.text).collect()
+        chat.lines().into_iter().map(|line| line.render()).collect()
     }
 
     fn deliver_plain(chat: &Chat, payload: &str) {
@@ -467,7 +511,48 @@ mod tests {
     fn sender_of_only_control_characters_keeps_the_spaces() {
         let chat = chat_with_plain_text();
         deliver_plain(&chat, &json!({"app": APP, "from": "\x07\x02", "text": "hi"}).to_string());
-        assert_eq!(texts(&chat), [format!("{} ({}): hi", "  ", t("chat.plain", &[]))]);
+        // A sender of only blanks is unknown, as a sender of nothing is.
+        assert_eq!(texts(&chat), [format!("unknown ({}): hi", t("chat.plain", &[]))]);
+    }
+
+    #[test]
+    fn plain_sender_colons_and_space_runs_are_removed() {
+        let chat = chat_with_plain_text();
+        deliver_plain(&chat, &json!({"app": APP, "from": "Bo:b   x", "text": "hi    there"}).to_string());
+        assert_eq!(texts(&chat), [format!("Bob x ({}): hi there", t("chat.plain", &[]))]);
+    }
+
+    #[test]
+    fn every_row_of_a_plain_message_carries_its_sender() {
+        // A second row that starts like another sender must still read as this plain sender's row.
+        let chat = chat_with_plain_text();
+        deliver_plain(&chat, &json!({"app": APP, "from": "Bob", "text": "first\nBob: forged"}).to_string());
+        let label = format!("Bob ({})", t("chat.plain", &[]));
+        assert_eq!(texts(&chat), [format!("{label}: first"), format!("{label}: Bob: forged")]);
+    }
+
+    #[test]
+    fn blank_plain_message_is_dropped() {
+        let chat = chat_with_plain_text();
+        deliver_plain(&chat, &json!({"app": APP, "from": "Bob", "text": "\n   \n"}).to_string());
+        assert!(texts(&chat).is_empty());
+    }
+
+    #[test]
+    fn own_key_is_taken_only_from_a_local_address() {
+        let chat = Chat::new(Me { id: "me".into(), name: "Me".into(), port: 1, key: vec![7; 32], secret: vec![] });
+        let packet = json!({"app": APP, "id": store::peer_id(&[7; 32]), "name": "Other", "port": 9, "key": store::to_hex(&[7; 32])}).to_string();
+        remember_peer(&chat, packet.as_bytes(), "203.0.113.7".into());
+        assert!(chat.peers.lock().unwrap().is_empty());
+        remember_peer(&chat, packet.as_bytes(), "127.0.0.1".into());
+        assert_eq!(chat.peers.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn only_loopback_and_this_pcs_own_address_are_local() {
+        assert!(is_local_address("127.0.0.1"));
+        assert!(!is_local_address("203.0.113.7"));
+        assert!(!is_local_address("not an address"));
     }
 
     #[test]
@@ -677,6 +762,26 @@ mod tests {
     }
 
     #[test]
+    fn a_silent_peer_connection_is_closed_within_the_connection_time() {
+        // Through the real accept loop: a known address that sends nothing is closed by the server.
+        let chat = Arc::new(chat());
+        chat.peers.lock().unwrap().push(Peer { id: "p".into(), name: "P".into(), ip: "127.0.0.1".into(), port: 1, seen: Instant::now(), key: None });
+        let server = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        server.set_nonblocking(true).unwrap();
+        let address = server.local_addr().unwrap();
+        let worker = chat.clone();
+        thread::spawn(move || receive_messages(server, worker));
+        let mut client = TcpStream::connect(address).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let started = Instant::now();
+        let mut byte = [0; 1];
+        let read = client.read(&mut byte);
+        assert!(matches!(read, Ok(0)), "expected the server to close: {read:?}");
+        assert!(started.elapsed() < CONNECTION_TIME + Duration::from_secs(1));
+        chat.stop.set();
+    }
+
+    #[test]
     fn the_deadline_covers_the_whole_connection_not_each_read() {
         // One byte every 100 ms: every read is quick, but the connection runs past its 300 ms in total.
         let (mut client, server) = stream_pair();
@@ -698,11 +803,18 @@ mod tests {
     }
 
     #[test]
-    fn connections_beyond_the_limit_are_refused() {
-        let open = Arc::new(AtomicUsize::new(0));
-        let slots: Vec<Slot> = (0..MAX_CONNECTIONS).map(|_| Slot::take(&open).unwrap()).collect();
-        assert!(Slot::take(&open).is_none());
-        drop(slots);
-        assert!(Slot::take(&open).is_some());
+    fn connections_per_address_and_in_all_are_limited() {
+        let open = Arc::new(Mutex::new(Open::default()));
+        let held: Vec<Slot> = (0..MAX_PER_IP).map(|_| Slot::take(&open, "10.0.0.1").unwrap()).collect();
+        assert!(Slot::take(&open, "10.0.0.1").is_none());
+        assert!(Slot::take(&open, "10.0.0.2").is_some());
+        drop(held);
+        assert!(Slot::take(&open, "10.0.0.1").is_some());
+        // Many addresses, one each: the total limit applies.
+        let many: Vec<Slot> = (0..MAX_CONNECTIONS).map(|index| Slot::take(&open, &format!("10.1.0.{index}")).unwrap()).collect();
+        assert!(Slot::take(&open, "10.9.9.9").is_none());
+        drop(many);
+        assert_eq!(open.lock().unwrap().total, 0);
+        assert!(open.lock().unwrap().per_ip.is_empty());
     }
 }

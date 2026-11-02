@@ -12,6 +12,8 @@ herdr plugin install vrwolf1004/herdr-talk/rust
 
 요구 사항: herdr 0.9.0 이상, 두 PC가 같은 네트워크에 있어야 합니다. 설치할 때 빌드된 바이너리를 받으므로 다른 준비물은 없습니다.
 
+설치할 때 바이너리의 SHA-256 체크섬을 확인합니다. 릴리스는 아직 서명하지 않으므로, 체크섬은 손상된 다운로드는 잡지만 GitHub에서 바뀐 릴리스는 잡지 못합니다. GitHub 저장소에서 플러그인을 설치할 때와 같은 수준의 신뢰입니다. 원하면 `HERDR_TALK_BUILD_FROM_SOURCE=1`로 소스에서 빌드하거나 Python 판을 쓰세요.
+
 ## 2. 채팅 시작
 
 각 PC의 herdr pane에서 `open` 액션을 실행해 현재 pane 아래에 채팅 pane을 나눕니다:

@@ -99,10 +99,22 @@ pub enum Link {
     Plain,
 }
 
+/// One row of the chat. The sender is kept apart from the text, so the text cannot change who it looks like it came from.
 #[derive(Clone)]
 pub struct Line {
+    pub sender: Option<String>,
     pub text: String,
     pub mine: bool,
+}
+
+impl Line {
+    /// The row as shown: "sender: text", or the text alone for a notice or a continuation row.
+    pub fn render(&self) -> String {
+        match &self.sender {
+            Some(sender) => format!("{sender}: {}", self.text),
+            None => self.text.clone(),
+        }
+    }
 }
 
 /// Set when the chat ends. Network threads watch it and stop.
@@ -198,18 +210,19 @@ impl Chat {
         true
     }
 
-    fn add(&self, text: String, mine: bool) {
+    /// Add rows together, so one message's rows never interleave with another's.
+    pub(crate) fn add(&self, rows: Vec<Line>) {
         *self.last_activity.lock().unwrap() = Instant::now();
         let mut lines = self.lines.lock().unwrap();
-        lines.push(Line { text, mine });
+        lines.extend(rows);
         let extra = lines.len().saturating_sub(MAX_LINES);
         lines.drain(..extra);
         self.dirty.store(true, Ordering::Relaxed);
     }
 
-    /// Show one line in the chat.
+    /// Show one notice line in the chat.
     pub fn say(&self, text: impl Into<String>) {
-        self.add(text.into(), false);
+        self.add(vec![Line { sender: None, text: text.into(), mine: false }]);
     }
 
     pub fn lines(&self) -> Vec<Line> {
@@ -343,7 +356,7 @@ impl Chat {
                 self.say(t("peer.unreachable", &[("name", &peer.name)]));
             }
         }
-        self.add(format!("{} {}: {text}", me.name, t("chat.you", &[])), true);
+        self.add(vec![Line { sender: Some(format!("{} {}", me.name, t("chat.you", &[]))), text, mine: true }]);
         true
     }
 
@@ -406,7 +419,7 @@ mod tests {
     }
 
     fn texts(chat: &Chat) -> Vec<String> {
-        chat.lines().into_iter().map(|line| line.text).collect()
+        chat.lines().into_iter().map(|line| line.render()).collect()
     }
 
     #[test]
