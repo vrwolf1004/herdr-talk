@@ -155,6 +155,18 @@ class NameClashTest(CollectSayTest):
         chat.peers["aaa"] = {"name": "지호", "ip": "10.0.0.9", "port": 2, "seen": time.time() - 999}
         self.assertIsNone(talk.resolve_name_clash(chat))
 
+    def test_automatic_rename_happens_once_per_minute(self):
+        chat = self.make_chat("bbb", "지호")
+        self.add_peer(chat, "aaa", "지호")
+        self.assertEqual(talk.resolve_name_clash(chat), ("지호", "지호2"))
+        # Another smaller id takes the new name at once: the limit holds the name still.
+        self.add_peer(chat, "aab", "지호2")
+        self.assertIsNone(talk.resolve_name_clash(chat))
+        self.assertEqual(chat.me["name"], "지호2")
+        # After the gap it may change again (numbered from the current name, as before).
+        chat.last_auto_rename = time.monotonic() - talk.AUTO_RENAME_GAP_SECONDS - 1
+        self.assertEqual(talk.resolve_name_clash(chat), ("지호2", "지호22"))
+
     def test_listener_renames_the_larger_id_when_an_announcement_clashes(self):
         chat = self.make_chat("bbb", "지호")
         packet = json.dumps({"app": "herdr-talk", "id": "aaa", "name": "지호", "port": 1234}).encode("utf-8")

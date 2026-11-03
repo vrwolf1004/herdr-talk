@@ -50,6 +50,7 @@ APP = "herdr-talk"
 UDP_PORT = 47850          # discovery port, the same on every PC
 ANNOUNCE_SECONDS = 2
 PEER_TIMEOUT_SECONDS = 10
+AUTO_RENAME_GAP_SECONDS = 60  # 자동 이름 변경 사이의 최소 간격
 MAX_MESSAGE_BYTES = 64 * 1024
 RECEIVE_TIMEOUT_SECONDS = 5
 LOOP_POLL_SECONDS = 0.5  # 종료 신호를 이 간격으로 확인한다
@@ -92,11 +93,18 @@ def unique_name(base, taken):
 def resolve_name_clash(chat):
     """If a fresh peer uses our name and has the smaller id, rename this instance.
     Only one side renames (the one with the larger id), so both never change at once.
+    Renames at most once per AUTO_RENAME_GAP_SECONDS. This edition has no keys, so a peer's id and name cannot
+    be verified: anyone on the network can announce a small id and our name to make us rename (the limit only
+    slows that down).
     Returns (old, new) when renamed, else None."""
     peers = chat.fresh_peers()
     name = chat.me["name"]
     if not any(info["name"] == name and pid < chat.me["id"] for pid, info in peers.items()):
         return None
+    last = chat.last_auto_rename
+    if last is not None and time.monotonic() - last < AUTO_RENAME_GAP_SECONDS:
+        return None
+    chat.last_auto_rename = time.monotonic()
     new = unique_name(name, {info["name"] for info in peers.values()} | {name})
     chat.me["name"] = new
     return name, new
@@ -135,6 +143,7 @@ class Chat:
         self.lines = []
         self.lines_lock = threading.Lock()  # 네트워크 스레드와 화면이 같은 목록을 쓴다
         self.last_activity = time.time()
+        self.last_auto_rename = None  # 자동 이름 변경 시각 (time.monotonic)
 
     def touch(self):
         """Mark activity so the idle timer restarts. Used by every view, not only add_line()."""

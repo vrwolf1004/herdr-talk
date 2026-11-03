@@ -155,7 +155,12 @@ pub struct Chat {
     pub(crate) plaintext: bool,
     /// Where /trust saves the verified keys. None keeps them for this session only.
     pub(crate) state_dir: Option<PathBuf>,
+    /// When the name last changed by itself because of a clash. Names the user types do not count.
+    last_auto_rename: Mutex<Option<Instant>>,
 }
+
+/// The shortest time between two automatic renames.
+const AUTO_RENAME_GAP: Duration = Duration::from_secs(60);
 
 impl Chat {
     pub fn new(me: Me) -> Self {
@@ -170,6 +175,7 @@ impl Chat {
             trusted: Mutex::new(Vec::new()),
             plaintext: false,
             state_dir: None,
+            last_auto_rename: Mutex::new(None),
         }
     }
 
@@ -276,7 +282,7 @@ impl Chat {
             if new_name.is_empty() {
                 self.say(t("usage.name", &[]));
             } else {
-                self.rename(new_name);
+                self.rename_by_user(new_name);
             }
             return true;
         }
@@ -289,7 +295,7 @@ impl Chat {
             };
             let mut taken: Vec<String> = self.fresh_peers().into_iter().map(|peer| peer.name).collect();
             taken.push(self.me.lock().unwrap().name.clone());
-            self.rename(pick_name(names, &taken));
+            self.rename_by_user(pick_name(names, &taken));
             return true;
         }
         if text == "/peers" {
@@ -395,21 +401,43 @@ impl Chat {
     fn rename(&self, new_name: String) {
         let old = std::mem::replace(&mut self.me.lock().unwrap().name, new_name.clone());
         self.say(t("name.changed", &[("old", &old), ("new", &new_name)]));
-        self.resolve_name_conflict();
     }
 
-    /// When a fresh peer has this chat's name and a smaller id, this chat gives the name up (the Python edition's
-    /// rule), so of two nodes only the one with the larger id renames. Both sides compute the same answer.
+    /// A name the user chose (/name, /lang): changed at once, then any clash it causes is settled.
+    fn rename_by_user(&self, new_name: String) {
+        self.rename(new_name);
+        self.settle_name(false);
+    }
+
+    /// When a verified fresh peer has this chat's name and a smaller id, this chat gives the name up (the Python
+    /// edition's rule), so of two nodes only the one with the larger id renames. Both sides compute the same answer.
     /// Two panes on one PC share an id (it comes from the key), so for equal ids the port decides the same way.
     /// The new name is the old one with a number: Name2, then Name3 if that is taken too.
+    /// This changes the name by itself at most once per AUTO_RENAME_GAP, so announcements cannot keep it moving.
     pub fn resolve_name_conflict(&self) {
+        self.settle_name(true);
+    }
+
+    fn settle_name(&self, limited: bool) {
         let me = self.me.lock().unwrap().clone();
         let peers = self.fresh_peers();
-        let beaten = peers.iter().any(|peer| peer.name == me.name && (peer.id.as_str(), peer.port) < (me.id.as_str(), me.port));
-        if beaten {
-            let taken: Vec<String> = peers.into_iter().map(|peer| peer.name).collect();
-            self.rename(numbered_name(&me.name, &taken));
+        // Verified: the announced key hashes to the announced id. A peer without a key proves nothing, so it cannot
+        // take a name from anyone.
+        let verified = |peer: &Peer| peer.key.as_deref().is_some_and(|key| store::peer_id(key) == peer.id);
+        let beaten = peers.iter().any(|peer| verified(peer) && peer.name == me.name && (peer.id.as_str(), peer.port) < (me.id.as_str(), me.port));
+        if !beaten {
+            return;
         }
+        let mut last = self.last_auto_rename.lock().unwrap();
+        if limited && last.is_some_and(|at| at.elapsed() < AUTO_RENAME_GAP) {
+            return;
+        }
+        if limited {
+            *last = Some(Instant::now());
+        }
+        drop(last);
+        let taken: Vec<String> = peers.into_iter().map(|peer| peer.name).collect();
+        self.rename(numbered_name(&me.name, &taken));
     }
 }
 
@@ -437,10 +465,16 @@ mod tests {
         chat
     }
 
-    /// A chat named `name` with the given id and port, that sees one fresh peer of the same name.
-    fn clashing(id: &str, port: u16, name: &str, peer_id: &str, peer_port: u16) -> Chat {
-        let chat = Chat::new(Me { id: id.into(), name: name.into(), port, key: vec![0; 32], secret: vec![1; 32] });
-        chat.peers.lock().unwrap().push(Peer { id: peer_id.into(), name: name.into(), ip: "10.0.0.1".into(), port: peer_port, seen: Instant::now(), key: None });
+    /// Two keys whose ids sort low < high, so a test knows which node must keep the name.
+    fn keys_low_high() -> ([u8; 32], [u8; 32]) {
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        if store::peer_id(&a) < store::peer_id(&b) { (a, b) } else { (b, a) }
+    }
+
+    /// A chat named `name` with this key and port, that sees one fresh verified peer of the same name.
+    fn clashing(key: [u8; 32], port: u16, name: &str, peer_key: [u8; 32], peer_port: u16) -> Chat {
+        let chat = Chat::new(Me { id: store::peer_id(&key), name: name.into(), port, key: key.to_vec(), secret: vec![1; 32] });
+        chat.peers.lock().unwrap().push(Peer { name: name.into(), port: peer_port, ..keyed_peer(name, &peer_key) });
         chat
     }
 
@@ -463,8 +497,9 @@ mod tests {
 
     #[test]
     fn of_two_nodes_with_one_name_only_the_larger_id_renames() {
-        // Same cases as the Python edition's test: "aaa" keeps its name, "bbb" renames, whatever the ports.
-        let (low, high) = (clashing("aaa", 9, "Jiho", "bbb", 1), clashing("bbb", 1, "Jiho", "aaa", 9));
+        // Like the Python edition's test: the smaller id keeps its name, the larger renames, whatever the ports.
+        let (lo, hi) = keys_low_high();
+        let (low, high) = (clashing(lo, 9, "Jiho", hi, 1), clashing(hi, 1, "Jiho", lo, 9));
         low.resolve_name_conflict();
         high.resolve_name_conflict();
         assert_eq!((my_name(&low), my_name(&high)), ("Jiho".to_string(), "Jiho2".to_string()));
@@ -472,7 +507,7 @@ mod tests {
         high.resolve_name_conflict();
         assert_eq!(my_name(&high), "Jiho2");
         // The same id (two panes on one PC) falls back to the port: the larger port renames.
-        let (low, high) = (clashing("k", 1, "Jiho", "k", 2), clashing("k", 2, "Jiho", "k", 1));
+        let (low, high) = (clashing(lo, 1, "Jiho", lo, 2), clashing(lo, 2, "Jiho", lo, 1));
         low.resolve_name_conflict();
         high.resolve_name_conflict();
         assert_eq!((my_name(&low), my_name(&high)), ("Jiho".to_string(), "Jiho2".to_string()));
@@ -480,24 +515,79 @@ mod tests {
 
     #[test]
     fn a_taken_number_is_skipped_and_a_stale_peer_does_not_count() {
-        let chat = clashing("b", 1, "Jiho", "a", 1);
-        chat.peers.lock().unwrap().push(Peer { id: "c".into(), name: "Jiho2".into(), ip: "10.0.0.3".into(), port: 1, seen: Instant::now(), key: None });
+        let (lo, hi) = keys_low_high();
+        let chat = clashing(hi, 1, "Jiho", lo, 1);
+        chat.peers.lock().unwrap().push(keyed_peer("Jiho2", &[9; 32]));
         chat.resolve_name_conflict();
         assert_eq!(my_name(&chat), "Jiho3");
-        let stale = clashing("b", 1, "Jiho", "a", 1);
+        let stale = clashing(hi, 1, "Jiho", lo, 1);
         stale.peers.lock().unwrap()[0].seen = Instant::now() - PEER_TIMEOUT;
         stale.resolve_name_conflict();
         assert_eq!(my_name(&stale), "Jiho");
     }
 
     #[test]
-    fn name_command_follows_the_same_rule() {
+    fn a_peer_without_a_verified_key_cannot_take_my_name() {
+        let (lo, hi) = keys_low_high();
+        // No key at all (a plain-text peer), even with an id that sorts first.
+        let chat = clashing(hi, 1, "Jiho", lo, 1);
+        chat.peers.lock().unwrap()[0].key = None;
+        chat.resolve_name_conflict();
+        assert_eq!(my_name(&chat), "Jiho");
+        // A key that does not hash to the announced id.
+        let chat = clashing(hi, 1, "Jiho", lo, 1);
+        chat.peers.lock().unwrap()[0].key = Some(vec![9; 32]);
+        chat.resolve_name_conflict();
+        assert_eq!(my_name(&chat), "Jiho");
+        // The same peer with its real key does count.
+        let chat = clashing(hi, 1, "Jiho", lo, 1);
+        chat.resolve_name_conflict();
+        assert_eq!(my_name(&chat), "Jiho2");
+    }
+
+    #[test]
+    fn a_keyless_peer_cannot_start_a_clash_but_its_name_stays_taken() {
+        // Jiho2 is used by a keyless peer: it starts nothing, but I still avoid showing a second Jiho2.
+        let (lo, hi) = keys_low_high();
+        let chat = clashing(hi, 1, "Jiho", lo, 1);
+        let mut keyless = keyed_peer("Jiho2", &[9; 32]);
+        keyless.key = None;
+        chat.peers.lock().unwrap().push(keyless);
+        chat.resolve_name_conflict();
+        assert_eq!(my_name(&chat), "Jiho3");
+    }
+
+    #[test]
+    fn an_automatic_rename_happens_once_per_minute() {
+        let (lo, hi) = keys_low_high();
+        let chat = clashing(hi, 1, "Jiho", lo, 1);
+        chat.resolve_name_conflict();
+        assert_eq!(my_name(&chat), "Jiho2");
+        // A second verified peer takes the new name at once: the limit holds the name still.
+        chat.peers.lock().unwrap().push(Peer { name: "Jiho2".into(), port: 7, ..keyed_peer("Jiho2", &lo) });
+        chat.resolve_name_conflict();
+        assert_eq!(my_name(&chat), "Jiho2");
+        // After the gap it may change again.
+        *chat.last_auto_rename.lock().unwrap() = Some(Instant::now() - AUTO_RENAME_GAP);
+        chat.resolve_name_conflict();
+        assert_eq!(my_name(&chat), "Jiho22"); // numbered from the current name, as in Python
+    }
+
+    #[test]
+    fn name_command_follows_the_same_rule_and_ignores_the_limit() {
+        let (lo, hi) = keys_low_high();
         // /name onto a name a smaller-id node already uses: this one ends up numbered.
-        let chat = clashing("b", 1, "Other", "a", 1);
+        let chat = clashing(hi, 1, "Other", lo, 1);
         chat.peers.lock().unwrap()[0].name = "Alice".into();
         chat.handle("/name Alice");
         assert_eq!(my_name(&chat), "Alice2");
-        let keeps = clashing("a", 1, "Other", "b", 1);
+        // The user's own rename neither waits for nor starts the 60 seconds.
+        assert!(chat.last_auto_rename.lock().unwrap().is_none());
+        *chat.last_auto_rename.lock().unwrap() = Some(Instant::now());
+        chat.peers.lock().unwrap()[0].name = "Bob".into();
+        chat.handle("/name Bob");
+        assert_eq!(my_name(&chat), "Bob2");
+        let keeps = clashing(lo, 1, "Other", hi, 1);
         keeps.peers.lock().unwrap()[0].name = "Alice".into();
         keeps.handle("/name Alice");
         assert_eq!(my_name(&keeps), "Alice");

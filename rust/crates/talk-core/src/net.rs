@@ -575,11 +575,18 @@ mod tests {
 
     #[test]
     fn announcement_with_my_name_from_a_smaller_id_renames_me() {
-        let chat = Chat::new(Me { id: "m".into(), name: "Bob".into(), port: 1, key: vec![], secret: vec![] });
-        let packet = |id: &str| json!({"app": APP, "id": id, "name": "Bob", "port": 9}).to_string();
-        remember_peer(&chat, packet("z").as_bytes(), "10.0.0.5".into()); // larger id: that node renames, not me
+        let mut keys = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        keys.sort_by_key(|key| store::peer_id(key));
+        let [small, me_key, large] = keys; // my id is in the middle
+        let chat = Chat::new(Me { id: store::peer_id(&me_key), name: "Bob".into(), port: 1, key: me_key.to_vec(), secret: vec![] });
+        let packet = |key: &[u8; 32]| json!({"app": APP, "id": store::peer_id(key), "name": "Bob", "port": 9, "key": store::to_hex(key)}).to_string();
+        // A node without a key says nothing about my name, whatever its id.
+        let keyless = json!({"app": APP, "id": "a", "name": "Bob", "port": 9}).to_string();
+        remember_peer(&chat, keyless.as_bytes(), "10.0.0.4".into());
         assert_eq!(chat.me.lock().unwrap().name, "Bob");
-        remember_peer(&chat, packet("a").as_bytes(), "10.0.0.6".into());
+        remember_peer(&chat, packet(&large).as_bytes(), "10.0.0.5".into()); // larger id: that node renames, not me
+        assert_eq!(chat.me.lock().unwrap().name, "Bob");
+        remember_peer(&chat, packet(&small).as_bytes(), "10.0.0.6".into());
         assert_eq!(chat.me.lock().unwrap().name, "Bob2");
     }
 
