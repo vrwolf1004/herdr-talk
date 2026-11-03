@@ -18,7 +18,7 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 
 - [x] **Status line in the `prompt_toolkit` view** (모든 언어의 상태 줄에 Ctrl+N, Ctrl+C, /help가 있는지 `StatusLineTest`로 확인) still shows the `Ctrl+N` hint in every language. Check that each translation keeps the key names correct.
 - [x] **Unify the one-line `/help` text** (`help.oneline`) with the box text, so the two cannot drift apart. (한 줄 도움말을 없애고 상자 하나로 통일. `help.oneline` 키 삭제)
-- [ ] **Check translated help box width** in a real console for Korean and Japanese. The width is calculated by display width, but this has only been checked in a simulated run.
+- [ ] **Check translated help box width** in a real console for Korean and Japanese. The width is calculated by display width, but this has only been checked in a simulated run. (2026-11-03 건너뜀: 한국어·일본어 실제 콘솔을 눈으로 봐야 하는데 이 세션에서는 화면을 볼 수 없음)
 - [x] **Add language-key checks as a test** (see the test item below), so a missing key in one locale fails before commit. (`LocaleKeysTest`. 이 검사로 `open.no_pane` 누락 7개 언어를 찾아 고쳤다)
 
 ## Code cleanup
@@ -54,11 +54,11 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 
 ## Docs and release
 
-- [ ] **First Rust release.** Push tag `v0.7.0`, then check the release workflow, both install scripts, and `herdr plugin install` on Windows, Linux and macOS. Until then the GitHub install fails. (2026-11-03 푸시 전 준비 확인: 매니페스트 2개·Cargo 버전 모두 0.7.0, 원격 태그 없음. `cargo build --release --locked` 와 `cargo test --workspace --locked` 통과(62개+11개), `install.sh` 문법 확인, `release.yml` 에 고정된 두 액션 SHA 가 실제 태그 `v4.4.0`·`v1` 과 일치, 설치 스크립트의 아카이브·체크섬 이름이 workflow 설정과 같음. **못 한 것:** 태그 푸시는 chef 승인 대기, 그래서 release workflow 실행·릴리스 자산·`herdr plugin install` Windows/Linux/macOS 는 미확인. 푸시 후 확인할 것: 5개 타깃 빌드, `sign` 단계 경고만 나오는지, draft 가 publish 되는지)
-- [ ] **Check the Rust version on real setups.** Linux and macOS build and run, a chat between two PCs, the `open` action, and `herdr plugin link`. (이 PC(Windows): `open` 은 가짜 herdr CLI로 분할·실행 호출 순서를 확인, `plugin link --disabled` 로 액션 3개 등록 확인 후 unlink. 실제 herdr 세션에서 실행, 두 PC 채팅, Linux/macOS 는 미확인)
+- [x] **First Rust release.** (2026-11-03: 태그 `v0.7.0` 푸시, release run 41561342443 전부 success, 릴리스 공개 발행(draft 아님), 체크섬 미서명(sign 생략), Windows `herdr plugin install` 확인. Linux/macOS 설치는 미확인)
+- [ ] **Check the Rust version on real setups.** Linux and macOS build and run, a chat between two PCs, the `open` action, and `herdr plugin link`. (이 PC(Windows): `open` 은 가짜 herdr CLI로 분할·실행 호출 순서를 확인, `plugin link --disabled` 로 액션 3개 등록 확인 후 unlink. 실제 herdr 세션에서 실행, 두 PC 채팅, Linux/macOS 는 미확인) (2026-11-03 건너뜀: Linux/macOS·두 PC·실제 herdr 세션이 필요)
 - [x] **Keep `release.yml` actions updated.** `upload-rust-binary-action` is pinned to a commit SHA; add Dependabot. (`.github/dependabot.yml` 추가, github-actions 주간. 푸시 후 적용)
 - [x] **Build from source at install.** When `cargo` is found, let the installers offer a source build instead of the release binary, for people who avoid downloaded executables. (`HERDR_TALK_BUILD_FROM_SOURCE=1` 이면 `rust/herdr/install.sh`, `install.ps1` 가 소스 빌드. `cargo` 가 없으면 중단. 이 PC에서 두 스크립트 모두 확인)
-- [ ] **Fail closed once signing is on.** When the public key is set in the installers, stop the install if `minisign` is missing, unless the user opts in (`HERDR_TALK_ALLOW_UNSIGNED=1` or a source build). In `release.yml`, fail the `sign` job when the key is missing instead of publishing unsigned. Do this in the same change that adds the key. (2026-11-02 보안 리뷰 지적, 키가 없는 지금은 동작 차이 없음)
+- [ ] **Fail closed once signing is on.** When the public key is set in the installers, stop the install if `minisign` is missing, unless the user opts in (`HERDR_TALK_ALLOW_UNSIGNED=1` or a source build). In `release.yml`, fail the `sign` job when the key is missing instead of publishing unsigned. Do this in the same change that adds the key. (2026-11-02 보안 리뷰 지적, 키가 없는 지금은 동작 차이 없음) (2026-11-03 건너뜀: 공개키를 넣는 같은 변경에서 해야 하고, 키는 소유자가 만들어야 함)
 - [ ] **Code-sign the binaries.** Windows and macOS. Needs certificates, which the owner must buy. (코드 서명은 이번 범위에서 제외)
 - [x] **Python edition.** Offer the Python plugin for people who avoid executables, installed from the `python/` folder of this repo. It stays plain text on the LAN, so Rust users must turn on plain-text peers to talk with it. (`python/` 플러그인 id `herdr-talk-python`, 도크 키 분리. 테스트 32개 통과, 두 판 동시 등록 확인. GitHub 설치는 푸시 후 확인)
 - [ ] **Sign the release checksum.** (2026-11-02: 0.7.0 은 서명 없이 낸다. 사용자가 위험을 알고 승인. 키가 없으면 sign 단계를 건너뛰고, 설치 스크립트는 SHA-256 만 확인) The installers download the checksum from the same release, so it does not catch a tampered release. Use sigstore or minisign and verify it in the installers. (minisign 으로 구현: 설치 스크립트가 서명을 먼저 검증. 이 PC에서 정상/변조/다른 키/키 없음 경우를 sh, ps1 모두 확인. 남은 일: 소유자가 `minisign -G` 로 키를 만들어 공개키를 `rust/herdr/install.sh`, `install.ps1` 에 넣고, 비밀키를 GitHub 비밀값 `MINISIGN_SECRET_KEY`, `MINISIGN_PASSWORD` 에 넣기)
@@ -67,15 +67,15 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 - [x] **Write `docs/usage.ko.md`.** The main README has a Korean version, but the detailed docs are only in English.
 - [x] **Describe the language setting in the READMEs,** like herdr-timekit does, with a short Language section. (README.md, README.ko.md에 Language 절 추가)
 - [x] **Commit the `docs/` folder and this list** after review.
-- [ ] **Check the herdr plugin install from GitHub** (`herdr plugin install vrwolf1004/herdr-talk/rust`) after the next push, since the manifest and `rust/` files must all be in the repo.
+- [x] **Check the herdr plugin install from GitHub** (`herdr plugin install vrwolf1004/herdr-talk/rust`). (2026-11-03: Windows 에서 설치 확인, chef 보고. Linux/macOS 는 미확인)
 
 ## Security follow-ups (2026-11-02 review)
 
-- [ ] **Check long plaintext messages on screen.** Every row of a wrapped plaintext message must carry the `name (plain)` label, so a continuation row cannot pass as another sender. Test with a long message from the Python edition.
-- [ ] **Choose the trusted name at `/trust`.** The saved name now comes from the peer. Show it in the fingerprint prompt and let the user confirm or set a local name, e.g. `/trust <code> <name>`, and refuse a name another trusted peer already has. Changes the command, so decide before the two-PC test.
-- [ ] **Old name stays for the own key.** Another pane on the same PC keeps its old name in the list after `/name`, because entries with the own key are not overwritten.
-- [ ] **Second network card is not local.** On a PC with several network cards, announcements of the own key from the second card's address are not accepted as local.
-- [ ] **Verified peer on a new address.** A new UDP entry is made and the old one expires after 10 seconds. Updating the address over an authenticated connection is not done.
+- [x] **Check long plaintext messages on screen.** Every row of a wrapped plaintext message must carry the `name (plain)` label, so a continuation row cannot pass as another sender. Test with a long message from the Python edition. (2026-11-03: 원인은 줄바꿈 후 이어지는 화면 행에 보낸 사람 표시가 없던 것. `screen.rs` `rows_of()` 가 받은 메시지의 모든 화면 행에 `보낸 사람: ` 을 붙임(평문 외 암호화 상대 메시지도 같음, 내가 쓴 줄과 알림은 그대로). 보낸 사람이 너무 길어 본문 자리가 8칸 미만이면 예전처럼 한 번만. 단위 테스트 `wrapped_rows_of_a_received_message_all_carry_the_sender`. Python 판으로 실제 전송해 화면으로 보는 것은 안 함)
+- [ ] **Choose the trusted name at `/trust`.** The saved name now comes from the peer. Show it in the fingerprint prompt and let the user confirm or set a local name, e.g. `/trust <code> <name>`, and refuse a name another trusted peer already has. Changes the command, so decide before the two-PC test. (2026-11-03 건너뜀: 명령 형식이 바뀌는 chef 결정 사항)
+- [x] **Old name stays for the own key.** Another pane on the same PC keeps its old name in the list after `/name`, because entries with the own key are not overwritten. (2026-11-03: 같은 PC의 다른 창이 보낸 공지(내 키, 로컬 주소)면 같은 주소의 기존 항목 이름도 갱신. `another_pane_on_this_pc_can_rename_itself`. 실제 창 두 개로는 확인 안 함)
+- [ ] **Second network card is not local.** On a PC with several network cards, announcements of the own key from the second card's address are not accepted as local. (2026-11-03 건너뜀: 모든 네트워크 카드 주소를 알아내려면 의존성 추가가 필요해 결정 필요, 그리고 카드 2개인 PC가 필요)
+- [ ] **Verified peer on a new address.** A new UDP entry is made and the old one expires after 10 seconds. Updating the address over an authenticated connection is not done. (2026-11-03 건너뜀: 인증된 연결로 주소를 바꾸는 프로토콜 설계가 필요한 chef 결정 사항)
 
 ## Later (phase 2 and beyond)
 

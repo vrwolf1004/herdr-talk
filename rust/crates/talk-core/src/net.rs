@@ -137,8 +137,12 @@ fn remember_peer(chat: &Chat, data: &[u8], ip: String) {
     let mut peers = chat.peers.lock().unwrap();
     if trusted {
         // Only refreshes an entry at the same address. A new address adds an entry; the old one stays as it was.
+        // Another pane on this PC (own key, local address) may rename itself, since its key is ours.
         if let Some(known) = peers.iter_mut().find(|known| known.id == id && known.port == port && known.ip == ip) {
             known.seen = Instant::now();
+            if key.as_deref() == Some(me.key.as_slice()) {
+                known.name = name;
+            }
             return;
         }
     } else if let Some(known) = peers.iter_mut().find(|known| known.id == id && known.port == port) {
@@ -546,6 +550,16 @@ mod tests {
         assert!(chat.peers.lock().unwrap().is_empty());
         remember_peer(&chat, packet.as_bytes(), "127.0.0.1".into());
         assert_eq!(chat.peers.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn another_pane_on_this_pc_can_rename_itself() {
+        let chat = Chat::new(Me { id: "me".into(), name: "Me".into(), port: 1, key: vec![7; 32], secret: vec![] });
+        let packet = |name: &str| json!({"app": APP, "id": store::peer_id(&[7; 32]), "name": name, "port": 9, "key": store::to_hex(&[7; 32])}).to_string();
+        remember_peer(&chat, packet("Old").as_bytes(), "127.0.0.1".into());
+        remember_peer(&chat, packet("New").as_bytes(), "127.0.0.1".into());
+        let peers = chat.peers.lock().unwrap();
+        assert_eq!((peers.len(), peers[0].name.as_str()), (1, "New"));
     }
 
     #[test]

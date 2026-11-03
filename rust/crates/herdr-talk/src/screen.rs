@@ -7,7 +7,7 @@ use crossterm::{cursor, execute, queue};
 use std::io::{self, Stdout, Write};
 use std::time::Duration;
 use talk_core::text::{char_width, wrap_line};
-use talk_core::{t, Chat, IDLE_LIMIT};
+use talk_core::{t, Chat, Line, IDLE_LIMIT};
 
 const POLL: Duration = Duration::from_millis(100);
 
@@ -47,6 +47,20 @@ fn tail(text: &str, cols: usize) -> String {
     fits(text.chars().rev(), cols).into_iter().rev().collect()
 }
 
+/// Screen rows of one chat line. A received message repeats its sender on every wrapped row,
+/// so a continuation row cannot pass for another sender. A sender too long to leave room for text is not repeated.
+fn rows_of(line: &Line, cols: usize) -> Vec<String> {
+    let Some(sender) = line.sender.as_ref().filter(|_| !line.mine) else {
+        return wrap_line(&line.render(), cols);
+    };
+    let prefix = format!("{sender}: ");
+    let room = cols.saturating_sub(char_width(&prefix));
+    if room < 8 {
+        return wrap_line(&line.render(), cols);
+    }
+    wrap_line(&line.text, room).into_iter().map(|row| format!("{prefix}{row}")).collect()
+}
+
 fn render(out: &mut Stdout, chat: &Chat, input: &str) -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
     let (cols, rows) = (cols.max(20), rows.max(5));
@@ -54,7 +68,7 @@ fn render(out: &mut Stdout, chat: &Chat, input: &str) -> io::Result<()> {
     let area = rows - 3;
     let mut wrapped = Vec::new();
     for line in chat.lines() {
-        wrapped.extend(wrap_line(&line.render(), width - 1).into_iter().map(|row| (row, line.mine)));
+        wrapped.extend(rows_of(&line, width - 1).into_iter().map(|row| (row, line.mine)));
     }
     let visible = &wrapped[wrapped.len().saturating_sub(usize::from(area))..];
 
@@ -136,6 +150,14 @@ pub fn run(chat: &Chat) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wrapped_rows_of_a_received_message_all_carry_the_sender() {
+        let line = Line { sender: Some("Bob (plain)".into()), text: "aaaa bbbb Alice: cccc dddd".into(), mine: false };
+        let rows = rows_of(&line, 24);
+        assert!(rows.len() > 1);
+        assert!(rows.iter().all(|row| row.starts_with("Bob (plain): ") && char_width(row) <= 24));
+    }
+
     use super::*;
     use talk_core::Me;
 
