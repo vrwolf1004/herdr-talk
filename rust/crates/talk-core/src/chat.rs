@@ -391,10 +391,33 @@ impl Chat {
         }
     }
 
+    /// Every way the name changes (/name, /lang, a clash found later) ends here, so one rule covers them all.
     fn rename(&self, new_name: String) {
         let old = std::mem::replace(&mut self.me.lock().unwrap().name, new_name.clone());
         self.say(t("name.changed", &[("old", &old), ("new", &new_name)]));
+        self.resolve_name_conflict();
     }
+
+    /// When a fresh peer has this chat's name and a smaller id, this chat gives the name up (the Python edition's
+    /// rule), so of two nodes only the one with the larger id renames. Both sides compute the same answer.
+    /// Two panes on one PC share an id (it comes from the key), so for equal ids the port decides the same way.
+    /// The new name is the old one with a number: Name2, then Name3 if that is taken too.
+    pub fn resolve_name_conflict(&self) {
+        let me = self.me.lock().unwrap().clone();
+        let peers = self.fresh_peers();
+        let beaten = peers.iter().any(|peer| peer.name == me.name && (peer.id.as_str(), peer.port) < (me.id.as_str(), me.port));
+        if beaten {
+            let taken: Vec<String> = peers.into_iter().map(|peer| peer.name).collect();
+            self.rename(numbered_name(&me.name, &taken));
+        }
+    }
+}
+
+/// The first 30 characters of the name with the lowest number from 2 up that is not in taken. Same rule as
+/// the Python edition's unique_name: a number already at the end stays (Room101 becomes Room1012).
+pub fn numbered_name(name: &str, taken: &[String]) -> String {
+    let base: String = name.chars().take(30).collect();
+    (2..).map(|number| format!("{base}{number}")).find(|candidate| !taken.contains(candidate)).expect("an unused number exists")
 }
 
 #[cfg(test)]
@@ -412,6 +435,72 @@ mod tests {
             key: None,
         }).collect();
         chat
+    }
+
+    /// A chat named `name` with the given id and port, that sees one fresh peer of the same name.
+    fn clashing(id: &str, port: u16, name: &str, peer_id: &str, peer_port: u16) -> Chat {
+        let chat = Chat::new(Me { id: id.into(), name: name.into(), port, key: vec![0; 32], secret: vec![1; 32] });
+        chat.peers.lock().unwrap().push(Peer { id: peer_id.into(), name: name.into(), ip: "10.0.0.1".into(), port: peer_port, seen: Instant::now(), key: None });
+        chat
+    }
+
+    fn my_name(chat: &Chat) -> String {
+        chat.me.lock().unwrap().name.clone()
+    }
+
+    #[test]
+    fn numbered_name_counts_up_and_keeps_a_trailing_number() {
+        let taken = |names: &[&str]| names.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(numbered_name("Jiho", &taken(&["Jiho"])), "Jiho2");
+        assert_eq!(numbered_name("Jiho", &taken(&["Jiho", "Jiho2"])), "Jiho3");
+        assert_eq!(numbered_name("Room101", &taken(&["Room101"])), "Room1012");
+        assert_eq!(numbered_name("Room101", &taken(&["Room101", "Room1012"])), "Room1013");
+        assert_eq!(numbered_name("Jiho2", &taken(&["Jiho2"])), "Jiho22");
+        assert_eq!(numbered_name("12", &taken(&[])), "122");
+        // Only the first 30 characters are kept, as in Python.
+        assert_eq!(numbered_name(&"x".repeat(32), &taken(&[])), format!("{}2", "x".repeat(30)));
+    }
+
+    #[test]
+    fn of_two_nodes_with_one_name_only_the_larger_id_renames() {
+        // Same cases as the Python edition's test: "aaa" keeps its name, "bbb" renames, whatever the ports.
+        let (low, high) = (clashing("aaa", 9, "Jiho", "bbb", 1), clashing("bbb", 1, "Jiho", "aaa", 9));
+        low.resolve_name_conflict();
+        high.resolve_name_conflict();
+        assert_eq!((my_name(&low), my_name(&high)), ("Jiho".to_string(), "Jiho2".to_string()));
+        // Once renamed there is no clash any more.
+        high.resolve_name_conflict();
+        assert_eq!(my_name(&high), "Jiho2");
+        // The same id (two panes on one PC) falls back to the port: the larger port renames.
+        let (low, high) = (clashing("k", 1, "Jiho", "k", 2), clashing("k", 2, "Jiho", "k", 1));
+        low.resolve_name_conflict();
+        high.resolve_name_conflict();
+        assert_eq!((my_name(&low), my_name(&high)), ("Jiho".to_string(), "Jiho2".to_string()));
+    }
+
+    #[test]
+    fn a_taken_number_is_skipped_and_a_stale_peer_does_not_count() {
+        let chat = clashing("b", 1, "Jiho", "a", 1);
+        chat.peers.lock().unwrap().push(Peer { id: "c".into(), name: "Jiho2".into(), ip: "10.0.0.3".into(), port: 1, seen: Instant::now(), key: None });
+        chat.resolve_name_conflict();
+        assert_eq!(my_name(&chat), "Jiho3");
+        let stale = clashing("b", 1, "Jiho", "a", 1);
+        stale.peers.lock().unwrap()[0].seen = Instant::now() - PEER_TIMEOUT;
+        stale.resolve_name_conflict();
+        assert_eq!(my_name(&stale), "Jiho");
+    }
+
+    #[test]
+    fn name_command_follows_the_same_rule() {
+        // /name onto a name a smaller-id node already uses: this one ends up numbered.
+        let chat = clashing("b", 1, "Other", "a", 1);
+        chat.peers.lock().unwrap()[0].name = "Alice".into();
+        chat.handle("/name Alice");
+        assert_eq!(my_name(&chat), "Alice2");
+        let keeps = clashing("a", 1, "Other", "b", 1);
+        keeps.peers.lock().unwrap()[0].name = "Alice".into();
+        keeps.handle("/name Alice");
+        assert_eq!(my_name(&keeps), "Alice");
     }
 
     fn keyed_peer(name: &str, key: &[u8]) -> Peer {

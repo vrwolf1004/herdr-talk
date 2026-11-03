@@ -6,6 +6,8 @@ description = "Chat with people on other PCs from inside herdr"
 
 [dependencies]
 crossterm = "0.28"
+ctrlc = { version = "3", features = ["termination"] }
 fastrand = "2"
+getrandom = "0.2"
 serde_json = "1"
 talk-core = { path = "../talk-core" }

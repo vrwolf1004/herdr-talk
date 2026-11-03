@@ -1,0 +1,603 @@
+//! Windows window for herdr-talk. It connects to a running `herdr-talk run` through its local
+//! control channel (127.0.0.1, token from control-<pid>.json) and shows the chat and peers.
+//! It does not join the network itself: the chat, encryption and trust stay in herdr-talk.
+//! It first tries every control file; with none that connects, it starts `herdr-talk serve` hidden,
+//! waits for its control file, and stops it again on exit. A herdr-talk that was already running is never stopped.
+
+#![windows_subsystem = "windows"]
+
+use eframe::egui;
+use serde_json::{json, Value};
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+const POLL: Duration = Duration::from_millis(500);
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
+const RETRY: Duration = Duration::from_secs(2);
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const MAX_STARTS: u32 = 3;
+// Status phases, in the order they show: no server of ours yet, our own serve connected, or the chat built into this window.
+const STATUS_STARTING: &str = "기존 서버 없음 → 자체 서버 실행 중";
+const STATUS_CONNECTED: &str = "자체 서버 연결됨";
+const STATUS_EMBEDDED: &str = "내장 모드로 실행 중";
+const START_WAIT: Duration = Duration::from_secs(10);
+const STOP_WAIT: Duration = Duration::from_secs(3);
+
+/// The `herdr-talk serve` this window started, if any.
+type Started = Arc<Mutex<Option<Child>>>;
+
+#[derive(Clone)]
+struct Control {
+    port: u16,
+    token: String,
+}
+
+#[derive(Default)]
+struct Shared {
+    status: String,
+    lines: Vec<(String, bool)>,
+    peers: Vec<String>,
+    /// This chat's own name and port. None until the chat says it (an older herdr-talk never does).
+    me: Option<(String, u16)>,
+}
+
+/// Which screen is shown. The connection work runs in the background on both.
+#[derive(Clone, Copy, PartialEq)]
+enum Screen {
+    Intro,
+    Chat,
+}
+
+struct App {
+    screen: Screen,
+    shared: Arc<Mutex<Shared>>,
+    outgoing: Sender<String>,
+    input: String,
+    theme: Choice,
+    hwnd: isize,
+    /// This PC's address on the network, shown with the own entry in the peer panel.
+    local_ip: String,
+    /// The theme the title bar was last colored for.
+    frame_theme: Option<Choice>,
+}
+
+/// The address this PC uses to reach the network. Connecting a UDP socket sends nothing; it only picks the address.
+fn local_ip() -> String {
+    std::net::UdpSocket::bind(("0.0.0.0", 0))
+        .and_then(|socket| socket.connect(("192.0.2.1", 9)).and_then(|()| socket.local_addr()))
+        .map_or_else(|_| "127.0.0.1".to_string(), |address| address.ip().to_string())
+}
+
+fn state_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("HERDR_PLUGIN_STATE_DIR").filter(|dir| !dir.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default();
+    base.join("herdr-talk")
+}
+
+fn read_control(file: &Path) -> Option<Control> {
+    let value: Value = serde_json::from_str(&fs::read_to_string(file).ok()?).ok()?;
+    Some(Control {
+        port: u16::try_from(value["port"].as_u64()?).ok()?,
+        token: value["token"].as_str()?.to_string(),
+    })
+}
+
+struct Link {
+    writer: TcpStream,
+    reader: BufReader<TcpStream>,
+}
+
+impl Link {
+    fn open(control: &Control) -> std::io::Result<Self> {
+        let address = SocketAddr::from(([127, 0, 0, 1], control.port));
+        let stream = TcpStream::connect_timeout(&address, IO_TIMEOUT)?;
+        stream.set_read_timeout(Some(IO_TIMEOUT))?;
+        stream.set_write_timeout(Some(IO_TIMEOUT))?;
+        let mut link = Link { writer: stream.try_clone()?, reader: BufReader::new(stream) };
+        let answer = link.call(&json!({"token": control.token}))?;
+        if answer["ok"] != true {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "token refused"));
+        }
+        Ok(link)
+    }
+
+    fn call(&mut self, request: &Value) -> std::io::Result<Value> {
+        self.writer.write_all(format!("{request}\n").as_bytes())?;
+        let mut line = String::new();
+        if self.reader.read_line(&mut line)? == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "herdr-talk closed the connection"));
+        }
+        serde_json::from_str(&line).map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    }
+}
+
+/// Where herdr-talk.exe may be, in the order they are tried: next to this program, HERDR_TALK_EXE,
+/// the repository build (rust/target/release), then the herdr plugin install: the newest of
+/// %APPDATA%/herdr/plugins/github-installations/herdr-talk-*/*/checkout/rust/bin.
+fn talk_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+        paths.push(dir.join("herdr-talk.exe"));
+    }
+    if let Some(path) = std::env::var_os("HERDR_TALK_EXE").filter(|path| !path.is_empty()) {
+        paths.push(PathBuf::from(path));
+    }
+    paths.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("rust").join("target").join("release").join("herdr-talk.exe"));
+    let installs = std::env::var_os("APPDATA").map(|base| PathBuf::from(base).join("herdr").join("plugins").join("github-installations"));
+    let mut installed: Vec<PathBuf> = installs.iter()
+        .flat_map(|dir| fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("herdr-talk-"))
+        .flat_map(|entry| fs::read_dir(entry.path()).into_iter().flatten().flatten())
+        .map(|version| version.path().join("checkout").join("rust").join("bin").join("herdr-talk.exe"))
+        .collect();
+    installed.sort_by_key(|path| std::cmp::Reverse(fs::metadata(path).and_then(|meta| meta.modified()).ok()));
+    paths.extend(installed);
+    paths
+}
+
+/// The first candidate that exists. Err names every path that was looked at.
+fn talk_program() -> Result<PathBuf, String> {
+    let candidates = talk_candidates();
+    candidates.iter().find(|path| path.is_file()).cloned().ok_or_else(|| {
+        let looked: Vec<String> = candidates.iter().map(|path| path.display().to_string()).collect();
+        format!("herdr-talk.exe 를 찾지 못함. 확인한 경로: {}", looked.join(" | "))
+    })
+}
+
+/// Ask the child to end, which removes its control file, and kill it only if it does not.
+fn stop_serve(started: &Started) {
+    let Some(mut child) = started.lock().unwrap().take() else { return };
+    let file = control_file(&state_dir(), child.id());
+    if let Some(Ok(mut link)) = read_control(&file).map(|control| Link::open(&control)) {
+        let _ = link.call(&json!({"cmd": "shutdown"}));
+    }
+    let deadline = std::time::Instant::now() + STOP_WAIT;
+    while std::time::Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Start `herdr-talk serve` unless one of ours is alive. Err is the reason it cannot be started.
+fn ensure_serve(started: &Started, starts: &mut u32) -> Result<(), String> {
+    let mut child = started.lock().unwrap();
+    if child.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(Some(_)))) {
+        *child = None;
+    }
+    if child.is_some() {
+        return Ok(());
+    }
+    if *starts >= MAX_STARTS {
+        return Err(format!("herdr-talk serve 가 {MAX_STARTS}번 시작해도 바로 종료됨"));
+    }
+    *starts += 1;
+    let program = talk_program()?;
+    let spawned = Command::new(&program).arg("serve").creation_flags(CREATE_NO_WINDOW).spawn()
+        .map_err(|error| format!("herdr-talk 를 실행하지 못함 ({error})"))?;
+    *child = Some(spawned);
+    Ok(())
+}
+
+fn set_status(shared: &Arc<Mutex<Shared>>, text: &str) {
+    shared.lock().unwrap().status = text.to_string();
+}
+
+/// Connect to the serve this window started, through its own control file. Another window's serve or a
+/// herdr-talk pane is never used, so every window is a node of its own.
+fn connect_own(dir: &Path, started: &Started) -> Option<(Link, Control)> {
+    let pid = started.lock().unwrap().as_ref()?.id();
+    let control = read_control(&control_file(dir, pid))?;
+    Link::open(&control).ok().map(|link| (link, control))
+}
+
+fn control_file(dir: &Path, pid: u32) -> PathBuf {
+    dir.join(format!("control-{pid}.json"))
+}
+
+/// Worker, first choice: start `herdr-talk serve` hidden and connect to it.
+/// When that fails (program missing, no control file in time), the chat runs inside this window instead.
+fn worker(shared: Arc<Mutex<Shared>>, outgoing: Receiver<String>, started: Started) {
+    let dir = state_dir();
+    let (mut starts, mut waiting_since) = (0, None);
+    loop {
+        let Some((mut link, control)) = connect_own(&dir, &started) else {
+            let since = *waiting_since.get_or_insert_with(std::time::Instant::now);
+            let failure = match ensure_serve(&started, &mut starts) {
+                Err(reason) => Some(reason),
+                Ok(()) if since.elapsed() > START_WAIT => Some(format!("{}초 안에 연결되지 않음", START_WAIT.as_secs())),
+                Ok(()) => None,
+            };
+            if let Some(reason) = failure {
+                run_embedded(&shared, &outgoing, &started, &reason);
+            }
+            set_status(&shared, STATUS_STARTING);
+            thread::sleep(Duration::from_millis(500));
+            continue;
+        };
+        waiting_since = None;
+        set_status(&shared, &format!("{STATUS_CONNECTED} (port {})", control.port));
+        if let Err(error) = session(&mut link, &shared, &outgoing) {
+            set_status(&shared, &format!("연결 끊김: {error}"));
+        }
+        thread::sleep(RETRY);
+    }
+}
+
+/// Second choice: the chat runs in this process through talk-core. It does not go back to herdr-talk
+/// later (a control file that appears afterwards is not picked up).
+fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, started: &Started, reason: &str) -> ! {
+    stop_serve(started); // a serve that is only late would be a second chat on this PC
+    let chat = loop {
+        let state = talk_core::store::state_dir();
+        match talk_core::net::start_in(None, 0, talk_core::UDP_PORT, &state, talk_core::store::plaintext_allowed()) {
+            Ok(chat) => break chat,
+            Err(error) => {
+                set_status(shared, &format!("내장 모드를 시작하지 못함: {error} (herdr-talk 실패: {reason})"));
+                thread::sleep(RETRY);
+            }
+        }
+    };
+    set_status(shared, &format!("{STATUS_EMBEDDED} (herdr-talk 실패: {reason})"));
+    loop {
+        while let Ok(text) = outgoing.try_recv() {
+            chat.handle(&text);
+        }
+        let mut state = shared.lock().unwrap();
+        state.lines = chat.lines().into_iter().map(|line| (line.render(), line.mine)).collect();
+        state.me = {
+            let me = chat.me.lock().unwrap();
+            Some((me.name.clone(), me.port))
+        };
+        state.peers = chat.fresh_peers().iter().map(|peer| format!("{} ({}:{})", peer.name, peer.ip, peer.port)).collect();
+        drop(state);
+        thread::sleep(POLL);
+    }
+}
+
+fn session(link: &mut Link, shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>) -> std::io::Result<()> {
+    loop {
+        while let Ok(text) = outgoing.try_recv() {
+            let answer = link.call(&json!({"cmd": "send", "text": text}))?;
+            if answer["ok"] != true {
+                set_status(shared, &format!("보내기 실패: {}", answer["error"]));
+            }
+        }
+        let lines = link.call(&json!({"cmd": "lines"}))?;
+        let peers = link.call(&json!({"cmd": "peers"}))?;
+        let mut state = shared.lock().unwrap();
+        state.lines = lines["lines"].as_array().into_iter().flatten()
+            .map(|row| (row["text"].as_str().unwrap_or("").to_string(), row["mine"] == true))
+            .collect();
+        state.me = peers["me"]["name"].as_str().zip(peers["me"]["port"].as_u64().and_then(|port| u16::try_from(port).ok()))
+            .map(|(name, port)| (name.to_string(), port));
+        state.peers = peers["peers"].as_array().into_iter().flatten()
+            .map(|peer| format!("{} ({}:{})", peer["name"].as_str().unwrap_or("?"), peer["ip"].as_str().unwrap_or("?"), peer["port"]))
+            .collect();
+        drop(state);
+        thread::sleep(POLL);
+    }
+}
+
+/// How a status text is shown: a short label, and its kind.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Ok,
+    Pending,
+    Problem,
+}
+
+fn status_label(status: &str) -> (&'static str, Kind) {
+    if status.starts_with(STATUS_CONNECTED) {
+        ("자체 서버 연결됨", Kind::Ok)
+    } else if status.starts_with(STATUS_EMBEDDED) {
+        ("내장 모드", Kind::Ok)
+    } else if status == STATUS_STARTING {
+        ("자체 서버 실행 중…", Kind::Pending)
+    } else {
+        ("연결 문제", Kind::Problem)
+    }
+}
+
+impl App {
+    /// First screen: name, one line about the app, the connection state, and the button into the chat.
+    fn intro(&mut self, ctx: &egui::Context, palette: &Palette, status: &str) {
+        let (label, kind) = status_label(status);
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(ui.available_height() * 0.22);
+                ui.colored_label(palette.accent, egui::RichText::new("herdr-talk").size(36.0));
+                ui.add_space(8.0);
+                ui.label("같은 네트워크의 PC들과 서버 없이 바로 채팅합니다. 메시지는 저장되지 않습니다.");
+                ui.add_space(28.0);
+                let color = match kind {
+                    Kind::Ok => palette.accent,
+                    Kind::Pending => palette.muted,
+                    Kind::Problem => palette.danger,
+                };
+                ui.colored_label(color, egui::RichText::new(label).size(18.0));
+                ui.colored_label(palette.muted, status);
+                ui.add_space(28.0);
+                if ui.add(egui::Button::new(egui::RichText::new("입장").size(18.0)).min_size(egui::vec2(160.0, 40.0))).clicked() {
+                    self.screen = Screen::Chat;
+                }
+            });
+        });
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint_after(POLL);
+        // eframe may re-apply the OS theme's visuals, so the chosen theme's colors are set every frame.
+        let palette = palette(self.theme);
+        ctx.set_visuals(visuals(&palette, ctx.theme()));
+        if self.frame_theme != Some(self.theme) {
+            style_frame(self.hwnd, &palette);
+            self.frame_theme = Some(self.theme);
+        }
+        if self.screen == Screen::Intro {
+            let status = self.shared.lock().unwrap().status.clone();
+            self.intro(ctx, &palette, &status);
+            return;
+        }
+        let state = self.shared.lock().unwrap();
+        egui::TopBottomPanel::top("status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let color = match status_label(&state.status).1 {
+                    Kind::Ok => palette.accent,
+                    Kind::Pending => palette.muted,
+                    Kind::Problem => palette.danger,
+                };
+                ui.colored_label(color, &state.status);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    egui::ComboBox::from_id_salt("theme")
+                        .selected_text(self.theme.name())
+                        .show_ui(ui, |ui| {
+                            for choice in [Choice::Dark, Choice::Light, Choice::Amber, Choice::Green] {
+                                ui.selectable_value(&mut self.theme, choice, choice.name());
+                            }
+                        });
+                });
+            });
+        });
+        ctx.set_theme(self.theme.preference());
+        egui::SidePanel::right("peers").default_width(220.0).show(ctx, |ui| {
+            ui.colored_label(palette.accent, egui::RichText::new("피어").heading());
+            if let Some((name, port)) = &state.me {
+                ui.colored_label(palette.accent, format!("{name} (나)"));
+                ui.colored_label(palette.accent, format!("{}:{port}", self.local_ip));
+                ui.separator();
+            }
+            if state.peers.is_empty() {
+                ui.label("상대 없음");
+            }
+            for peer in &state.peers {
+                ui.label(peer);
+            }
+        });
+        egui::TopBottomPanel::bottom("input").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let response = ui.add(egui::TextEdit::singleline(&mut self.input).desired_width(ui.available_width() - 70.0));
+                let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                let clicked = ui.button("보내기").clicked();
+                if (enter || clicked) && !self.input.trim().is_empty() {
+                    let _ = self.outgoing.send(std::mem::take(&mut self.input));
+                }
+                if enter {
+                    response.request_focus();
+                }
+            });
+        });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
+                for (text, mine) in &state.lines {
+                    let color = if *mine { palette.mine } else { palette.text };
+                    ui.colored_label(color, text);
+                }
+            });
+        });
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    let shared = Arc::new(Mutex::new(Shared { status: STATUS_STARTING.into(), ..Default::default() }));
+    let (outgoing, queue) = mpsc::channel();
+    let started: Started = Arc::default();
+    {
+        let (shared, started) = (shared.clone(), started.clone());
+        thread::spawn(move || worker(shared, queue, started));
+    }
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 520.0]).with_title("herdr-talk"),
+        ..Default::default()
+    };
+    let result = eframe::run_native(
+        "herdr-talk",
+        options,
+        Box::new(|cc| {
+            install_korean_font(&cc.egui_ctx);
+            let hwnd = window_hwnd(cc);
+            cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
+            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Dark, hwnd, local_ip: local_ip(), frame_theme: None }))
+        }),
+    );
+    stop_serve(&started);
+    result
+}
+
+/// This window's HWND, or 0 when it cannot be read.
+fn window_hwnd(cc: &eframe::CreationContext<'_>) -> isize {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match cc.window_handle().map(|handle| handle.as_raw()) {
+        Ok(RawWindowHandle::Win32(win32)) => win32.hwnd.get(),
+        _ => 0,
+    }
+}
+
+/// One DWM window attribute. The result is ignored: Windows before 11 (22H2 for the colors) refuses
+/// attributes it does not know, and the window then keeps its default look.
+fn set_dwm(hwnd: isize, attribute: i32, value: u32) {
+    if hwnd == 0 {
+        return;
+    }
+    // SAFETY: hwnd is this window's, and the value is a u32 of the size passed.
+    unsafe {
+        windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd as windows_sys::Win32::Foundation::HWND,
+            attribute as u32,
+            std::ptr::from_ref(&value).cast(),
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+}
+
+/// COLORREF is 0x00BBGGRR.
+fn colorref(color: egui::Color32) -> u32 {
+    u32::from(color.r()) | u32::from(color.g()) << 8 | u32::from(color.b()) << 16
+}
+
+/// Square outer corners (Windows 11 rounds them), and the title bar in the theme's colors.
+fn style_frame(hwnd: isize, palette: &Palette) {
+    const CORNER_PREFERENCE: i32 = 33;
+    const BORDER_COLOR: i32 = 34;
+    const CAPTION_COLOR: i32 = 35;
+    const TEXT_COLOR: i32 = 36;
+    const DO_NOT_ROUND: u32 = 1;
+    set_dwm(hwnd, CORNER_PREFERENCE, DO_NOT_ROUND);
+    set_dwm(hwnd, CAPTION_COLOR, colorref(palette.background));
+    set_dwm(hwnd, TEXT_COLOR, colorref(palette.text));
+    set_dwm(hwnd, BORDER_COLOR, colorref(palette.border));
+}
+
+struct Palette {
+    background: egui::Color32,
+    panel: egui::Color32,
+    border: egui::Color32,
+    text: egui::Color32,
+    muted: egui::Color32,
+    accent: egui::Color32,
+    accent_dark: egui::Color32,
+    accent_light: egui::Color32,
+    mine: egui::Color32,
+    danger: egui::Color32,
+}
+
+/// The color themes the select offers. The look (square corners, 1px borders, flat) is the same for all.
+#[derive(Clone, Copy, PartialEq)]
+enum Choice {
+    Dark,
+    Light,
+    Amber,
+    Green,
+}
+
+impl Choice {
+    fn name(self) -> &'static str {
+        match self {
+            Choice::Dark => "Dark",
+            Choice::Light => "Light",
+            Choice::Amber => "Amber",
+            Choice::Green => "Green",
+        }
+    }
+
+    /// The egui base the palette is laid over: Light on light neutrals, the rest on the dark base.
+    fn preference(self) -> egui::ThemePreference {
+        match self {
+            Choice::Light => egui::ThemePreference::Light,
+            Choice::Dark | Choice::Amber | Choice::Green => egui::ThemePreference::Dark,
+        }
+    }
+}
+
+const fn rgb(hex: u32) -> egui::Color32 {
+    egui::Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+}
+
+/// Dark: the colors of chromeExt-PicHunter (src/popup.css). Light: PicHunter has none, so this is the
+/// same blue accent on light neutrals. Amber and Green: phosphor text on black.
+fn palette(choice: Choice) -> Palette {
+    match choice {
+        Choice::Dark => Palette {
+            background: rgb(0x1a1a2e), panel: rgb(0x16213e), border: rgb(0x2a3a5c), text: rgb(0xe0e0e0), muted: rgb(0xb0bec5),
+            accent: rgb(0x4fc3f7), accent_dark: rgb(0x0288d1), accent_light: rgb(0x81d4fa), mine: rgb(0x81d4fa), danger: rgb(0xe57373),
+        },
+        Choice::Light => Palette {
+            background: rgb(0xf5f7fa), panel: rgb(0xffffff), border: rgb(0xcfd8dc), text: rgb(0x1a1a2e), muted: rgb(0x546e7a),
+            accent: rgb(0x0277bd), accent_dark: rgb(0x0288d1), accent_light: rgb(0x4fc3f7), mine: rgb(0x01579b), danger: rgb(0xc62828),
+        },
+        Choice::Amber => Palette {
+            background: rgb(0x000000), panel: rgb(0x0d0900), border: rgb(0x7a5400), text: rgb(0xffb000), muted: rgb(0xb37a00),
+            accent: rgb(0xffd24d), accent_dark: rgb(0x8a5f00), accent_light: rgb(0xffe08a), mine: rgb(0xffd24d), danger: rgb(0xff5533),
+        },
+        Choice::Green => Palette {
+            background: rgb(0x000000), panel: rgb(0x00100a), border: rgb(0x1a7a36), text: rgb(0x33ff66), muted: rgb(0x1fa040),
+            accent: rgb(0x99ffb3), accent_dark: rgb(0x14802f), accent_light: rgb(0xccffd9), mine: rgb(0x99ffb3), danger: rgb(0xff5555),
+        },
+    }
+}
+
+/// The palette's colors on egui's dark or light base: square corners, 1px borders, no shadows, no hover growth.
+fn visuals(palette: &Palette, theme: egui::Theme) -> egui::Visuals {
+    let mut visuals = match theme {
+        egui::Theme::Dark => egui::Visuals::dark(),
+        egui::Theme::Light => egui::Visuals::light(),
+    };
+    let white = egui::Color32::WHITE;
+    visuals.panel_fill = palette.background;
+    visuals.window_fill = palette.background;
+    visuals.extreme_bg_color = palette.panel;
+    visuals.override_text_color = Some(palette.text);
+    visuals.hyperlink_color = palette.accent;
+    visuals.selection.bg_fill = palette.accent_dark;
+    visuals.selection.stroke = egui::Stroke::new(1.0_f32, white);
+    let rounding = egui::CornerRadius::ZERO;
+    visuals.window_corner_radius = rounding;
+    visuals.menu_corner_radius = rounding;
+    visuals.window_shadow = egui::Shadow::NONE;
+    visuals.popup_shadow = egui::Shadow::NONE;
+    for widget in [&mut visuals.widgets.noninteractive, &mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active, &mut visuals.widgets.open] {
+        widget.corner_radius = rounding;
+        widget.expansion = 0.0;
+    }
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, palette.border);
+    visuals.widgets.inactive.weak_bg_fill = palette.panel;
+    visuals.widgets.inactive.bg_fill = palette.panel;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, palette.border);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, palette.muted);
+    visuals.widgets.hovered.weak_bg_fill = palette.border;
+    visuals.widgets.hovered.bg_fill = palette.border;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, palette.accent);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, palette.text);
+    visuals.widgets.active.weak_bg_fill = palette.accent_dark;
+    visuals.widgets.active.bg_fill = palette.accent_dark;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, palette.accent_light);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, white);
+    visuals
+}
+
+/// egui's built-in fonts have no Hangul. Add a Windows system font as fallback for all families.
+fn install_korean_font(ctx: &egui::Context) {
+    let candidates = ["C:\\Windows\\Fonts\\malgun.ttf", "C:\\Windows\\Fonts\\gulim.ttc"];
+    let Some(bytes) = candidates.iter().find_map(|path| fs::read(path).ok()) else { return };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("korean".to_owned(), egui::FontData::from_owned(bytes).into());
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("korean".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}

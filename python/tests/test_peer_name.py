@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -119,6 +120,47 @@ class JoinNameMatchesSenderTest(CollectSayTest):
         packet = json.dumps({"app": talk.APP, "id": "p9", "name": raw, "port": 1}).encode("utf-8")
         talk._listen_loop(FakeSocket([packet]), chat)
         self.assertEqual(chat.peers["p9"]["name"], talk.clean_text(raw, 32))
+
+
+class NameClashTest(CollectSayTest):
+    def make_chat(self, my_id, name):
+        chat = talk.Chat({"id": my_id, "name": name, "port": 1})
+        return chat
+
+    def add_peer(self, chat, pid, name):
+        chat.peers[pid] = {"name": name, "ip": "10.0.0.9", "port": 2, "seen": time.time()}
+
+    def test_unique_name_adds_the_smallest_free_number(self):
+        self.assertEqual(talk.unique_name("지호", {"지호"}), "지호2")
+        self.assertEqual(talk.unique_name("지호", {"지호", "지호2"}), "지호3")
+
+    def test_unique_name_is_capped_at_the_name_limit(self):
+        self.assertLessEqual(len(talk.unique_name("가" * 40, set())), 32)
+
+    def test_smaller_id_keeps_its_name_and_larger_id_renames(self):
+        small = self.make_chat("aaa", "지호")
+        self.add_peer(small, "bbb", "지호")
+        self.assertIsNone(talk.resolve_name_clash(small))
+        self.assertEqual(small.me["name"], "지호")
+
+        large = self.make_chat("bbb", "지호")
+        self.add_peer(large, "aaa", "지호")
+        self.assertEqual(talk.resolve_name_clash(large), ("지호", "지호2"))
+        self.assertEqual(large.me["name"], "지호2")
+        # Once renamed there is no clash any more.
+        self.assertIsNone(talk.resolve_name_clash(large))
+
+    def test_clash_with_a_stale_peer_is_ignored(self):
+        chat = self.make_chat("bbb", "지호")
+        chat.peers["aaa"] = {"name": "지호", "ip": "10.0.0.9", "port": 2, "seen": time.time() - 999}
+        self.assertIsNone(talk.resolve_name_clash(chat))
+
+    def test_listener_renames_the_larger_id_when_an_announcement_clashes(self):
+        chat = self.make_chat("bbb", "지호")
+        packet = json.dumps({"app": "herdr-talk", "id": "aaa", "name": "지호", "port": 1234}).encode("utf-8")
+        talk._listen_loop(FakeSocket([packet]), chat)
+        self.assertEqual(chat.me["name"], "지호2")
+        self.assertTrue(any("지호2" in line for line in self.lines))
 
 
 if __name__ == "__main__":

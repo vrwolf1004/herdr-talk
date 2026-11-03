@@ -1,5 +1,6 @@
 //! herdr-talk: chat between PCs on the same network, as a herdr plugin.
 
+mod control;
 mod dock;
 mod herdr_api;
 mod screen;
@@ -17,7 +18,7 @@ const DOCK_REPORT: Duration = Duration::from_secs(2);
 const DOCK_TOKEN_TTL_MS: u64 = 15_000;
 const AGENT_ID: &str = "talk";
 const SOURCE: &str = "plugin:herdr-talk";
-const USAGE: &str = "usage: herdr-talk <run [--name NAME] [--tcp-port N] [--udp-port N] [--dock] [--pane ID] | open | dock-start | dock-stop>";
+const USAGE: &str = "usage: herdr-talk <run [--name NAME] [--tcp-port N] [--udp-port N] [--dock] [--pane ID] | serve [--name NAME] [--tcp-port N] [--udp-port N] | open | dock-start | dock-stop>";
 
 #[derive(Default)]
 struct RunArgs {
@@ -86,6 +87,7 @@ fn run(args: RunArgs) -> Result<(), String> {
         let (pane, chat) = (pane.clone(), chat.clone());
         thread::spawn(move || keep_dock_block(pane, chat));
     }
+    let _control = control::serve(chat.clone(), &talk_core::store::state_dir(), false).map_err(|error| error.to_string())?;
     let me = chat.me.lock().unwrap().clone();
     chat.say(t("start.hello", &[("name", &me.name), ("port", &me.port.to_string())]));
     let result = screen::run(&chat).map_err(|error| error.to_string());
@@ -95,6 +97,25 @@ fn run(args: RunArgs) -> Result<(), String> {
         dock::release_dock_pane(DOCK_KEY)?;
     }
     result
+}
+
+/// Chat without a screen, for a GUI: only the control channel runs. Ends on Ctrl+C, a termination
+/// signal, or a `shutdown` request, and removes the control file on the way out.
+fn serve(args: RunArgs) -> Result<(), String> {
+    if args.dock || args.pane.is_some() {
+        return Err("serve has no dock: --dock and --pane belong to run".to_string());
+    }
+    let chat = start(args.name, args.tcp_port.unwrap_or(0), args.udp_port.unwrap_or(UDP_PORT)).map_err(|error| error.to_string())?;
+    let control = control::serve(chat.clone(), &talk_core::store::state_dir(), true).map_err(|error| error.to_string())?;
+    let signalled = chat.clone();
+    ctrlc::set_handler(move || signalled.stop.set()).map_err(|error| error.to_string())?;
+    let me = chat.me.lock().unwrap().clone();
+    chat.say(t("start.hello", &[("name", &me.name), ("port", &me.port.to_string())]));
+    while !chat.stop.is_set() {
+        chat.stop.wait(Duration::from_secs(1));
+    }
+    drop(control);
+    Ok(())
 }
 
 fn dock_start() -> Result<(), String> {
@@ -132,6 +153,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("run") => parse_run(&args[1..]).and_then(run),
+        Some("serve") => parse_run(&args[1..]).and_then(serve),
         Some("open") => open_chat(),
         Some("dock-start") => dock_start(),
         Some("dock-stop") => dock_stop(),

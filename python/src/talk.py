@@ -16,6 +16,7 @@ Commands (typed in the input line)
 """
 
 import argparse
+import itertools
 import json
 import locale
 import os
@@ -78,6 +79,27 @@ def pick_name(names, taken=()):
     """Random name that is not in taken. If every name is taken, fall back to the whole list."""
     free = [name for name in names if name not in taken]
     return random.choice(free or names)
+
+
+def unique_name(base, taken):
+    """base with the smallest number from 2 that is not in taken, e.g. 지호 -> 지호2."""
+    for number in itertools.count(2):
+        candidate = f"{base[:30]}{number}"
+        if candidate not in taken:
+            return candidate
+
+
+def resolve_name_clash(chat):
+    """If a fresh peer uses our name and has the smaller id, rename this instance.
+    Only one side renames (the one with the larger id), so both never change at once.
+    Returns (old, new) when renamed, else None."""
+    peers = chat.fresh_peers()
+    name = chat.me["name"]
+    if not any(info["name"] == name and pid < chat.me["id"] for pid, info in peers.items()):
+        return None
+    new = unique_name(name, {info["name"] for info in peers.values()} | {name})
+    chat.me["name"] = new
+    return name, new
 
 
 def default_name(taken=()):
@@ -252,6 +274,10 @@ def _listen_loop(sock, chat):
             }
         if is_new:
             say(t("peer.joined", name=name, ip=addr[0]))
+        if name == chat.me["name"]:
+            renamed = resolve_name_clash(chat)
+            if renamed:
+                say(t("name.changed", old=renamed[0], new=renamed[1]))
 
 
 def receive_messages(server):
@@ -573,6 +599,11 @@ def run(args):
     if args.dock:
         herdr_api.try_request("pane.report_agent", {"pane_id": args.pane, "source": SOURCE, "agent": AGENT_ID, "state": "idle"})
         threading.Thread(target=keep_dock_block, args=(args.pane, chat), daemon=True).start()
+    # Wait one announce cycle so peers that are already here are known before the name is final.
+    STOP.wait(ANNOUNCE_SECONDS + 0.5)
+    renamed = resolve_name_clash(chat)
+    if renamed:
+        say(t("name.changed", old=renamed[0], new=renamed[1]))
     say(t("start.hello", name=me["name"], port=me["port"]))
     try:
         return run_ansi(chat)

@@ -88,6 +88,8 @@ fn announce(udp_port: u16, chat: Arc<Chat>) {
     if socket.set_broadcast(true).is_err() {
         return;
     }
+    chat.stop.wait(NAME_SETTLE);
+    chat.resolve_name_conflict();
     while !chat.stop.is_set() {
         let me = chat.me.lock().unwrap().clone();
         let payload = json!({"app": APP, "id": me.id, "name": me.name, "port": me.port, "key": store::to_hex(&me.key)}).to_string();
@@ -108,7 +110,16 @@ fn listen_for_peers(socket: UdpSocket, chat: Arc<Chat>) {
     }
 }
 
+/// How long a new chat listens for announcements before it announces itself, so a name that clashes with a
+/// peer already there is settled first. Peers announce every ANNOUNCE_INTERVAL, so this covers one round.
+const NAME_SETTLE: Duration = Duration::from_millis(2100);
+
 fn remember_peer(chat: &Chat, data: &[u8], ip: String) {
+    remember_peer_inner(chat, data, ip);
+    chat.resolve_name_conflict();
+}
+
+fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
     let Ok(info) = serde_json::from_slice::<Value>(data) else { return };
     let id = info.get("id").and_then(Value::as_str).unwrap_or("");
     let port = info.get("port").and_then(Value::as_u64).and_then(|port| u16::try_from(port).ok()).unwrap_or(0);
@@ -560,6 +571,16 @@ mod tests {
         remember_peer(&chat, packet("New").as_bytes(), "127.0.0.1".into());
         let peers = chat.peers.lock().unwrap();
         assert_eq!((peers.len(), peers[0].name.as_str()), (1, "New"));
+    }
+
+    #[test]
+    fn announcement_with_my_name_from_a_smaller_id_renames_me() {
+        let chat = Chat::new(Me { id: "m".into(), name: "Bob".into(), port: 1, key: vec![], secret: vec![] });
+        let packet = |id: &str| json!({"app": APP, "id": id, "name": "Bob", "port": 9}).to_string();
+        remember_peer(&chat, packet("z").as_bytes(), "10.0.0.5".into()); // larger id: that node renames, not me
+        assert_eq!(chat.me.lock().unwrap().name, "Bob");
+        remember_peer(&chat, packet("a").as_bytes(), "10.0.0.6".into());
+        assert_eq!(chat.me.lock().unwrap().name, "Bob2");
     }
 
     #[test]
