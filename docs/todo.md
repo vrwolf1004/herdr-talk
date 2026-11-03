@@ -54,7 +54,7 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 
 ## Docs and release
 
-- [ ] **First Rust release.** Push tag `v0.7.0`, then check the release workflow, both install scripts, and `herdr plugin install` on Windows, Linux and macOS. Until then the GitHub install fails.
+- [ ] **First Rust release.** Push tag `v0.7.0`, then check the release workflow, both install scripts, and `herdr plugin install` on Windows, Linux and macOS. Until then the GitHub install fails. (2026-11-03 푸시 전 준비 확인: 매니페스트 2개·Cargo 버전 모두 0.7.0, 원격 태그 없음. `cargo build --release --locked` 와 `cargo test --workspace --locked` 통과(62개+11개), `install.sh` 문법 확인, `release.yml` 에 고정된 두 액션 SHA 가 실제 태그 `v4.4.0`·`v1` 과 일치, 설치 스크립트의 아카이브·체크섬 이름이 workflow 설정과 같음. **못 한 것:** 태그 푸시는 chef 승인 대기, 그래서 release workflow 실행·릴리스 자산·`herdr plugin install` Windows/Linux/macOS 는 미확인. 푸시 후 확인할 것: 5개 타깃 빌드, `sign` 단계 경고만 나오는지, draft 가 publish 되는지)
 - [ ] **Check the Rust version on real setups.** Linux and macOS build and run, a chat between two PCs, the `open` action, and `herdr plugin link`. (이 PC(Windows): `open` 은 가짜 herdr CLI로 분할·실행 호출 순서를 확인, `plugin link --disabled` 로 액션 3개 등록 확인 후 unlink. 실제 herdr 세션에서 실행, 두 PC 채팅, Linux/macOS 는 미확인)
 - [x] **Keep `release.yml` actions updated.** `upload-rust-binary-action` is pinned to a commit SHA; add Dependabot. (`.github/dependabot.yml` 추가, github-actions 주간. 푸시 후 적용)
 - [x] **Build from source at install.** When `cargo` is found, let the installers offer a source build instead of the release binary, for people who avoid downloaded executables. (`HERDR_TALK_BUILD_FROM_SOURCE=1` 이면 `rust/herdr/install.sh`, `install.ps1` 가 소스 빌드. `cargo` 가 없으면 중단. 이 PC에서 두 스크립트 모두 확인)
