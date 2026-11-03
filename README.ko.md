@@ -46,6 +46,25 @@ Python 판은 평문만 보냅니다. Rust 판과 대화하려면 Rust 쪽 `conf
 
 herdr pane 안에서 액션을 실행해야 합니다. 직접 pane을 여는 방법, 채팅 명령, 네트워크 요구 사항은 [사용법](docs/usage.ko.md)을 참고하세요.
 
+## 헤드리스 모드와 제어 채널
+
+`herdr-talk serve`는 화면 없이 채팅을 실행합니다. GUI나 다른 로컬 프로그램이 쓰기 위한 모드이며, Ctrl+C, 종료 신호, `shutdown` 요청 중 하나로 끝납니다.
+
+`run`과 `serve`는 모두 로컬 제어 채널을 엽니다. `127.0.0.1`의 TCP 포트이고 실행마다 새로 만드는 토큰으로 보호합니다. 포트와 토큰은 상태 폴더의 `control-<pid>.json`에 쓰이며(현재 사용자만 읽을 수 있음), 채팅이 끝나면 지워집니다. 명령은 `lines`, `peers`, `send`이고 `serve`는 `shutdown`도 받습니다. [설정](docs/configuration.md#control-channel)을 참고하세요.
+
+## Windows GUI
+
+`gui/`는 채팅을 자체 창으로 보여 주는 별도의 Windows 앱입니다(Rust, eframe). 먼저 `herdr-talk serve`를 숨겨서 실행해 연결을 시도하고, 실패하면 창 안에서 채팅을 직접 실행합니다(내장 모드). 처음에는 입장 버튼이 있는 소개 화면이 나옵니다. 창마다 독립된 채팅 노드입니다. 상단 바에서 테마(Dark, Light, Amber, Green)를 고르고 CRT 체크박스(기본 켜짐: 스캔라인과 베젤)를 켜고 끌 수 있습니다. 글꼴은 Galmuri11(`gui/assets`, SIL OFL)입니다. [사용법](docs/usage.ko.md#11-windows-gui)을 참고하세요.
+
+```sh
+cd gui
+cargo run --release
+```
+
+## 이름
+
+이미 다른 상대가 같은 이름을 쓰면, id가 큰 쪽이 번호를 붙입니다(`Liam`은 `Liam2`, 그다음 `Liam3`). 키가 id와 맞는 상대만 판단에 쓰며, 자동 이름 변경은 60초에 한 번까지입니다. [사용법](docs/usage.ko.md#6-이름)을 참고하세요.
+
 ## 요구 사항
 
 - Windows, Linux, macOS

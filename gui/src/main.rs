@@ -22,6 +22,8 @@ use std::time::Duration;
 const POLL: Duration = Duration::from_millis(500);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY: Duration = Duration::from_secs(2);
+/// Height of the message box and the send button.
+const INPUT_HEIGHT: f32 = 36.0;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_STARTS: u32 = 3;
 // Status phases, in the order they show: no server of ours yet, our own serve connected, or the chat built into this window.
@@ -62,6 +64,8 @@ struct App {
     outgoing: Sender<String>,
     input: String,
     theme: Choice,
+    /// Scanline overlay that imitates an old CRT monitor. On by default; the top bar checkbox turns it off.
+    crt: bool,
     hwnd: isize,
     /// This PC's address on the network, shown with the own entry in the peer panel.
     local_ip: String,
@@ -355,7 +359,7 @@ impl eframe::App for App {
             return;
         }
         let state = self.shared.lock().unwrap();
-        egui::TopBottomPanel::top("status").show(ctx, |ui| {
+        egui::TopBottomPanel::top("status").frame(inset(&palette, self.crt)).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let color = match status_label(&state.status).1 {
                     Kind::Ok => palette.accent,
@@ -371,11 +375,12 @@ impl eframe::App for App {
                                 ui.selectable_value(&mut self.theme, choice, choice.name());
                             }
                         });
+                    ui.checkbox(&mut self.crt, "CRT");
                 });
             });
         });
         ctx.set_theme(self.theme.preference());
-        egui::SidePanel::right("peers").default_width(220.0).show(ctx, |ui| {
+        egui::SidePanel::right("peers").default_width(220.0).frame(inset(&palette, self.crt)).show(ctx, |ui| {
             ui.colored_label(palette.accent, egui::RichText::new("피어").heading());
             if let Some((name, port)) = &state.me {
                 ui.colored_label(palette.accent, format!("{name} (나)"));
@@ -389,11 +394,14 @@ impl eframe::App for App {
                 ui.label(peer);
             }
         });
-        egui::TopBottomPanel::bottom("input").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("input").frame(inset(&palette, self.crt)).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let response = ui.add(egui::TextEdit::singleline(&mut self.input).desired_width(ui.available_width() - 70.0));
+                let response = ui.add_sized(
+                    [ui.available_width() - 76.0, INPUT_HEIGHT],
+                    egui::TextEdit::singleline(&mut self.input).margin(egui::Margin::symmetric(6, 10)),
+                );
                 let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                let clicked = ui.button("보내기").clicked();
+                let clicked = ui.add_sized([68.0, INPUT_HEIGHT], egui::Button::new("보내기")).clicked();
                 if (enter || clicked) && !self.input.trim().is_empty() {
                     let _ = self.outgoing.send(std::mem::take(&mut self.input));
                 }
@@ -402,7 +410,7 @@ impl eframe::App for App {
                 }
             });
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().frame(inset(&palette, self.crt)).show(ctx, |ui| {
             egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
                 for (text, mine) in &state.lines {
                     let color = if *mine { palette.mine } else { palette.text };
@@ -410,6 +418,34 @@ impl eframe::App for App {
                 }
             });
         });
+        if self.crt {
+            draw_scanlines(ctx);
+            draw_bezel(ctx);
+        }
+    }
+}
+
+/// Beige plastic bezel around the window, like an old CRT monitor's case: a dark outer edge and a light inner edge.
+fn draw_bezel(ctx: &egui::Context) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("crt_bezel")));
+    let screen = ctx.screen_rect();
+    let outer = egui::Color32::from_rgb(0x8a, 0x80, 0x6e);
+    let light = egui::Color32::from_rgb(0xd8, 0xcf, 0xb8);
+    let shadow = egui::Color32::from_rgb(0x4e, 0x48, 0x3c);
+    painter.rect_stroke(screen.shrink(1.0), 0.0, egui::Stroke::new(2.0_f32, shadow), egui::StrokeKind::Inside);
+    painter.rect_stroke(screen.shrink(3.0), 0.0, egui::Stroke::new(4.0_f32, outer), egui::StrokeKind::Inside);
+    painter.rect_stroke(screen.shrink(6.0), 0.0, egui::Stroke::new(1.0_f32, light), egui::StrokeKind::Inside);
+}
+
+/// Dark line every 3 px over the whole window. Painted on a top layer; it does not take clicks or keys.
+fn draw_scanlines(ctx: &egui::Context) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("crt_scanlines")));
+    let screen = ctx.screen_rect();
+    let mut y = screen.top();
+    while y < screen.bottom() {
+        let line = egui::Rect::from_min_size(egui::pos2(screen.left(), y), egui::vec2(screen.width(), 1.0));
+        painter.rect_filled(line, 0.0, egui::Color32::from_black_alpha(90));
+        y += 3.0;
     }
 }
 
@@ -432,7 +468,7 @@ fn main() -> eframe::Result<()> {
             install_korean_font(&cc.egui_ctx);
             let hwnd = window_hwnd(cc);
             cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
-            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Dark, hwnd, local_ip: local_ip(), frame_theme: None }))
+            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None }))
         }),
     );
     stop_serve(&started);
@@ -590,14 +626,28 @@ fn visuals(palette: &Palette, theme: egui::Theme) -> egui::Visuals {
     visuals
 }
 
-/// egui's built-in fonts have no Hangul. Add a Windows system font as fallback for all families.
+/// Galmuri11 (pixel font with Hangul, OFL, bundled in the exe) is the main font for all text.
+/// Windows system fonts stay as fallbacks for any character Galmuri does not have.
 fn install_korean_font(ctx: &egui::Context) {
-    let candidates = ["C:\\Windows\\Fonts\\malgun.ttf", "C:\\Windows\\Fonts\\gulim.ttc"];
-    let Some(bytes) = candidates.iter().find_map(|path| fs::read(path).ok()) else { return };
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert("korean".to_owned(), egui::FontData::from_owned(bytes).into());
+    fonts.font_data.insert("galmuri".to_owned(), egui::FontData::from_static(GALMURI).into());
+    let fallbacks = ["C:\\Windows\\Fonts\\malgun.ttf", "C:\\Windows\\Fonts\\gulim.ttc"];
+    if let Some(bytes) = fallbacks.iter().find_map(|path| fs::read(path).ok()) {
+        fonts.font_data.insert("system".to_owned(), egui::FontData::from_owned(bytes).into());
+    }
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts.families.entry(family).or_default().push("korean".to_owned());
+        let list = fonts.families.entry(family).or_default();
+        list.insert(0, "galmuri".to_owned());
+        if fonts.font_data.contains_key("system") {
+            list.push("system".to_owned());
+        }
     }
     ctx.set_fonts(fonts);
+}
+
+static GALMURI: &[u8] = include_bytes!("../assets/Galmuri11.ttf");
+
+/// Panel frame that keeps text inside the bezel when the CRT look is on.
+fn inset(palette: &Palette, crt: bool) -> egui::Frame {
+    egui::Frame::new().fill(palette.background).inner_margin(egui::Margin::same(if crt { 12 } else { 6 }))
 }

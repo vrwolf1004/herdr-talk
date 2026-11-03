@@ -1,6 +1,6 @@
 id = "herdr-talk-python"
 name = "herdr-talk-python"
-version = "0.7.0"
+version = "0.8.0"
 min_herdr_version = "0.9.0"
 platforms = ["windows", "linux", "macos"]
 description = "Chat with people on other PCs from inside herdr. Works directly on the same network without a server. Messages are plain text and not stored, so use it only on trusted networks. Internet relay is planned, not yet available."

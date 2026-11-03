@@ -91,7 +91,15 @@ When you do not pass `--name`, the chat picks a random name from the list for th
 - A PC set to English gets an English name, such as Liam or Olivia.
 - For a language not in the list, the name is picked from all the lists.
 
-Names are not checked for uniqueness, so two PCs can show the same name by chance. Use `/name` to change it.
+If another peer already uses your name, one of you changes it by itself, by these rules:
+
+- The node with the larger id adds a number: `Liam` becomes `Liam2`, or `Liam3` if `Liam2` is taken. A name that ends in a digit gets the number after it (`Room101` becomes `Room1012`). Only the first 30 characters of the name are kept.
+- Only peers whose public key matches their id count. A peer without a key (the Python edition) cannot take a name from you.
+- An automatic rename happens at most once every 60 seconds per node. A name you type with `/name` or `/lang` is never held back.
+- A new chat waits about 2 seconds for announcements before it announces itself, so a clash with a peer already online is settled first. The same rule applies on `/name` and when a peer appears later.
+- The Python edition follows the same numbering and the same 60 second limit, but it has no keys, so it cannot check who announced a name.
+
+Use `/name` to pick another name at any time.
 
 To choose the name when starting the script directly:
 
@@ -132,7 +140,43 @@ Run `dock-start` to show a chat block in the shared `herdr-dock` workspace. The 
 
 > `herdr-dock-grid` is optional. The plugin allocates its dock pane by the same rules without it.
 
-## 11. Troubleshooting
+## 11. Windows GUI
+
+`gui/` holds a separate Windows app (Rust, eframe) that shows the chat in its own window. It is not part of the herdr plugin and has its own version (`gui/Cargo.toml`).
+
+```sh
+cd gui
+cargo run --release
+```
+
+How it starts:
+
+1. It looks for `herdr-talk.exe`: next to the GUI program, `HERDR_TALK_EXE`, `rust/target/release`, then the newest herdr plugin install.
+2. It starts `herdr-talk serve` without a console window and connects to it through the control channel. The status line shows the steps: `기존 서버 없음 → 자체 서버 실행 중`, then `자체 서버 연결됨 (port N)`.
+3. If that fails (program not found, no control file in 10 seconds, repeated exits), it runs the chat inside the window: `내장 모드로 실행 중`, with the reason. It does not switch back later.
+4. When the window closes, the `serve` process it started is asked to end (killed only if it does not).
+
+Every window is its own chat node, so several windows on one PC see each other as peers. The window never uses another window's `serve` or a chat pane. Note: a `herdr-talk.exe` from a plugin install older than the one with `serve` has no `serve` command, so the GUI falls back to embedded mode.
+
+Screens and controls:
+
+- **Start screen:** the name, a short description, the current status and an enter button. Press it to open the chat.
+- **Chat:** message list, input line, and a peer panel with your own entry on top.
+- **Theme select:** Dark, Light, Amber, Green (default Green). It changes the colors and the window title bar color (Windows 11).
+- **CRT checkbox:** on by default. It draws scanlines and a bezel around the window. Turn it off for a plain look.
+- **Font:** Galmuri11, bundled in the program (`gui/assets`, SIL Open Font License). Windows system fonts cover any character it lacks.
+
+## 12. Headless mode and control channel
+
+```sh
+herdr-talk serve [--name NAME] [--tcp-port N] [--udp-port N]
+```
+
+`serve` is the chat without a screen. It takes no `--dock` or `--pane`. It ends on Ctrl+C, a termination signal, or a `shutdown` request, and removes its control file.
+
+`run` and `serve` open a control channel on `127.0.0.1` (random port, new token per run) and write `control-<pid>.json` in the state folder. Only your user can read the file. Details and the request format are in [Configuration: Control channel](configuration.md#control-channel).
+
+## 13. Troubleshooting
 
 Symptoms and checks are in [Troubleshooting](troubleshooting.md).
 

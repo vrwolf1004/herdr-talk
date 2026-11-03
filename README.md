@@ -49,6 +49,25 @@ The Python edition sends plain text only. Rust peers can talk with it only after
 
 The action must be run from a herdr pane. See the [usage guide](docs/usage.md) for direct pane opening, chat commands, and network requirements.
 
+## Headless mode and control channel
+
+`herdr-talk serve` runs the chat without a screen, for a GUI or another local program. It ends on Ctrl+C, a termination signal, or a `shutdown` request.
+
+`run` and `serve` both open a local control channel: a TCP port on `127.0.0.1`, protected by a per-run token. The port and token are written to `control-<pid>.json` in the state folder (readable only by your user) and removed when the chat ends. The commands are `lines`, `peers` and `send`; `serve` also accepts `shutdown`. See [configuration](docs/configuration.md#control-channel).
+
+## Windows GUI
+
+`gui/` is a separate Windows app (Rust, eframe) that shows the chat in its own window. It first tries to start `herdr-talk serve` hidden and connect to it; if that fails, it runs the chat inside the window (embedded mode). A start screen with an enter button comes first. Each window is its own chat node. The top bar has a theme select (Dark, Light, Amber, Green) and a CRT checkbox (on by default: scanlines and a bezel). The text uses the Galmuri11 font (`gui/assets`, SIL OFL). See the [usage guide](docs/usage.md#11-windows-gui).
+
+```sh
+cd gui
+cargo run --release
+```
+
+## Names
+
+If another peer already uses your name, the node with the larger id adds a number (`Liam` becomes `Liam2`, then `Liam3`). Only peers whose key matches their id are considered, and an automatic rename happens at most once every 60 seconds. See [usage](docs/usage.md#6-names).
+
 ## Requirements
 
 - Windows, Linux, or macOS
