@@ -97,7 +97,7 @@ class ReceiveTest(CollectSayTest):
         try:
             left.sendall(payload)
             left.shutdown(socket.SHUT_WR)
-            talk.receive_one(right)
+            talk.receive_one(right, talk.Chat({"id": "me", "name": "Me", "port": 1}))
         finally:
             left.close()
 
@@ -108,7 +108,7 @@ class ReceiveTest(CollectSayTest):
 
     def test_valid_message_is_shown(self):
         self.deliver(self.message())
-        self.assertEqual(self.lines, ["Bob: hi"])
+        self.assertEqual(self.lines, ["Bob (plain text): hi"])
 
     def test_wrong_types_are_dropped(self):
         self.deliver(self.message(text=123))
@@ -147,7 +147,7 @@ class ShutdownTest(unittest.TestCase):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind(("127.0.0.1", 0))
         server.listen()
-        worker = threading.Thread(target=talk.receive_messages, args=(server,), daemon=True)
+        worker = threading.Thread(target=talk.receive_messages, args=(server, talk.Chat({"id": "me", "name": "Me", "port": 1})), daemon=True)
         worker.start()
         talk.STOP.set()
         worker.join(3)

@@ -12,6 +12,7 @@
   "help.enter": "  Enter           보내기 또는 명령 실행",
   "help.backspace": "  Backspace       한 글자 지우기",
   "help.ctrl_l": "  Ctrl+L          메시지 목록 지우기",
+  "help.ctrl_p": "  Ctrl+P          폰 주소와 토큰 보기/숨기기",
   "help.ctrl_c": "  Ctrl+C          종료",
   "usage.name": "사용법: /name <새 이름>   (또는 Ctrl+N)",
   "usage.lang": "사용법: /lang <{codes}>",
@@ -29,6 +30,7 @@
   "open.no_pane": "herdr-talk open: herdr 패널 안에서 실행하세요 (HERDR_PANE_ID 가 없습니다).",
   "dock.agent_name": "talk: 접속 {count}명",
   "help.trust": "  /trust <코드>   코드로 상대 확인",
+  "help.phone": "  /phone [new]    폰 주소 보기, new 는 새 토큰",
   "usage.trust": "사용법: /trust <코드>   (다른 PC 화면에 보이는 코드)",
   "trust.done": "{name} 확인됨. 이제 이 상대에게 보내는 메시지는 암호화됩니다.",
   "trust.none": "코드 {code} 와 맞는 미확인 상대가 없습니다",
@@ -40,5 +42,13 @@
   "peers.verified": "확인됨",
   "peers.plain": "평문",
   "peers.unverified": "미확인, 코드 {code}",
-  "trust.ambiguous": "코드 {code} 와 맞는 키가 여러 개입니다. 확인하지 않았습니다. 코드를 다시 비교하세요"
+  "trust.ambiguous": "코드 {code} 와 맞는 키가 여러 개입니다. 확인하지 않았습니다. 코드를 다시 비교하세요",
+  "phone.title": "폰 주소 (이 화면에만 표시):",
+  "phone.token": "  토큰: {token}",
+  "phone.hint": "  Ctrl+P 또는 아무 키로 숨김. /phone new 로 새 토큰.",
+  "phone.none": "아직 폰 주소가 없습니다: 이 PC 에 방장이 없습니다.",
+  "phone.new_done": "새 토큰을 만들었습니다. 폰에서 새 토큰을 다시 입력하세요.",
+  "usage.phone": "사용법: /phone   또는   /phone new",
+  "host.name": "방장",
+  "host.badge": "[방장]"
 }

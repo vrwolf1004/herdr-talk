@@ -12,6 +12,7 @@
   "help.enter": "  Enter           senden oder Befehl ausführen",
   "help.backspace": "  Rücktaste       ein Zeichen löschen",
   "help.ctrl_l": "  Ctrl+L          Nachrichtenliste leeren",
+  "help.ctrl_p": "  Strg+P          Handy-Adresse zeigen/verbergen",
   "help.ctrl_c": "  Ctrl+C          beenden",
   "usage.name": "Verwendung: /name <neuer Name>   (oder Ctrl+N)",
   "usage.lang": "Verwendung: /lang <{codes}>",
@@ -29,6 +30,7 @@
   "open.no_pane": "herdr-talk open: Bitte in einem herdr-Pane ausführen (HERDR_PANE_ID ist nicht gesetzt).",
   "dock.agent_name": "talk: {count} online",
   "help.trust": "  /trust <Code>   Partner per Code prüfen",
+  "help.phone": "  /phone [new]    Handy-Adresse zeigen; new = neuer Token",
   "usage.trust": "Verwendung: /trust <Code>   (der Code auf dem anderen PC)",
   "trust.done": "{name} bestätigt. Nachrichten an diesen Partner werden jetzt verschlüsselt.",
   "trust.none": "kein unbestätigter Partner hat den Code {code}",
@@ -40,5 +42,13 @@
   "peers.verified": "bestätigt",
   "peers.plain": "Klartext",
   "peers.unverified": "unbestätigt, Code {code}",
-  "trust.ambiguous": "mehrere verschiedene Schlüssel passen zum Code {code}. Nicht bestätigt: Codes erneut vergleichen"
+  "trust.ambiguous": "mehrere verschiedene Schlüssel passen zum Code {code}. Nicht bestätigt: Codes erneut vergleichen",
+  "phone.title": "Handy-Adresse (nur auf diesem Bildschirm):",
+  "phone.token": "  Token: {token}",
+  "phone.hint": "  Strg+P oder eine Taste blendet aus. /phone new erzeugt einen neuen Token.",
+  "phone.none": "Noch keine Handy-Adresse: kein Host auf diesem PC.",
+  "phone.new_done": "Neuer Token erzeugt. Handys müssen den neuen eingeben.",
+  "usage.phone": "Verwendung: /phone   oder   /phone new",
+  "host.name": "Gastgeber",
+  "host.badge": "[Gastgeber]"
 }

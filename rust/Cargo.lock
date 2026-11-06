@@ -707,6 +707,7 @@ name = "talk-core"
 version = "0.8.0"
 dependencies = [
  "fastrand",
+ "getrandom 0.2.17",
  "serde_json",
  "sha2",
  "snow",

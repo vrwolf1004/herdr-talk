@@ -37,7 +37,7 @@ Without a Rust toolchain or for people who avoid downloaded executables, use the
 herdr plugin install vrwolf1004/herdr-talk/python
 ```
 
-The Python edition sends plain text only. Rust peers can talk with it only after they set `"plaintext": true` in `config.json`.
+The Python edition encrypts the same way as the Rust edition (pure Python, no packages), so the two talk to each other after you compare codes and `/trust`. Only an older Python edition without keys needs `"plaintext": true` on the Rust side. See [docs/encryption-protocol.md](docs/encryption-protocol.md).
 
 ## Actions
 
@@ -64,6 +64,16 @@ cd gui
 cargo run --release
 ```
 
+## Phone (Expo Go)
+
+An Android phone can join the chat through `mobile-bridge/bridge.js` and the Expo app in `mobile/`. The phone is not a peer: it talks to the bridge over HTTP and the bridge talks to a herdr-talk node on the same PC. Use it only on a trusted Wi-Fi, because that leg is plain HTTP.
+
+- The first node on a PC is the **host** (named "Host" unless `--name` is given, with a `[Host]` badge). It owns the phone URL and a 6-digit token in `phone.json`. The next node takes over when the host exits.
+- The chat shows the phone address and token when you become host or when the host joins, and on `Ctrl+P` or `/phone`. `/phone new` makes a new token. They are drawn on screen only, never in chat lines or logs.
+- Run `node mobile-bridge/bridge.js`, then `npx expo start --host lan` in `mobile/`, and enter the address and token in the app.
+
+Details, checks and open items: [docs/mobile.md](docs/mobile.md).
+
 ## Names
 
 If another peer already uses your name, the node with the larger id adds a number (`Liam` becomes `Liam2`, then `Liam3`). Only peers whose key matches their id are considered, and an automatic rename happens at most once every 60 seconds. See [usage](docs/usage.md#6-names).
@@ -83,6 +93,8 @@ Chat text follows the PC's language: English, Korean, Russian, French, Spanish, 
 - [Usage (English)](docs/usage.md)
 - [사용법 (한국어)](docs/usage.ko.md)
 - [Configuration](docs/configuration.md)
+- [Phone (Expo Go), Korean](docs/mobile.md)
+- [Encryption protocol](docs/encryption-protocol.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Development](docs/development.md)
 - [Rust roadmap (Korean)](docs/rust-roadmap.md)

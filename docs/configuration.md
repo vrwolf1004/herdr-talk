@@ -11,7 +11,7 @@ herdr-talk has no required settings. Everything below is optional.
 | `--udp-port` | command line | `47850` | Discovery port. Use the same value on every PC. |
 | `HERDR_TALK_LANG` | environment | not set | Language code: `en`, `ko`, `ru`, `fr`, `es`, `de`, `ja` |
 | `"lang"` | `config.json` in the plugin config folder | not set | Same as `HERDR_TALK_LANG` |
-| `"plaintext"` | `config.json` in the plugin config folder | `false` | Allow plain text to peers that do not encrypt (the Python edition). See [Encryption](#encryption). |
+| `"plaintext"` | `config.json` in the plugin config folder | `false` | Allow plain text to peers that do not encrypt (an old Python edition without keys). See [Encryption](#encryption). |
 | `identity.json`, `trusted.json` | herdr-talk state folder (`HERDR_PLUGIN_STATE_DIR`) | created on first start | This PC's key and the peers you verified. Do not share `identity.json`. |
 | `control-<pid>.json` | herdr-talk state folder | written while `run` or `serve` is up | Port and token of the [control channel](#control-channel). Removed when the chat ends. |
 | `HERDR_TALK_EXE` | environment, GUI only | not set | Path of `herdr-talk.exe` for the [Windows GUI](usage.md#11-windows-gui) to start. |
@@ -50,10 +50,26 @@ Messages between herdr-talk peers are encrypted with Noise (`Noise_IK_25519_ChaC
 - **Verify before you chat.** A new peer shows a code of 32 hex digits in eight groups, for example `1a2b-3c4d-5e6f-7a8b-9c0d-1e2f-3a4b-5c6d`. The code is computed from both PCs' keys, so both screens show the same value. Compare it with the other PC's screen, then type `/trust <code>` on both sides. Only verified keys are remembered in `trusted.json`. If two different keys match one code, `/trust` refuses.
 - **Unverified peers get nothing.** Messages are not sent to them, and their messages are not shown. The handshake is refused before any reply.
 - **A changed key is refused.** A new key from an address you trusted before is shown as a warning and is not trusted.
-- **Plain text is off by default.** Peers that do not encrypt (the Python edition) are skipped unless `"plaintext": true` is set in `config.json`. Even then, a peer that has a key is never sent plain text.
+- **Plain text is off by default.** Peers that do not encrypt (an old Python edition without keys) are skipped unless `"plaintext": true` is set in `config.json`. Even then, a peer that has a key is never sent plain text.
+  With it off, you see `peer.plain_off` when you send to such a peer, and its plain messages are dropped without a line. The current Python edition has keys, `identity.json`/`trusted.json` in the same format and the same `/trust` flow, and needs no `plaintext` setting. The protocol is in [encryption-protocol.md](encryption-protocol.md). Several Rust chats that share one state folder share one key, so they trust each other (encrypted) and need no `/trust`.
 - **Limits.** `/trust` only proves what you compared. Compare the whole code on both screens before you type it. On Windows, `identity.json` relies on the default permissions of your user profile folder.
 
+## Phone host (방장)
+
+One node per PC owns the phone's address and token. Both editions follow the same rules, so Rust and Python nodes in one state folder elect one host between them.
+
+- **Who is the host.** The node that holds `phone.lock` in the state folder (an OS file lock, taken atomically, so nodes that start together get exactly one host). Only this PC counts: nodes on other PCs have their own host and their own phone bridge.
+- **`phone.json`** (readable by this user only): `{"port", "token", "urls", "owner_pid", "owner_port"}`. The token is six digits (`000000` to `999999`) from the OS random source. `urls` are address candidates, the default-route adapter first, then other private addresses, virtual adapters (VirtualBox `192.168.56.x`, link-local, Docker) last. `port` is `TALK_BRIDGE_PORT` or 47860. Nothing in it is sent over the network or announced.
+- **Name.** The host is decided when a node starts, before its first announcement. Started without `--name`, the host is called `방장` (`host.name`: `Host`, `Gastgeber`, `Anfitrión`, `Hôte`, `ホスト`, `Хост` in the other languages); the usual name-clash numbering still applies (`방장2` when another PC's host has the name). Any other node, started later on the same PC, gets a random name or its `--name` and does not show the phone address by itself (Ctrl+P or `/phone`; it still shows when the host joins). Started with `--name`, the node keeps that name and the status row shows a `[방장]` badge (`host.badge`) while it is the host. The badge is the same for a host with the default name.
+- **Name on hand-off.** A node that takes over keeps the name it has: names are never changed by a take-over. Only the status-row badge moves to it, and it shows the phone address once. The old host's name goes with it.
+- **When the host ends** the OS gives the lock back and a waiting node takes it within two seconds (whichever polls first, not strictly the oldest), keeps the token and port and writes its own pid. The last node to leave removes `phone.json`. After a crash the file stays until the next host starts.
+- **Showing it.** The address and token are drawn over the bottom of the chat screen only, never as a chat line, in no log and not to peers. They appear when this node becomes the host, and when the host of this PC joins (its chat port in `phone.json` matches the announcement from a local address). They hide on the first key typed, with Ctrl+P again, or after 30 seconds. **Ctrl+P** or `/phone` shows them again, on any node (a node that is not the host reads the host's file). The terminal chat (Rust and Python) and the Windows window have it.
+- **`/phone new`** makes a new token in `phone.json`. The bridge reads the file on every request, so phones that used the old token get 401 and must enter the new one.
+- **Bridge.** `mobile-bridge/bridge.js` takes port and token from `TALK_BRIDGE_PORT` / `TALK_BRIDGE_TOKEN` when set, else from `phone.json`, else it makes a random token and prints it. The six-digit token is guarded by the bridge's block of an address after 5 wrong tries for 10 minutes. The host does not start the bridge: run `node mobile-bridge/bridge.js` yourself.
+
 ## Control channel
+
+The Python edition has the same channel (`python src/talk.py run` or `serve`, same `control-<pid>.json`, same `token`/`lines`/`peers`/`send`/`shutdown` requests, same state folder order), so the mobile bridge works with either edition.
 
 `herdr-talk run` and `herdr-talk serve` open a local channel for a GUI or script. `serve` is the same chat without a screen and ends on Ctrl+C, a termination signal, or `shutdown`.
 
@@ -73,7 +89,7 @@ Limits: 4 clients at once, 64 KiB per request line, a connection idle for 5 minu
 
 ## Names
 
-When a fresh, verified peer has your name and a smaller id, you add a number (`Name2`, then `Name3`; at most 30 characters of the name are kept). A peer is verified when its announced key is present and `store::peer_id(key)` equals its announced id; trusting the key is not required. Peers without a key never start a clash. The id decides who changes, and the port only breaks a tie between equal ids (two panes on one PC share an id). An automatic rename happens at most once every 60 seconds per node; `/name` and `/lang` are not limited. The Python edition has the same numbering and 60 second limit but cannot verify peers.
+When a fresh, verified peer has your name and a smaller id, you add a number (`Name2`, then `Name3`; at most 30 characters of the name are kept). A peer is verified when its announced key is present and `store::peer_id(key)` equals its announced id; trusting the key is not required. Peers without a key never start a clash. The id decides who changes, and the port only breaks a tie between equal ids (two panes on one PC share an id). An automatic rename happens at most once every 60 seconds per node; `/name` and `/lang` are not limited. The Python edition follows the same rule.
 
 ## Discovery and timing
 

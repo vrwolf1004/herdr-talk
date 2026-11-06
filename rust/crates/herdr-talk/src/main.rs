@@ -88,10 +88,12 @@ fn run(args: RunArgs) -> Result<(), String> {
         thread::spawn(move || keep_dock_block(pane, chat));
     }
     let _control = control::serve(chat.clone(), &talk_core::store::state_dir(), false).map_err(|error| error.to_string())?;
+    chat.watch_host(); // the first node on this PC owns the phone address; another takes over when it ends
     let me = chat.me.lock().unwrap().clone();
     chat.say(t("start.hello", &[("name", &me.name), ("port", &me.port.to_string())]));
     let result = screen::run(&chat).map_err(|error| error.to_string());
     chat.stop.set();
+    chat.release_host();
     if let Some(pane) = dock_pane {
         herdr_api::try_request("pane.release_agent", json!({"pane_id": pane, "source": SOURCE, "agent": AGENT_ID}));
         dock::release_dock_pane(DOCK_KEY)?;
@@ -107,6 +109,7 @@ fn serve(args: RunArgs) -> Result<(), String> {
     }
     let chat = start(args.name, args.tcp_port.unwrap_or(0), args.udp_port.unwrap_or(UDP_PORT)).map_err(|error| error.to_string())?;
     let control = control::serve(chat.clone(), &talk_core::store::state_dir(), true).map_err(|error| error.to_string())?;
+    chat.watch_host();
     let signalled = chat.clone();
     ctrlc::set_handler(move || signalled.stop.set()).map_err(|error| error.to_string())?;
     let me = chat.me.lock().unwrap().clone();
@@ -114,6 +117,7 @@ fn serve(args: RunArgs) -> Result<(), String> {
     while !chat.stop.is_set() {
         chat.stop.wait(Duration::from_secs(1));
     }
+    chat.release_host();
     drop(control);
     Ok(())
 }

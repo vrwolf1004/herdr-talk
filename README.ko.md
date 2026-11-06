@@ -34,7 +34,7 @@ Rust 도구 체인이 없거나 실행 파일 내려받기를 피하려면 Pytho
 herdr plugin install vrwolf1004/herdr-talk/python
 ```
 
-Python 판은 평문만 보냅니다. Rust 판과 대화하려면 Rust 쪽 `config.json`에 `"plaintext": true`를 설정해야 합니다.
+Python 판도 Rust 판과 같은 방식으로 암호화합니다 (순수 Python, 추가 패키지 없음). 코드를 비교하고 `/trust` 하면 두 판이 서로 대화합니다. 키가 없는 옛 Python 판과 대화할 때만 Rust 쪽 `config.json`에 `"plaintext": true`가 필요합니다. [docs/encryption-protocol.md](docs/encryption-protocol.md) 참고.
 
 ## 액션
 
@@ -60,6 +60,16 @@ herdr pane 안에서 액션을 실행해야 합니다. 직접 pane을 여는 방
 cd gui
 cargo run --release
 ```
+
+## 폰 (Expo Go)
+
+Android 폰이 `mobile-bridge/bridge.js` 와 `mobile/` 의 Expo 앱으로 채팅에 참여할 수 있습니다. 폰은 피어가 아닙니다. 폰은 브리지와 HTTP 로 통신하고, 브리지가 같은 PC 의 herdr-talk 노드와 통신합니다. 이 구간은 평문 HTTP 라서 믿을 수 있는 Wi-Fi 에서만 쓰세요.
+
+- 한 PC 에서 처음 시작한 노드가 **방장** 입니다 (`--name` 이 없으면 이름이 "방장", `[방장]` 배지). 방장이 폰 주소와 6자리 토큰 (`phone.json`) 을 가집니다. 방장이 종료되면 다음 노드가 이어받습니다.
+- 내가 방장이 될 때, 방장이 입장할 때, `Ctrl+P` 또는 `/phone` 을 누를 때 채팅 화면에 폰 주소와 토큰이 보입니다. `/phone new` 는 새 토큰을 만듭니다. 화면에만 그리고 채팅 줄이나 로그에는 남기지 않습니다.
+- `node mobile-bridge/bridge.js` 를 실행하고 `mobile/` 에서 `npx expo start --host lan` 을 실행한 뒤, 앱에 주소와 토큰을 입력합니다.
+
+자세한 내용, 확인 결과, 남은 일: [docs/mobile.md](docs/mobile.md).
 
 ## 이름
 

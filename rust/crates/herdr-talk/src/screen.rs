@@ -74,7 +74,8 @@ fn render(out: &mut Stdout, chat: &Chat, input: &str) -> io::Result<()> {
 
     let name = chat.me.lock().unwrap().name.clone();
     let peers = chat.fresh_peers().len().to_string();
-    let status = fit(&t("status.line", &[("name", &name), ("peers", &peers)]), width);
+    let badge = if chat.is_host() { format!("{} ", t("host.badge", &[])) } else { String::new() };
+    let status = fit(&format!("{badge}{}", t("status.line", &[("name", &name), ("peers", &peers)])), width);
     let padding = " ".repeat(width - char_width(&status));
     queue!(out, cursor::Hide, cursor::MoveTo(0, 0), SetBackgroundColor(Color::DarkGrey), SetForegroundColor(Color::White),
         Print(status), Print(padding), ResetColor)?;
@@ -89,6 +90,15 @@ fn render(out: &mut Stdout, chat: &Chat, input: &str) -> io::Result<()> {
             }
         }
     }
+    // The phone address and token, on this screen only, over the bottom rows of the messages. They are not chat lines.
+    if let Some(overlay) = chat.phone_overlay() {
+        let count = overlay.len().min(usize::from(area));
+        for (index, text) in overlay.iter().take(count).enumerate() {
+            let text = fit(text, width);
+            queue!(out, cursor::MoveTo(0, area + 1 - count as u16 + index as u16), SetBackgroundColor(Color::DarkGreen), SetForegroundColor(Color::White),
+                Print(&text), Print(" ".repeat(width - char_width(&text))), ResetColor)?;
+        }
+    }
     let shown = tail(input, width - 3);
     queue!(out, cursor::MoveTo(0, rows - 2), SetForegroundColor(Color::DarkGrey), Print("-".repeat(width)), ResetColor,
         cursor::MoveTo(0, rows - 1), Clear(ClearType::CurrentLine), Print("> "), Print(&shown), cursor::Show)?;
@@ -98,10 +108,15 @@ fn render(out: &mut Stdout, chat: &Chat, input: &str) -> io::Result<()> {
 /// Apply one key. Return false to leave the chat.
 fn on_key(key: KeyEvent, chat: &Chat, input: &mut String) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // The phone address hides on the first key that is not its own toggle.
+    if !(ctrl && key.code == KeyCode::Char('p')) {
+        chat.hide_phone();
+    }
     match key.code {
         KeyCode::Char('c' | 'd') if ctrl => return false,
         KeyCode::Char('l') if ctrl => chat.clear_lines(),
         KeyCode::Char('n') if ctrl => *input = "/name ".to_string(),
+        KeyCode::Char('p') if ctrl => chat.toggle_phone(),
         KeyCode::Char(ch) if !ctrl => input.push(ch),
         KeyCode::Backspace => {
             input.pop();
@@ -118,6 +133,7 @@ pub fn run(chat: &Chat) -> io::Result<()> {
     let mut last_status = String::new();
     render(&mut terminal.0, chat, &input)?;
     loop {
+        chat.phone_visible(); // hides the phone address when its time is up, and asks for a redraw
         let mut redraw = chat.take_dirty();
         if event::poll(POLL)? {
             match event::read()? {
@@ -132,7 +148,7 @@ pub fn run(chat: &Chat) -> io::Result<()> {
             }
         }
         // Peers come and go without a chat line, and the status row shows their count.
-        let status = format!("{}/{}", chat.me.lock().unwrap().name, chat.fresh_peers().len());
+        let status = format!("{}/{}/{}", chat.me.lock().unwrap().name, chat.fresh_peers().len(), chat.is_host());
         if redraw || status != last_status {
             last_status = status;
             render(&mut terminal.0, chat, &input)?;
@@ -189,6 +205,20 @@ mod tests {
         assert_eq!(chat.lines()[0].text, "> /name Bob");
         on_key(key(KeyCode::Char('l'), KeyModifiers::CONTROL), &chat, &mut input);
         assert!(chat.lines().is_empty());
+    }
+
+    #[test]
+    fn ctrl_p_toggles_the_phone_and_any_other_key_hides_it() {
+        let (chat, mut input) = (chat(), String::new());
+        on_key(key(KeyCode::Char('p'), KeyModifiers::CONTROL), &chat, &mut input);
+        assert!(chat.phone_visible());
+        assert!(input.is_empty(), "Ctrl+P types nothing");
+        on_key(key(KeyCode::Char('p'), KeyModifiers::CONTROL), &chat, &mut input);
+        assert!(!chat.phone_visible());
+        on_key(key(KeyCode::Char('p'), KeyModifiers::CONTROL), &chat, &mut input);
+        on_key(key(KeyCode::Char('a'), KeyModifiers::NONE), &chat, &mut input);
+        assert!(!chat.phone_visible());
+        assert_eq!(input, "a");
     }
 
     #[test]

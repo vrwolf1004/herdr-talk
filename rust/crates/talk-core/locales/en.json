@@ -12,6 +12,7 @@
   "help.enter": "  Enter           send or run a command",
   "help.backspace": "  Backspace       delete one character",
   "help.ctrl_l": "  Ctrl+L          clear the message list",
+  "help.ctrl_p": "  Ctrl+P          show or hide the phone address",
   "help.ctrl_c": "  Ctrl+C          quit",
   "usage.name": "usage: /name <new name>   (or press Ctrl+N)",
   "usage.lang": "usage: /lang <{codes}>",
@@ -29,6 +30,7 @@
   "open.no_pane": "herdr-talk open: run this from a herdr pane (HERDR_PANE_ID is not set).",
   "dock.agent_name": "talk: {count} online",
   "help.trust": "  /trust <code>   verify a peer by code",
+  "help.phone": "  /phone [new]    show the phone address; new = new token",
   "usage.trust": "usage: /trust <code>   (the code shown on the other PC)",
   "trust.done": "trusted {name}. Messages to them are now encrypted.",
   "trust.none": "no unverified peer has the code {code}",
@@ -40,5 +42,13 @@
   "peers.verified": "verified",
   "peers.plain": "plain text",
   "peers.unverified": "not verified, code {code}",
-  "trust.ambiguous": "several different keys match code {code}. Not trusted: compare the codes again"
+  "trust.ambiguous": "several different keys match code {code}. Not trusted: compare the codes again",
+  "phone.title": "Phone address (shown on this screen only):",
+  "phone.token": "  Token: {token}",
+  "phone.hint": "  Ctrl+P or any key hides this. /phone new makes a new token.",
+  "phone.none": "No phone address yet: no host on this PC.",
+  "phone.new_done": "New token made. Phones must enter the new one.",
+  "usage.phone": "usage: /phone   or   /phone new",
+  "host.name": "Host",
+  "host.badge": "[host]"
 }

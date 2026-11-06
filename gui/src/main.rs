@@ -17,7 +17,7 @@ use std::process::{Child, Command};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(500);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -71,7 +71,13 @@ struct App {
     local_ip: String,
     /// The theme the title bar was last colored for.
     frame_theme: Option<Choice>,
+    /// Until when the phone address and token are on screen. Only this window shows them: never a chat line, never a log.
+    phone_until: Option<Instant>,
+    /// The auto-show at the first chat screen was decided (it happens once, and only when this window's node is the host).
+    phone_checked: bool,
 }
+
+const PHONE_SHOWN: Duration = Duration::from_secs(30);
 
 /// The address this PC uses to reach the network. Connecting a UDP socket sends nothing; it only picks the address.
 fn local_ip() -> String {
@@ -255,6 +261,7 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
             }
         }
     };
+    chat.watch_host();
     set_status(shared, &format!("{STATUS_EMBEDDED} (herdr-talk 실패: {reason})"));
     loop {
         while let Ok(text) = outgoing.try_recv() {
@@ -359,6 +366,26 @@ impl eframe::App for App {
             return;
         }
         let state = self.shared.lock().unwrap();
+        // Once, at the first chat screen: show the phone address when the node this window talks to is the host (방장) of this PC.
+        if !self.phone_checked {
+            if let Some((_, port)) = &state.me {
+                self.phone_checked = true;
+                if talk_core::phone::read(&state_dir()).is_some_and(|phone| phone.owner_port == *port) {
+                    self.phone_until = Some(Instant::now() + PHONE_SHOWN);
+                }
+            }
+        }
+        // Ctrl+P toggles; typing or Enter hides.
+        let (toggle, typed) = ctx.input(|input| (
+            input.modifiers.ctrl && input.key_pressed(egui::Key::P),
+            input.events.iter().any(|event| matches!(event, egui::Event::Text(_))) || input.key_pressed(egui::Key::Enter),
+        ));
+        let visible = self.phone_until.is_some_and(|until| until > Instant::now());
+        if toggle {
+            self.phone_until = if visible { None } else { Some(Instant::now() + PHONE_SHOWN) };
+        } else if typed || !visible {
+            self.phone_until = None;
+        }
         egui::TopBottomPanel::top("status").frame(inset(&palette, self.crt)).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let color = match status_label(&state.status).1 {
@@ -366,6 +393,9 @@ impl eframe::App for App {
                     Kind::Pending => palette.muted,
                     Kind::Problem => palette.danger,
                 };
+                if talk_core::phone::read(&state_dir()).is_some_and(|phone| state.me.as_ref().is_some_and(|(_, port)| phone.owner_port == *port)) {
+                    ui.colored_label(palette.accent, talk_core::t("host.badge", &[]));
+                }
                 ui.colored_label(color, &state.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     egui::ComboBox::from_id_salt("theme")
@@ -403,7 +433,18 @@ impl eframe::App for App {
                 let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
                 let clicked = ui.add_sized([68.0, INPUT_HEIGHT], egui::Button::new("보내기")).clicked();
                 if (enter || clicked) && !self.input.trim().is_empty() {
-                    let _ = self.outgoing.send(std::mem::take(&mut self.input));
+                    let text = std::mem::take(&mut self.input);
+                    match text.trim() {
+                        // The window shows the phone address itself; the node only makes a new token.
+                        "/phone" => self.phone_until = Some(Instant::now() + PHONE_SHOWN),
+                        "/phone new" => {
+                            let _ = self.outgoing.send(text);
+                            self.phone_until = Some(Instant::now() + PHONE_SHOWN);
+                        }
+                        _ => {
+                            let _ = self.outgoing.send(text);
+                        }
+                    }
                 }
                 if enter {
                     response.request_focus();
@@ -418,6 +459,22 @@ impl eframe::App for App {
                 }
             });
         });
+        if self.phone_until.is_some() {
+            let mut rows = vec![egui::RichText::new(talk_core::t("phone.title", &[])).strong()];
+            match talk_core::phone::read(&state_dir()) {
+                Some(phone) => {
+                    rows.extend(phone.urls.iter().map(|url| egui::RichText::new(url.as_str())));
+                    rows.push(egui::RichText::new(talk_core::t("phone.token", &[("token", &phone.token)])).strong());
+                    rows.push(egui::RichText::new(talk_core::t("phone.hint", &[])));
+                }
+                None => rows.push(egui::RichText::new(talk_core::t("phone.none", &[]))),
+            }
+            egui::Window::new("phone").title_bar(false).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -70.0]).show(ctx, |ui| {
+                for row in rows {
+                    ui.label(row);
+                }
+            });
+        }
         if self.crt {
             draw_scanlines(ctx);
             draw_bezel(ctx);
@@ -468,7 +525,7 @@ fn main() -> eframe::Result<()> {
             install_korean_font(&cc.egui_ctx);
             let hwnd = window_hwnd(cc);
             cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
-            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None }))
+            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None, phone_until: None, phone_checked: false }))
         }),
     );
     stop_serve(&started);

@@ -77,6 +77,38 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 - [ ] **Second network card is not local.** On a PC with several network cards, announcements of the own key from the second card's address are not accepted as local. (2026-11-03 건너뜀: 모든 네트워크 카드 주소를 알아내려면 의존성 추가가 필요해 결정 필요, 그리고 카드 2개인 PC가 필요)
 - [ ] **Verified peer on a new address.** A new UDP entry is made and the old one expires after 10 seconds. Updating the address over an authenticated connection is not done. (2026-11-03 건너뜀: 인증된 연결로 주소를 바꾸는 프로토콜 설계가 필요한 chef 결정 사항)
 
+## Phone and mobile bridge (2026-11-06)
+
+Phase 1 (connection) and phase 2 (host, phone URL and token) are implemented and checked on one PC. Development ended 2026-11-06; final check: `cargo test` 95 (talk-core 81, herdr-talk 14), Python 113, GUI release build. See [mobile.md](mobile.md).
+
+Done:
+
+- [x] **Same-PC chats could not see each other** (`serve` + `run` with the same state folder). Cause: `is_local_address` only knew the default-route address; this PC has two adapters. Fixed in `net.rs`, tests added. (원인 확정과 수정은 dev. 이 PC 에서 `serve` 두 개와 브리지로 확인)
+- [x] **False "key changed" warning for several identities on one PC.** A trusted key that still announces from the same IP is treated as another identity. A new key is never trusted before `/trust`.
+- [x] **Python control channel** (`control-<pid>.json`, `lines`/`peers`/`send`/`shutdown`, `serve` subcommand) so the bridge can attach to a Python node.
+- [x] **Python encryption** (Noise_IK_25519_ChaChaPoly_BLAKE2s in pure Python, `python/src/noise.py`, checked against RFC 7748, RFC 8439 and Cacophony vectors). No `plaintext` setting needed any more. Protocol notes in [encryption-protocol.md](encryption-protocol.md). Known limit: not constant time, so a local process that can time it could learn the key; swap `x25519`/`aead` for `cryptography` if that matters.
+- [x] **Rust and Python talk to each other** on one PC (both directions, shared state folder, no `/trust` needed because the key is the same). dev also checked two separate state folders with matching codes.
+- [x] **Host rule.** The node that gets `phone.lock` at start (no other node on this PC) is the host. It owns `phone.json` (port, 6-digit token, URLs). Rust and Python use the same lock. On exit the next node takes over and keeps the token. The last node removes `phone.json`.
+- [x] **Host name and badge.** The first node is named "방장" (`Host`, `Gastgeber`, ... per language) unless `--name` is given. A `[방장]` badge marks the host in the Rust TUI status line, the Python status line and the GUI top bar. A takeover never renames a node.
+- [x] **Phone address and token on screen.** A host sees them when it becomes host; any node on this PC sees them when the host joins; `Ctrl+P` or `/phone` shows them on request; `/phone new` re-issues the token. Drawn as an overlay only, never in chat lines, logs or peer messages. Checked with the Rust TUI chat pane.
+- [x] **Bridge reads `phone.json`** (port, token), falls back to a random token printed on the console, keeps the lockout (5 failures per IP, 10 minutes).
+- [x] **Phone to PC and PC to phone messages** through the bridge. (폰 화면 표시는 사용자 확인)
+- [x] **Rust GUI** gets the same `Ctrl+P`, `/phone` and badge. It starts its own hidden `serve`; with no other node that `serve` becomes the host (checked by `phone.json` owner).
+
+Open:
+
+- [ ] **Look at the real screens.** Badge shape and position (TUI, Python, GUI), `Ctrl+P` and any-key hide, the 30-second hide, GUI auto display. Only unit tests and pane text reads so far.
+- [ ] **GUI exit when its node goes away.** A GUI that was attached to a Python host disappeared right after that node was stopped (no crash event found). Ask dev what it should do.
+- [ ] **Panel position.** The panel is an overlay at the bottom, not a line directly under `방장 입장`, so it never lands in the chat history. Ask whether a position directly under the line is needed.
+- [ ] **Bridge start.** The host does not start the bridge; the user runs `node mobile-bridge/bridge.js`. Decide whether the host should start it (needs a fixed path and process handling).
+- [ ] **Trust flow between Rust nodes with different state folders** (unit tests, and dev ran Rust and Python with matching codes once).
+- [ ] **Chat across two PCs** (not tested). A different state folder is treated as another PC.
+- [ ] **Phone leg encryption**: the bridge is plain HTTP on the LAN. Options: HTTPS with a pinned certificate, or a tunnel.
+- [ ] **Phone as a real P2P peer.** Not possible with Expo Go (UDP/TCP sockets need native modules, so a development build). Would need a JS Noise implementation, Android multicast permission and background limits. Separate project.
+- [ ] **One intermittent Python test failure** (once in 37 runs, not reproduced). Watch for it.
+- [ ] **Stale `control-<pid>.json` files** pile up after killed nodes. Harmless; maybe clean them at start.
+- [ ] **Commit the work.** `net.rs`, `chat.rs`, `phone.rs`, `screen.rs`, `gui/src/main.rs`, `talk.py`, `noise.py`, `phone.py`, `store.py`, locales, tests, `bridge.js`, docs.
+
 ## Later (phase 2 and beyond)
 
 - [ ] Chat across the internet through Supabase, with end-to-end encryption.

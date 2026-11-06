@@ -12,6 +12,7 @@
   "help.enter": "  Entrée          envoyer ou lancer une commande",
   "help.backspace": "  Retour arrière  effacer un caractère",
   "help.ctrl_l": "  Ctrl+L          vider la liste des messages",
+  "help.ctrl_p": "  Ctrl+P          afficher ou masquer l'adresse du téléphone",
   "help.ctrl_c": "  Ctrl+C          quitter",
   "usage.name": "usage : /name <nouveau nom>   (ou Ctrl+N)",
   "usage.lang": "usage : /lang <{codes}>",
@@ -29,6 +30,7 @@
   "open.no_pane": "herdr-talk open : à lancer depuis un pane herdr (HERDR_PANE_ID n'est pas défini).",
   "dock.agent_name": "talk : {count} en ligne",
   "help.trust": "  /trust <code>   vérifier un pair par code",
+  "help.phone": "  /phone [new]    afficher l'adresse du téléphone ; new = nouveau jeton",
   "usage.trust": "usage : /trust <code>   (le code affiché sur l'autre PC)",
   "trust.done": "{name} vérifié. Les messages vers lui sont maintenant chiffrés.",
   "trust.none": "aucun pair non vérifié n'a le code {code}",
@@ -40,5 +42,13 @@
   "peers.verified": "vérifié",
   "peers.plain": "texte en clair",
   "peers.unverified": "non vérifié, code {code}",
-  "trust.ambiguous": "plusieurs clés différentes correspondent au code {code}. Non approuvé : comparez à nouveau les codes"
+  "trust.ambiguous": "plusieurs clés différentes correspondent au code {code}. Non approuvé : comparez à nouveau les codes",
+  "phone.title": "Adresse du téléphone (sur cet écran uniquement) :",
+  "phone.token": "  Jeton : {token}",
+  "phone.hint": "  Ctrl+P ou une touche la masque. /phone new crée un nouveau jeton.",
+  "phone.none": "Pas encore d'adresse : aucun hôte sur ce PC.",
+  "phone.new_done": "Nouveau jeton créé. Les téléphones doivent saisir le nouveau.",
+  "usage.phone": "usage : /phone   ou   /phone new",
+  "host.name": "Hôte",
+  "host.badge": "[hôte]"
 }

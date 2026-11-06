@@ -8,8 +8,19 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const PORT = Number(process.env.TALK_BRIDGE_PORT || 47860);
-const TOKEN = process.env.TALK_BRIDGE_TOKEN || String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+// 포트와 토큰: 환경변수가 먼저, 다음은 상태 폴더의 phone.json (방장 노드가 만든다), 없으면 이 브리지가 무작위로 만든다.
+// phone.json 은 요청마다 다시 읽는다: 채팅창의 /phone new 로 토큰이 바뀌면 바로 반영되고 기존 폰은 새 토큰이 필요하다.
+function phoneInfo() {
+  try {
+    const info = JSON.parse(fs.readFileSync(path.join(stateDir(), 'phone.json'), 'utf8'));
+    return /^\d{6}$/.test(String(info.token)) ? info : null;
+  } catch { return null; }
+}
+const PORT = Number(process.env.TALK_BRIDGE_PORT || phoneInfo()?.port || 47860);
+const FALLBACK_TOKEN = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+function currentToken() {
+  return process.env.TALK_BRIDGE_TOKEN || phoneInfo()?.token || FALLBACK_TOKEN;
+}
 const TIMEOUT_MS = 5000;
 // 6자리 토큰 무작위 대입 방지: IP 별 연속 실패 5회 → 10분 차단.
 const MAX_FAILS = 5;
@@ -86,7 +97,7 @@ function send(res, status, body) {
 
 function authorized(req) {
   const given = Buffer.from(String(req.headers.authorization || ''));
-  const expected = Buffer.from('Bearer ' + TOKEN);
+  const expected = Buffer.from('Bearer ' + currentToken());
   return given.length === expected.length && crypto.timingSafeEqual(given, expected);
 }
 
@@ -144,7 +155,9 @@ server.listen(PORT, '0.0.0.0', () => {
   const ips = Object.values(os.networkInterfaces()).flat()
     .filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address);
   console.log(`herdr-talk bridge: port ${PORT}`);
-  console.log(`token: ${TOKEN}`);
+  // phone.json 의 토큰은 채팅창 (Ctrl+P) 에서만 보여 주므로 여기에 찍지 않는다.
+  if (process.env.TALK_BRIDGE_TOKEN || !phoneInfo()) console.log(`token: ${currentToken()}`);
+  else console.log('token: 채팅창에서 Ctrl+P (또는 /phone) 로 확인');
   for (const ip of ips) console.log(`app address: http://${ip}:${PORT}`);
-  console.log('같은 Wi-Fi 에서만 쓰세요. 토큰은 이 창에만 보입니다.');
+  console.log('같은 Wi-Fi 에서만 쓰세요. 토큰은 이 창(또는 채팅창)에만 보입니다.');
 });

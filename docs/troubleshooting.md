@@ -13,8 +13,14 @@ Check the symptom in the table first. Each check points to the setting or step t
 | GUI status stays at `기존 서버 없음 → 자체 서버 실행 중` | It waits up to 10 seconds for the control file, then falls back to embedded mode. |
 | Your name got a number (`Liam2`) | Another verified peer with a smaller id had the same name. Use `/name` to pick another. Automatic renames happen at most once every 60 seconds. |
 | A leftover `control-<pid>.json` in the state folder | A killed chat could not remove it. It is harmless and can be deleted. |
+| `no peers yet` on one PC with two chats | Fixed 2026-11-06 in `net.rs` (`is_local_address` now accepts any of this PC's adapter addresses). Rebuild and restart the running `herdr-talk.exe`. See [mobile.md](mobile.md). |
+| `<name> 의 키가 바뀌었습니다. 확인하지 않았고 보내지도 않습니다` | A new key appeared at an address you trusted before. On one PC with several identities this was a false alarm (fixed 2026-11-06). Trust only when you know why: compare codes, then `/trust`. |
+| `<name> 에게 보내지 않음: 암호화하지 않는 상대이고 평문이 꺼져 있습니다` | The peer is a plaintext (Python) edition and `"plaintext": true` is off in the Rust `config.json`. Rust drops Python messages silently in the other direction. See [mobile.md](mobile.md). |
+| Phone app cannot connect | Use the bridge `app address` of the phone's Wi-Fi, not a virtual adapter (e.g. `192.168.56.1`). Same Wi-Fi, firewall allows the bridge port (47860). After 5 wrong tokens an IP is blocked for 10 minutes. |
+| Expo QR missing | Metro started with `CI=1`. Run `npx expo start --host lan` in a normal terminal. If port 8081 is busy Expo uses 8082: check the port in the QR or `exp://` address. |
 
 ## Related
 
 - [Usage](usage.md): commands, keys, names, language, network
 - [Configuration](configuration.md): settings, control channel, timing constants
+- [Mobile (Expo Go)](mobile.md): phone connection, bridge, decisions

@@ -8,6 +8,7 @@
 pub mod chat;
 pub mod i18n;
 pub mod net;
+pub mod phone;
 pub mod store;
 pub mod text;
 

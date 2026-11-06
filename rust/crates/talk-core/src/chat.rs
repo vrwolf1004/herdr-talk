@@ -2,13 +2,14 @@
 
 use crate::i18n::t;
 use crate::net;
+use crate::phone;
 use crate::store::{self, Trusted};
 use crate::text::{char_width, clean_text};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -56,8 +57,8 @@ pub fn default_name() -> String {
 pub fn help_box() -> Vec<String> {
     let keys = [
         "help.title_send", "help.send", "", "help.commands", "help.name", "help.lang", "help.codes",
-        "help.peers", "help.trust", "help.help", "help.quit", "", "help.keys", "help.enter", "help.backspace",
-        "help.ctrl_l", "help.ctrl_c",
+        "help.peers", "help.trust", "help.phone", "help.help", "help.quit", "", "help.keys", "help.enter", "help.backspace",
+        "help.ctrl_l", "help.ctrl_p", "help.ctrl_c",
     ];
     let lines: Vec<String> = keys.iter().map(|key| if key.is_empty() { String::new() } else { t(key, &[]) }).collect();
     let width = lines.iter().map(|line| char_width(line)).max().unwrap_or(0);
@@ -155,9 +156,16 @@ pub struct Chat {
     pub(crate) plaintext: bool,
     /// Where /trust saves the verified keys. None keeps them for this session only.
     pub(crate) state_dir: Option<PathBuf>,
+    /// The phone host lock of this PC, while this node is the host (방장).
+    host: Mutex<Option<phone::Host>>,
+    /// Until when the phone address and token are on screen. Only the screen shows them: never a chat line, never a log.
+    phone_until: Mutex<Option<Instant>>,
     /// When the name last changed by itself because of a clash. Names the user types do not count.
     last_auto_rename: Mutex<Option<Instant>>,
 }
+
+/// How long the phone address and token stay on screen when nobody hides them.
+const PHONE_SHOWN: Duration = Duration::from_secs(30);
 
 /// The shortest time between two automatic renames.
 const AUTO_RENAME_GAP: Duration = Duration::from_secs(60);
@@ -175,8 +183,97 @@ impl Chat {
             trusted: Mutex::new(Vec::new()),
             plaintext: false,
             state_dir: None,
+            host: Mutex::new(None),
+            phone_until: Mutex::new(None),
             last_auto_rename: Mutex::new(None),
         }
+    }
+
+    /// True while this node holds the phone host lock.
+    pub fn is_host(&self) -> bool {
+        self.host.lock().unwrap().is_some()
+    }
+
+    /// Become the host if no node on this PC is. Shows the phone address once when it succeeds. Returns true on success.
+    pub fn try_become_host(&self) -> bool {
+        let Some(state) = &self.state_dir else { return false };
+        if self.stop.is_set() || self.is_host() {
+            return false;
+        }
+        let port = self.me.lock().unwrap().port;
+        match phone::Host::try_take(state, port) {
+            Ok(Some(host)) => {
+                *self.host.lock().unwrap() = Some(host);
+                self.show_phone();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Give the host lock back (the chat is ending). The next node takes over.
+    pub fn release_host(&self) {
+        self.host.lock().unwrap().take();
+    }
+
+    /// Keep taking the host lock while another node holds it, so a node takes over when the host ends.
+    /// shortcut: whichever waiting node polls first wins, not strictly the oldest; upgrade if the order must be fixed.
+    pub fn watch_host(self: &Arc<Self>) {
+        let chat = self.clone();
+        thread::spawn(move || {
+            while !chat.stop.is_set() {
+                chat.try_become_host();
+                chat.stop.wait(Duration::from_secs(2));
+            }
+        });
+    }
+
+    pub fn show_phone(&self) {
+        *self.phone_until.lock().unwrap() = Some(Instant::now() + PHONE_SHOWN);
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    pub fn hide_phone(&self) {
+        if self.phone_until.lock().unwrap().take().is_some() {
+            self.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub fn toggle_phone(&self) {
+        if self.phone_visible() {
+            self.hide_phone();
+        } else {
+            self.show_phone();
+        }
+    }
+
+    /// True while the phone address should be on screen. Hides it, and asks for a redraw, when its time is up.
+    pub fn phone_visible(&self) -> bool {
+        let mut until = self.phone_until.lock().unwrap();
+        match *until {
+            Some(at) if at > Instant::now() => true,
+            Some(_) => {
+                *until = None;
+                self.dirty.store(true, Ordering::Relaxed);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// The rows to draw over the screen, read from `phone.json` now, so the token is in no chat line or copy.
+    pub fn phone_overlay(&self) -> Option<Vec<String>> {
+        if !self.phone_visible() {
+            return None;
+        }
+        let Some(phone) = self.state_dir.as_deref().and_then(phone::read) else {
+            return Some(vec![t("phone.none", &[])]);
+        };
+        let mut rows = vec![t("phone.title", &[])];
+        rows.extend(phone.urls.iter().map(|url| format!("  {url}")));
+        rows.push(t("phone.token", &[("token", &phone.token)]));
+        rows.push(t("phone.hint", &[]));
+        Some(rows)
     }
 
     /// True for a key the user verified, and for this PC's own key (another chat pane on this PC).
@@ -312,6 +409,20 @@ impl Chat {
                     (Link::Unverified, None) => String::new(),
                 };
                 self.say(format!("- {} ({}:{}) {state}", peer.name, peer.ip, peer.port));
+            }
+            return true;
+        }
+        if text == "/phone" || text.starts_with("/phone ") {
+            match text[6..].trim() {
+                "" => self.show_phone(),
+                "new" => match self.state_dir.as_deref().map(phone::regenerate_token) {
+                    Some(Ok(Some(()))) => {
+                        self.say(t("phone.new_done", &[]));
+                        self.show_phone();
+                    }
+                    _ => self.say(t("phone.none", &[])),
+                },
+                _ => self.say(t("usage.phone", &[])),
             }
             return true;
         }
@@ -788,4 +899,90 @@ mod tests {
         }
         assert!(!chat.admit_sender("10.0.0.1"));
     }
+
+    use std::fs;
+
+    fn phone_chat(dir: &std::path::Path, port: u16) -> Chat {
+        let mut chat = Chat::new(Me { id: format!("id{port}"), name: "N".into(), port, key: vec![], secret: vec![] });
+        chat.state_dir = Some(dir.to_path_buf());
+        chat
+    }
+
+    fn phone_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("herdr-talk-chat-phone-{:016x}", fastrand::u64(..)))
+    }
+
+    #[test]
+    fn the_first_node_is_host_shows_the_phone_once_and_the_token_stays_out_of_the_chat() {
+        let dir = phone_dir();
+        let (first, second) = (phone_chat(&dir, 1), phone_chat(&dir, 2));
+        assert!(first.try_become_host() && first.is_host());
+        assert!(!second.try_become_host() && !second.is_host());
+        let token = phone::read(&dir).unwrap().token;
+        let overlay = first.phone_overlay().expect("shown when the host starts").join("
+");
+        assert!(overlay.contains(&token));
+        assert!(second.phone_overlay().is_none(), "a node that is not the host shows nothing by itself");
+        // A node that is not the host still reads the host's phone.json when asked.
+        second.handle("/phone");
+        assert!(second.phone_overlay().unwrap().join("
+").contains(&token));
+        for chat in [&first, &second] {
+            assert!(chat.lines().iter().all(|line| !line.render().contains(&token)));
+        }
+        first.hide_phone();
+        assert!(first.phone_overlay().is_none());
+        first.toggle_phone();
+        assert!(first.phone_visible());
+        first.release_host();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn phone_new_changes_the_token_without_writing_it_in_the_chat() {
+        let dir = phone_dir();
+        let chat = phone_chat(&dir, 1);
+        assert!(chat.try_become_host());
+        let before = phone::read(&dir).unwrap().token;
+        chat.handle("/phone new");
+        let after = phone::read(&dir).unwrap().token;
+        assert_ne!(before, after);
+        let said: Vec<String> = chat.lines().iter().map(Line::render).collect();
+        assert!(said.contains(&t("phone.new_done", &[])));
+        assert!(said.iter().all(|row| !row.contains(&after) && !row.contains(&before)));
+        chat.handle("/phone what");
+        assert_eq!(chat.lines().last().unwrap().render(), t("usage.phone", &[]));
+        chat.release_host();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_waiting_node_takes_over_when_the_host_ends_and_keeps_the_token() {
+        let dir = phone_dir();
+        fs::create_dir_all(&dir).unwrap();
+        // A live node that is not the host: its control port accepts connections.
+        let alive = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        fs::write(dir.join("control-1.json"), format!("{{\"port\": {}, \"token\": \"x\"}}", alive.local_addr().unwrap().port())).unwrap();
+        let (first, second) = (phone_chat(&dir, 1), phone_chat(&dir, 2));
+        assert!(first.try_become_host());
+        let token = phone::read(&dir).unwrap().token;
+        first.release_host();
+        assert!(phone::read(&dir).is_some(), "another node is alive, so the file stays for the successor");
+        assert!(second.try_become_host());
+        let phone = phone::read(&dir).unwrap();
+        assert_eq!((phone.token, phone.owner_port), (token, 2));
+        second.release_host();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_phone_hides_when_its_time_is_up() {
+        let dir = phone_dir();
+        let chat = phone_chat(&dir, 1);
+        chat.show_phone();
+        *chat.phone_until.lock().unwrap() = Some(Instant::now() - Duration::from_secs(1));
+        assert!(!chat.phone_visible());
+        assert!(chat.take_dirty(), "the screen is asked to redraw");
+    }
 }
+

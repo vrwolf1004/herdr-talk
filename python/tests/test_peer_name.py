@@ -26,6 +26,11 @@ class FakeSocket:
         return self.packets.pop(0), ("10.0.0.9", 52311)
 
 
+def peer(chat, peer_id):
+    """The stored entry of the peer with this announced id."""
+    return next(info for info in chat.peers.values() if info["id"] == peer_id)
+
+
 class FakeConn:
     """받은 바이트를 한 번에 주고 닫는 연결."""
 
@@ -35,8 +40,8 @@ class FakeConn:
     def settimeout(self, _seconds):
         pass
 
-    def recv(self, _size):
-        data, self.data = self.data, b""
+    def recv(self, size):
+        data, self.data = self.data[:size], self.data[size:]
         return data
 
     def __enter__(self):
@@ -83,7 +88,7 @@ class JoinNoticeTest(CollectSayTest):
         chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
         raw = "Li" + ESC + "am" + "z" * 60
         talk._listen_loop(FakeSocket([self.packet("p1", raw)]), chat)
-        stored = chat.peers["p1"]["name"]
+        stored = peer(chat, "p1")["name"]
         self.assertNotIn(ESC, stored)
         self.assertLessEqual(len(stored), 32)
         self.assertTrue(any(stored in line for line in self.lines), self.lines)
@@ -92,7 +97,7 @@ class JoinNoticeTest(CollectSayTest):
     def test_blank_name_is_stored_and_announced_as_unknown(self):
         chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
         talk._listen_loop(FakeSocket([self.packet("p2", BELL + "\x02")]), chat)
-        self.assertEqual(chat.peers["p2"]["name"], "unknown")
+        self.assertEqual(peer(chat, "p2")["name"], "unknown")
         self.assertTrue(any("unknown" in line for line in self.lines), self.lines)
 
 
@@ -101,16 +106,16 @@ class SenderNameTest(CollectSayTest):
 
     def send(self, sender, text="hi"):
         payload = json.dumps({"app": talk.APP, "from": sender, "text": text}).encode("utf-8")
-        talk.receive_one(FakeConn(payload))
+        talk.receive_one(FakeConn(payload), talk.Chat({"id": "me", "name": "Me", "port": 1}))
 
     def test_sender_name_is_cleaned_and_cut_to_32_as_before(self):
         raw = "Ka" + ESC + "ren" + "q" * 40
         self.send(raw)
-        self.assertEqual(self.lines, [f"{talk.clean_text(raw, 32)}: hi"])
+        self.assertEqual(self.lines, [f"{talk.plain_sender(raw)} (plain text): hi"])
 
     def test_sender_of_only_control_characters_keeps_the_old_result(self):
         self.send(BELL + "\x02")
-        self.assertEqual(self.lines, ["  : hi"])
+        self.assertEqual(self.lines, ["unknown (plain text): hi"])
 
 
 class JoinNameMatchesSenderTest(CollectSayTest):
@@ -119,7 +124,7 @@ class JoinNameMatchesSenderTest(CollectSayTest):
         chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
         packet = json.dumps({"app": talk.APP, "id": "p9", "name": raw, "port": 1}).encode("utf-8")
         talk._listen_loop(FakeSocket([packet]), chat)
-        self.assertEqual(chat.peers["p9"]["name"], talk.clean_text(raw, 32))
+        self.assertEqual(peer(chat, "p9")["name"], talk.clean_text(raw, 32))
 
 
 class NameClashTest(CollectSayTest):

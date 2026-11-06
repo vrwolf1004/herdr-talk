@@ -12,6 +12,7 @@
   "help.enter": "  Enter           enviar o ejecutar un comando",
   "help.backspace": "  Retroceso       borrar un carácter",
   "help.ctrl_l": "  Ctrl+L          borrar la lista de mensajes",
+  "help.ctrl_p": "  Ctrl+P          mostrar u ocultar la dirección del móvil",
   "help.ctrl_c": "  Ctrl+C          salir",
   "usage.name": "uso: /name <nuevo nombre>   (o Ctrl+N)",
   "usage.lang": "uso: /lang <{codes}>",
@@ -29,6 +30,7 @@
   "open.no_pane": "herdr-talk open: ejecútelo desde un pane de herdr (HERDR_PANE_ID no está definido).",
   "dock.agent_name": "talk: {count} conectados",
   "help.trust": "  /trust <código>  verificar a un par por código",
+  "help.phone": "  /phone [new]    ver la dirección del móvil; new = token nuevo",
   "usage.trust": "uso: /trust <código>   (el código que se ve en el otro PC)",
   "trust.done": "{name} verificado. Los mensajes para él ahora van cifrados.",
   "trust.none": "ningún par sin verificar tiene el código {code}",
@@ -40,5 +42,13 @@
   "peers.verified": "verificado",
   "peers.plain": "texto sin cifrar",
   "peers.unverified": "sin verificar, código {code}",
-  "trust.ambiguous": "varias claves distintas coinciden con el código {code}. No confiado: compara los códigos otra vez"
+  "trust.ambiguous": "varias claves distintas coinciden con el código {code}. No confiado: compara los códigos otra vez",
+  "phone.title": "Dirección del móvil (solo en esta pantalla):",
+  "phone.token": "  Token: {token}",
+  "phone.hint": "  Ctrl+P o cualquier tecla lo oculta. /phone new crea un token nuevo.",
+  "phone.none": "Aún no hay dirección del móvil: no hay anfitrión en este PC.",
+  "phone.new_done": "Token nuevo creado. Los móviles deben escribir el nuevo.",
+  "usage.phone": "uso: /phone   o   /phone new",
+  "host.name": "Anfitrión",
+  "host.badge": "[anfitrión]"
 }

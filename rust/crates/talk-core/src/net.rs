@@ -54,6 +54,7 @@ pub fn start_in(name: Option<String>, tcp_port: u16, udp_port: u16, state: &Path
             identity
         }
     };
+    let named = name.is_some();
     let me = Me {
         id: store::peer_id(&identity.public),
         name: name.unwrap_or_else(default_name),
@@ -66,6 +67,10 @@ pub fn start_in(name: Option<String>, tcp_port: u16, udp_port: u16, state: &Path
     chat.plaintext = plaintext;
     chat.state_dir = Some(state.to_path_buf());
     let chat = Arc::new(chat);
+    // The first node on this PC is the host (방장). Without --name it is called that; with one, its name stays and the status row shows a badge.
+    if chat.try_become_host() && !named {
+        chat.me.lock().unwrap().name = t("host.name", &[]);
+    }
     let (receiver, announcer, peers) = (chat.clone(), chat.clone(), chat.clone());
     thread::spawn(move || receive_messages(server, receiver));
     thread::spawn(move || announce(udp_port, announcer));
@@ -163,9 +168,19 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
     peers.push(peer);
     drop(peers);
     chat.say(t("peer.joined", &[("name", &name), ("ip", &ip)]));
+    // The host of this PC joined (its chat port is in phone.json, a local file): show the phone address on this screen only.
+    if chat.state_dir.as_deref().and_then(crate::phone::read).is_some_and(|phone| phone.owner_port == port && phone.owner_pid != std::process::id())
+        && is_local_address(&ip)
+    {
+        chat.show_phone();
+    }
     if let Some(key) = key.filter(|key| !chat.trusts(key)) {
-        // A new key from an address we trusted before is a changed key, not a new peer.
-        let changed = chat.trusted.lock().unwrap().iter().any(|trusted| trusted.ip == ip);
+        // A new key from an address we trusted before is a changed key, not a new peer, unless the trusted key is
+        // still announcing from that address: then this is another identity on the same PC.
+        let alive = chat.fresh_peers();
+        let changed = chat.trusted.lock().unwrap().iter().any(|trusted| {
+            trusted.ip == ip && !alive.iter().any(|peer| peer.ip == ip && peer.key.as_deref() == Some(trusted.key.as_slice()))
+        });
         let code = store::fingerprint(&me.key, &key);
         if changed {
             chat.say(t("peer.key_changed", &[("name", &name), ("ip", &ip)]));
@@ -376,15 +391,12 @@ fn deliver(data: &[u8], key: Option<&[u8]>, chat: &Chat) {
     chat.add(lines);
 }
 
-/// True for this PC's own addresses: loopback, and the address this PC uses to reach the LAN.
+/// True for this PC's own addresses: loopback, and any address of any adapter here (LAN, VPN, VirtualBox, WSL).
+/// A broadcast leaves through whichever adapter Windows picks, so the sender address need not be the default-route one.
 fn is_local_address(ip: &str) -> bool {
     let Ok(ip) = ip.parse::<IpAddr>() else { return false };
-    if ip.is_loopback() {
-        return true;
-    }
-    // Connecting a UDP socket sends nothing. It only picks the address this PC sends from.
-    let Ok(probe) = UdpSocket::bind(("0.0.0.0", 0)) else { return false };
-    probe.connect(("192.0.2.1", 9)).is_ok() && probe.local_addr().is_ok_and(|local| local.ip() == ip)
+    // Binding only works for an address assigned to this PC. Port 0 takes a free port and sends nothing.
+    ip.is_loopback() || UdpSocket::bind((ip, 0)).is_ok()
 }
 
 /// Send one message. A peer with a key only ever gets the encrypted form.
@@ -595,6 +607,8 @@ mod tests {
         assert!(is_local_address("127.0.0.1"));
         assert!(!is_local_address("203.0.113.7"));
         assert!(!is_local_address("not an address"));
+        // Any address of any adapter here counts, not only the default-route one.
+        assert!(is_local_address("127.0.0.2"));
     }
 
     #[test]
@@ -656,6 +670,42 @@ mod tests {
         remember_peer(&chat, announce.to_string().as_bytes(), "10.0.0.5".into());
         assert!(!chat.trusts(&new_key));
         assert!(texts(&chat).contains(&t("peer.key_changed", &[("name", "Bob"), ("ip", "10.0.0.5")])));
+    }
+
+    #[test]
+    fn another_identity_beside_a_live_trusted_one_is_not_a_changed_key() {
+        let chat = chat();
+        let (bob, other) = ([1u8; 32], [2u8; 32]);
+        chat.trusted.lock().unwrap().push(Trusted { name: "Bob".into(), key: bob.to_vec(), ip: "10.0.0.5".into() });
+        let announce = |key: &[u8; 32], port: u16| json!({"app": APP, "id": store::peer_id(key), "name": "X", "port": port, "key": store::to_hex(key)}).to_string();
+        remember_peer(&chat, announce(&bob, 8).as_bytes(), "10.0.0.5".into());
+        remember_peer(&chat, announce(&other, 9).as_bytes(), "10.0.0.5".into());
+        let shown = texts(&chat);
+        assert!(!shown.contains(&t("peer.key_changed", &[("name", "X"), ("ip", "10.0.0.5")])));
+        assert!(!chat.trusts(&other));
+    }
+
+    #[test]
+    fn the_first_node_is_the_host_and_is_named_so_unless_it_has_a_name() {
+        let (base, other) = (folder(), folder());
+        let first = start_in(None, 0, 0, &base, false).unwrap();
+        let second = start_in(None, 0, 0, &base, false).unwrap(); // same state folder: the host is taken
+        let named = start_in(Some("Zed".into()), 0, 0, &other, false).unwrap();
+        assert!(first.is_host() && !second.is_host() && named.is_host());
+        assert_eq!(first.me.lock().unwrap().name, t("host.name", &[]));
+        assert_ne!(second.me.lock().unwrap().name, t("host.name", &[]));
+        assert_eq!(named.me.lock().unwrap().name, "Zed", "a name given by the user stays");
+        // The host ends: the other node takes over, and keeps the name it has.
+        let kept = second.me.lock().unwrap().name.clone();
+        first.release_host();
+        assert!(second.try_become_host());
+        assert_eq!(second.me.lock().unwrap().name, kept);
+        for chat in [&first, &second, &named] {
+            chat.stop.set();
+            chat.release_host();
+        }
+        fs::remove_dir_all(base).ok();
+        fs::remove_dir_all(other).ok();
     }
 
     /// Two chats on this PC, each with its own state folder. Each trusts the other only when asked.
