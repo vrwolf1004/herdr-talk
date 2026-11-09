@@ -1,0 +1,101 @@
+//! The Ed25519 signing key for relay row writes. Kept apart from the Noise key (identity.json) on purpose.
+//! Same file and rules as python/src/relay_key.py: relay-signing.key in the state folder, 64 hex characters.
+//! The file is created new, never overwritten: a damaged file is an error, not a reason to make a new key.
+
+use crate::store;
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+
+pub const KEY_FILE: &str = "relay-signing.key";
+
+/// The 32-byte seed (the private key). Makes a new key only when there is no file yet.
+pub fn load_or_create(state: &Path) -> Result<[u8; 32], String> {
+    let path = state.join(KEY_FILE);
+    match fs::read_to_string(&path) {
+        Ok(text) => parse(text.trim()).ok_or_else(|| format!("{KEY_FILE} is damaged; it was not replaced")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => create(state, &path),
+        Err(error) => Err(format!("cannot read {KEY_FILE}: {error}")),
+    }
+}
+
+/// The X25519 public key of this PC's Noise identity (identity.json), as 64 lowercase hex characters.
+/// Read only: a missing identity is an error (start a chat first), never a new key.
+pub fn noise_public_hex(state: &Path) -> Result<String, String> {
+    let identity = store::read_identity(state).map_err(|error| error.to_string())?.ok_or("no identity yet: start a chat first")?;
+    if identity.public.len() != 32 {
+        return Err("identity public key is not 32 bytes".to_string());
+    }
+    Ok(store::to_hex(&identity.public))
+}
+
+fn parse(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 || !text.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+        return None;
+    }
+    let mut seed = [0u8; 32];
+    for (index, byte) in seed.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(seed)
+}
+
+fn create(state: &Path, path: &Path) -> Result<[u8; 32], String> {
+    fs::create_dir_all(state).map_err(|error| error.to_string())?;
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed).map_err(|error| error.to_string())?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    match options.open(path) {
+        Ok(mut file) => {
+            let hex: String = seed.iter().map(|byte| format!("{byte:02x}")).collect();
+            file.write_all(format!("{hex}\n").as_bytes()).map_err(|error| error.to_string())?;
+            Ok(seed)
+        }
+        // Another process made the file first: use that one.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => load_or_create(state),
+        Err(error) => Err(format!("cannot create {KEY_FILE}: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn folder(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("herdr-talk-relay-key-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn created_once_then_read_back() {
+        let dir = folder("once");
+        let first = load_or_create(&dir).unwrap();
+        assert_eq!(load_or_create(&dir).unwrap(), first);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn damaged_file_is_an_error_and_is_kept() {
+        let dir = folder("damaged");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(KEY_FILE), "not a key\n").unwrap();
+        assert!(load_or_create(&dir).is_err());
+        assert_eq!(fs::read_to_string(dir.join(KEY_FILE)).unwrap(), "not a key\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reads_a_file_written_by_the_python_edition_format() {
+        let dir = folder("format");
+        fs::create_dir_all(&dir).unwrap();
+        let hex: String = (0u8..32).map(|byte| format!("{byte:02x}")).collect();
+        fs::write(dir.join(KEY_FILE), format!("{hex}\n")).unwrap();
+        let expected: [u8; 32] = std::array::from_fn(|index| index as u8);
+        assert_eq!(load_or_create(&dir).unwrap(), expected);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}

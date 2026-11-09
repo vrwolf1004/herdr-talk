@@ -109,6 +109,30 @@
 - 테스트 벡터: 고정 키 쌍으로 채널 이름과 봉투 바이트를 만들고, Rust 와 Python 이 같은 값을 내는지 확인한다.
 - 서버는 봉투 내용을 검사하지 않는다. 채널 구독 권한만 RLS 와 Realtime 정책으로 막는다.
 
+## 서명 검증 설계 (2026-11-09, 사용자 "서명 검증 진행")
+
+문제: 현재 `x-herdr-pk` 헤더는 인증이 아니어서 publishable 키를 가진 누구나 다른 사람 행을 덮어쓸 수 있다.
+
+결정 (추천안 채택):
+
+1. **쓰기는 Edge Function 만 한다.** `peers` 의 anon·authenticated 쓰기 정책을 전부 없앤다 (select 만 허용). 쓰기는 Supabase Edge Function `put-peer` 가 서버 쪽 service role 로 한다. service role 키는 함수 환경에만 있고 클라이언트에 나가지 않는다 (소유자가 CLI 로 배포할 때 설정).
+2. **서명 키를 따로 둔다.** Noise 키 (X25519, 세션·봉투용) 는 그대로 두고, 행 쓰기용 **Ed25519 서명 키**를 하나 더 만든다. 개인키는 state 폴더에 사용자만 읽도록 저장한다 (기존 비밀키 저장 규칙과 같음). 공개키 (32바이트 hex) 는 `peers.pk` 로 쓴다.
+3. **서명 대상 문자열 (고정 형식):** `"herdr-talk-put-v1\n" + pk + "\n" + name + "\n" + ts + "\n" + nonce`. `ts` 는 unix 초, `nonce` 는 16바이트 hex.
+4. **요청**: `POST {url}/functions/v1/put-peer`, 본문 `{"pk":..,"name":..,"ts":..,"nonce":..,"sig":"<128 hex>"}`. 헤더는 `apikey` 로 publishable 키 (함수 게이트용).
+5. **함수 검증 순서**: 형식 → `|ts - now| <= 300` → Ed25519 검증 (`pk` 로) → nonce 재사용 거부 (테이블 `put_nonces(nonce pk, ts)`, 만료 행 정리) → upsert `peers`. 실패는 401 또는 400, 이유는 본문에 넣지 않는다.
+6. **조회**는 기존처럼 `peers` select (anon 허용). 조회 결과의 서명은 없다. 이름은 "그 키 소유자가 마지막으로 서명해 쓴 이름" 이라는 뜻만 가진다.
+
+주의 (구현 전 확인):
+
+- Python 판은 표준 라이브러리에 Ed25519 가 없다. `noise.py` 처럼 순수 Python 구현이 필요하고, RFC 8032 테스트 벡터로 검증한다.
+- Rust 는 Ed25519 크레이트가 있는지 먼저 본다 (`ed25519-dalek` 등). 새 크레이트는 승인 후 추가한다.
+- Edge Function 배포에는 Supabase 계정 로그인이 필요하다 (소유자 몫).
+- 재생 방지 테이블과 정리 작업은 SQL 에 포함한다.
+- 봉투 (`relay.rs`, `relay.py`) 의 `from`/`to` 는 기존 X25519 키 그대로다. 행 쓰기 서명만 Ed25519 를 쓴다. 두 키의 대응(행 `pk` 가 Ed25519 인지 X25519 인지)은 아래 "결정" 에서 확인한다.
+
+결정 필요 (구현 중 확인):
+- `peers.pk` 를 Ed25519 공개키로 쓸지, X25519 공개키로 쓰고 서명키와 묶을지. 추천: Ed25519 공개키를 `peers.pk` 로 쓰고, 봉투용 X25519 공개키를 `peers` 의 별도 컬럼 `noise_pk` 로 둔다 (`noise_pk` 는 서명으로 보호된다).
+
 ## 다음 단계
 
 0. (사용자) Supabase 프로젝트 생성 → URL, publishable 키 전달. service_role 키는 전달하지 않는다.

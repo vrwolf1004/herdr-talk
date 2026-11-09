@@ -10,6 +10,8 @@ pub mod i18n;
 pub mod net;
 pub mod phone;
 pub mod relay;
+pub mod relay_key;
+pub mod relay_rest;
 pub mod store;
 pub mod text;
 

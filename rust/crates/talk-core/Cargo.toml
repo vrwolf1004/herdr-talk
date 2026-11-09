@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Peer discovery, messages and chat commands shared by herdr-talk front ends"
 
 [dependencies]
+ed25519-dalek = { version = "2", default-features = false }
 fastrand = "2"
 getrandom = "0.2"
 serde_json = "1"
@@ -13,3 +14,4 @@ snow = "0.10"
 socket2 = "0.5"
 sys-locale = "0.3"
 unicode-width = "0.2"
+ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
