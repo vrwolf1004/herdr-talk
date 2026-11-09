@@ -30,6 +30,11 @@ def peer_id(key):
     return hashlib.sha256(key).hexdigest()
 
 
+def key_label(key):
+    """The first 8 hex digits of the peer id: enough to tell peers apart on screen, never the full id."""
+    return peer_id(key)[:8]
+
+
 def fingerprint(own, peer):
     """Code both users compare: 128 bits of SHA-256 over the two public keys, sorted, in groups of four hex digits."""
     first, second = sorted((own, peer))

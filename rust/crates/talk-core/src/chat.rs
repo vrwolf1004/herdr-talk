@@ -496,14 +496,14 @@ impl Chat {
             return;
         };
         let mut trusted = self.trusted.lock().unwrap();
-        trusted.push(Trusted { name: name.clone(), key, ip });
+        trusted.push(Trusted { name: name.clone(), key, ip: ip.clone() });
         let saved = match &self.state_dir {
             Some(dir) => store::write_trusted(dir, &trusted),
             None => Ok(()),
         };
         drop(trusted);
         match saved {
-            Ok(()) => self.say(t("trust.done", &[("name", &name)])),
+            Ok(()) => self.say(t("trust.done", &[("name", &name), ("ip", &ip)])),
             Err(error) => self.say(t("trust.save_failed", &[("error", &error.to_string())])),
         }
     }
@@ -880,7 +880,7 @@ mod tests {
         chat.handle(&format!("/trust {}", store::fingerprint(&[0; 32], &key).to_uppercase()));
         assert!(chat.trusts(&key));
         assert_eq!(chat.link_of(&chat.fresh_peers()[0]), Link::Encrypted);
-        assert!(texts(&chat).contains(&t("trust.done", &[("name", "Bob")])));
+        assert!(texts(&chat).contains(&t("trust.done", &[("name", "Bob"), ("ip", "10.0.0.2")])));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -149,6 +150,41 @@ class ControlTest(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+
+class StaleControlFilesTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        for name in os.listdir(self.dir):
+            os.remove(os.path.join(self.dir, name))
+        os.rmdir(self.dir)
+
+    def touch(self, pid):
+        with open(os.path.join(self.dir, f"control-{pid}.json"), "w", encoding="utf-8") as f:
+            json.dump({"port": 1, "token": "x", "pid": pid}, f)
+
+    def test_ended_node_removed_live_and_own_kept(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            self.touch(4000000)  # no such process
+            self.touch(child.pid)
+            self.touch(os.getpid())
+            talk.remove_stale_control_files(self.dir)
+            self.assertEqual(sorted(os.listdir(self.dir)), sorted([f"control-{child.pid}.json", f"control-{os.getpid()}.json"]))
+        finally:
+            child.kill()
+            child.wait()
+
+    def test_unrelated_names_and_missing_folder_do_not_raise(self):
+        self.touch(4000000)
+        open(os.path.join(self.dir, "control-x.json"), "w").close()
+        open(os.path.join(self.dir, "notes.txt"), "w").close()
+        talk.remove_stale_control_files(self.dir)
+        self.assertEqual(sorted(os.listdir(self.dir)), ["control-x.json", "notes.txt"])
+        talk.remove_stale_control_files(os.path.join(self.dir, "missing"))
+
 
 
 if __name__ == "__main__":

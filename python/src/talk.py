@@ -54,7 +54,23 @@ dock = load_dock_layout()
 from i18n import t
 
 APP = "herdr-talk"
-UDP_PORT = 47850          # discovery port, the same on every PC
+DEFAULT_UDP_PORT = 47850  # discovery port, the same on every PC
+UDP_PORT_VARIABLE = "HERDR_TALK_UDP_PORT"  # only for separate test networks: unset means the default
+
+
+def parse_udp_port(text):
+    """The discovery port for a value of HERDR_TALK_UDP_PORT: None or empty gives the default. Anything that is not
+    a port number from 1 to 65535 raises ValueError; it never falls back silently."""
+    if text is None or not text.strip():
+        return DEFAULT_UDP_PORT
+    stripped = text.strip()
+    if stripped.isascii() and stripped.isdigit() and 1 <= int(stripped) <= 65535:
+        return int(stripped)
+    raise ValueError(f"{UDP_PORT_VARIABLE} must be a port number from 1 to 65535, got {text!r}")
+
+
+def udp_port():
+    return parse_udp_port(os.environ.get(UDP_PORT_VARIABLE))
 ANNOUNCE_SECONDS = 2
 PEER_TIMEOUT_SECONDS = 10
 AUTO_RENAME_GAP_SECONDS = 60  # 자동 이름 변경 사이의 최소 간격
@@ -325,7 +341,7 @@ class Chat:
         except OSError as error:
             say(t("trust.save_failed", error=str(error)))
             return
-        say(t("trust.done", name=info["name"]))
+        say(t("trust.done", name=info["name"], ip=info["ip"]))
 
     def handle(self, text):
         """Handle one line typed by the user. Return False to leave the chat."""
@@ -560,7 +576,7 @@ def remember_peer(chat, info, ip):
         if changed:
             say(t("peer.key_changed", name=name, ip=ip))
         else:
-            say(t("peer.fingerprint", name=name, code=store.fingerprint(own, key)))
+            say(t("peer.fingerprint", name=name, ip=ip, label=store.key_label(key), code=store.fingerprint(own, key)))
     return name
 
 
@@ -758,7 +774,10 @@ def send_to(peer, me, text):
                 _send_encrypted(_Deadline(conn, SEND_TIMEOUT_SECONDS), me, key, message)
             except (noise.NoiseError, ValueError) as error:
                 raise OSError(str(error)) from error
-        conn.shutdown(socket.SHUT_WR)
+        try:
+            conn.shutdown(socket.SHUT_WR)
+        except ConnectionResetError:
+            pass  # the peer closed first (e.g. it dropped a plain message); the data was already sent
 
 
 def _send_encrypted(conn, me, peer_key, message):
@@ -862,12 +881,62 @@ class Control:
             pass
 
 
+def _process_alive(pid):
+    """Whether a process with this pid exists. Windows asks the OS; elsewhere os.kill(pid, 0) (which only probes on POSIX)."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists, but belongs to someone else
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def remove_stale_control_files(state):
+    """Delete control-<pid>.json of nodes whose process has ended. A live node keeps its file.
+    Best effort: a file that cannot be removed is skipped, so this never stops a start."""
+    try:
+        names = os.listdir(state)
+    except OSError:
+        return
+    for name in names:
+        if not (name.startswith("control-") and name.endswith(".json")):
+            continue
+        try:
+            pid = int(name[len("control-"):-len(".json")])
+        except ValueError:
+            continue
+        if pid == os.getpid() or _process_alive(pid):
+            continue
+        try:
+            os.remove(os.path.join(state, name))
+        except OSError:
+            pass
+
+
 def start_control(chat, state, allow_shutdown=False):
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen()
     token = secrets.token_hex(32)
     os.makedirs(state, mode=0o700, exist_ok=True)
+    remove_stale_control_files(state)
     file = os.path.join(state, f"control-{os.getpid()}.json")
     try:
         os.remove(file)  # a leftover file of a reused pid is replaced, not reopened
@@ -1295,13 +1364,13 @@ def main(argv=None):
     chat = commands.add_parser("run", help="open the chat in this pane")
     chat.add_argument("--name", default=None, help="name shown to others (random if omitted)")
     chat.add_argument("--tcp-port", type=int, default=0, help="TCP port for messages (0 = pick one)")
-    chat.add_argument("--udp-port", type=int, default=UDP_PORT, help="discovery port (keep the same on every PC)")
+    chat.add_argument("--udp-port", type=int, default=None, help="discovery port (keep the same on every PC; default HERDR_TALK_UDP_PORT or 47850)")
     chat.add_argument("--dock", action="store_true", help="show this pane as the herdr-dock block")
     chat.add_argument("--pane", default=None, help="herdr pane id of the dock block (with --dock)")
     serve_parser = commands.add_parser("serve", help="run without a screen; a GUI talks to it over the control channel")
     serve_parser.add_argument("--name", default=None, help="name shown to others (random if omitted)")
     serve_parser.add_argument("--tcp-port", type=int, default=0, help="TCP port for messages (0 = pick one)")
-    serve_parser.add_argument("--udp-port", type=int, default=UDP_PORT, help="discovery port (keep the same on every PC)")
+    serve_parser.add_argument("--udp-port", type=int, default=None, help="discovery port (keep the same on every PC; default HERDR_TALK_UDP_PORT or 47850)")
     commands.add_parser("open", help="split the current pane and run the chat in it")
     commands.add_parser("dock-start", help="show the chat as a block in the herdr-dock workspace")
     commands.add_parser("dock-stop", help="remove the dock block")
@@ -1314,6 +1383,8 @@ def main(argv=None):
 
 
 def _dispatch(args):
+    if args.command in ("run", "serve") and args.udp_port is None:
+        args.udp_port = udp_port()  # a bad HERDR_TALK_UDP_PORT is reported by main() and stops the start
     if args.command == "run":
         return run(args)
     if args.command == "serve":

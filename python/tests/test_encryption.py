@@ -129,8 +129,8 @@ class AnnouncementTest(Base):
         announce(mine, theirs, "10.0.0.5")
         announce(theirs, mine, "10.0.0.6")
         code = store.fingerprint(mine.me["key"], theirs.me["key"])
-        self.assertIn(talk.t("peer.fingerprint", name="B", code=code), self.lines)
-        self.assertIn(talk.t("peer.fingerprint", name="A", code=code), self.lines)
+        self.assertIn(talk.t("peer.fingerprint", name="B", ip="10.0.0.5", label=store.key_label(theirs.me["key"]), code=code), self.lines)
+        self.assertIn(talk.t("peer.fingerprint", name="A", ip="10.0.0.6", label=store.key_label(mine.me["key"]), code=code), self.lines)
 
     def test_own_key_is_taken_only_from_this_pc(self):
         me = make_chat()
@@ -272,7 +272,7 @@ class ExchangeTest(Base):
         self.b.handle("/trust 0000-0000")
         self.assertIn(talk.t("trust.none", code="00000000"), self.lines)
         self.b.handle(f"/trust {code.upper()}")
-        self.assertIn(talk.t("trust.done", name="A"), self.lines)
+        self.assertIn(talk.t("trust.done", name="A", ip="127.0.0.1"), self.lines)
         self.assertEqual(store.read_trusted(self.dir)[0]["key"], self.a.me["key"])
         self.assertEqual(self.b.link_of(self.peer(self.b)), "encrypted")
         self.lines.clear()

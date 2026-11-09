@@ -166,7 +166,7 @@ fn talk_program() -> Result<PathBuf, String> {
 
 /// Ask the child to end, which removes its control file, and kill it only if it does not.
 fn stop_serve(started: &Started) {
-    let Some(mut child) = started.lock().unwrap().take() else { return };
+    let Some(mut child) = locked(&**started, "stop_serve").take() else { return };
     let file = control_file(&state_dir(), child.id());
     if let Some(Ok(mut link)) = read_control(&file).map(|control| Link::open(&control)) {
         let _ = link.call(&json!({"cmd": "shutdown"}));
@@ -184,7 +184,7 @@ fn stop_serve(started: &Started) {
 
 /// Start `herdr-talk serve` unless one of ours is alive. Err is the reason it cannot be started.
 fn ensure_serve(started: &Started, starts: &mut u32) -> Result<(), String> {
-    let mut child = started.lock().unwrap();
+    let mut child = locked(&**started, "ensure_serve");
     if child.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(Some(_)))) {
         *child = None;
     }
@@ -203,13 +203,13 @@ fn ensure_serve(started: &Started, starts: &mut u32) -> Result<(), String> {
 }
 
 fn set_status(shared: &Arc<Mutex<Shared>>, text: &str) {
-    shared.lock().unwrap().status = text.to_string();
+    locked(&**shared, "set_status").status = text.to_string();
 }
 
 /// Connect to the serve this window started, through its own control file. Another window's serve or a
 /// herdr-talk pane is never used, so every window is a node of its own.
 fn connect_own(dir: &Path, started: &Started) -> Option<(Link, Control)> {
-    let pid = started.lock().unwrap().as_ref()?.id();
+    let pid = locked(&**started, "connect_own").as_ref()?.id();
     let control = read_control(&control_file(dir, pid))?;
     Link::open(&control).ok().map(|link| (link, control))
 }
@@ -253,7 +253,10 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
     stop_serve(started); // a serve that is only late would be a second chat on this PC
     let chat = loop {
         let state = talk_core::store::state_dir();
-        match talk_core::net::start_in(None, 0, talk_core::UDP_PORT, &state, talk_core::store::plaintext_allowed()) {
+        let attempt = talk_core::udp_port().map_err(|error| error.to_string()).and_then(|udp| {
+            talk_core::net::start_in(None, 0, udp, &state, talk_core::store::plaintext_allowed()).map_err(|error| error.to_string())
+        });
+        match attempt {
             Ok(chat) => break chat,
             Err(error) => {
                 set_status(shared, &format!("내장 모드를 시작하지 못함: {error} (herdr-talk 실패: {reason})"));
@@ -267,10 +270,10 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
         while let Ok(text) = outgoing.try_recv() {
             chat.handle(&text);
         }
-        let mut state = shared.lock().unwrap();
+        let mut state = locked(&*shared, "run_embedded");
         state.lines = chat.lines().into_iter().map(|line| (line.render(), line.mine)).collect();
         state.me = {
-            let me = chat.me.lock().unwrap();
+            let me = locked(&chat.me, "run_embedded.me");
             Some((me.name.clone(), me.port))
         };
         state.peers = chat.fresh_peers().iter().map(|peer| format!("{} ({}:{})", peer.name, peer.ip, peer.port)).collect();
@@ -289,7 +292,7 @@ fn session(link: &mut Link, shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<Str
         }
         let lines = link.call(&json!({"cmd": "lines"}))?;
         let peers = link.call(&json!({"cmd": "peers"}))?;
-        let mut state = shared.lock().unwrap();
+        let mut state = locked(&**shared, "session");
         state.lines = lines["lines"].as_array().into_iter().flatten()
             .map(|row| (row["text"].as_str().unwrap_or("").to_string(), row["mine"] == true))
             .collect();
@@ -361,11 +364,11 @@ impl eframe::App for App {
             self.frame_theme = Some(self.theme);
         }
         if self.screen == Screen::Intro {
-            let status = self.shared.lock().unwrap().status.clone();
+            let status = locked(&*self.shared, "update.intro").status.clone();
             self.intro(ctx, &palette, &status);
             return;
         }
-        let state = self.shared.lock().unwrap();
+        let state = locked(&*self.shared, "update.chat");
         // Once, at the first chat screen: show the phone address when the node this window talks to is the host (방장) of this PC.
         if !self.phone_checked {
             if let Some((_, port)) = &state.me {
@@ -506,13 +509,83 @@ fn draw_scanlines(ctx: &egui::Context) {
     }
 }
 
+/// Lock a mutex. A poisoned one is written to the panic log at this site first, then panics as `unwrap()` did.
+fn locked<'a, T>(mutex: &'a Mutex<T>, site: &str) -> std::sync::MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log_line(&format!("mutex poisoned at {site}"));
+            panic!("mutex poisoned at {site}")
+        }
+    }
+}
+
+/// Where panics are written: gui-panic.log in the state folder.
+fn panic_log_path() -> PathBuf {
+    state_dir().join("gui-panic.log")
+}
+
+/// Append one entry to the panic log. A write failure is ignored: logging must never stop a start or an exit.
+fn log_line(text: &str) {
+    let _ = log_to(&panic_log_path(), text);
+}
+
+fn log_to(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut file = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{text}")
+}
+
+/// Keep the old panic output (stderr, invisible in this window build) and also write the panic to the log.
+fn install_panic_log() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info.payload().downcast_ref::<&str>().map(|text| text.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "(not a text message)".to_string());
+        let place = info.location().map_or_else(|| "unknown".to_string(), |at| format!("{}:{}", at.file(), at.line()));
+        let thread = thread::current();
+        let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_secs());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        log_line(&format!("[unix {seconds}] thread {} panicked at {place}: {message}\n{backtrace}", thread.name().unwrap_or("unnamed")));
+        previous(info);
+    }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_log_write_does_not_panic() {
+        let dir = std::env::temp_dir().join(format!("herdr-talk-gui-log-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // The log path is a folder, so opening it for append fails.
+        assert!(log_to(&dir, "x").is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn log_entries_are_appended() {
+        let dir = std::env::temp_dir().join(format!("herdr-talk-gui-append-test-{}", std::process::id()));
+        let file = dir.join("gui-panic.log");
+        log_to(&file, "first").unwrap();
+        log_to(&file, "second").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "first\nsecond\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 fn main() -> eframe::Result<()> {
+    install_panic_log();
     let shared = Arc::new(Mutex::new(Shared { status: STATUS_STARTING.into(), ..Default::default() }));
     let (outgoing, queue) = mpsc::channel();
     let started: Started = Arc::default();
     {
         let (shared, started) = (shared.clone(), started.clone());
-        thread::spawn(move || worker(shared, queue, started));
+        thread::Builder::new().name("worker".into()).spawn(move || worker(shared, queue, started)).expect("worker thread");
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 520.0]).with_title("herdr-talk"),

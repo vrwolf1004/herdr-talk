@@ -14,4 +14,4 @@ pub mod text;
 
 pub use chat::{help_box, Chat, Line, Link, Me, Peer, IDLE_LIMIT};
 pub use i18n::t;
-pub use net::{start, UDP_PORT};
+pub use net::{start, udp_port, DEFAULT_UDP_PORT};

@@ -19,7 +19,24 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const APP: &str = "herdr-talk";
-pub const UDP_PORT: u16 = 47850; // discovery port, the same on every PC
+pub const DEFAULT_UDP_PORT: u16 = 47850; // discovery port, the same on every PC
+/// Environment variable for the discovery port. Only for separate test networks: unset means the default.
+pub const UDP_PORT_VARIABLE: &str = "HERDR_TALK_UDP_PORT";
+
+/// The discovery port: HERDR_TALK_UDP_PORT when it is set and not empty, else DEFAULT_UDP_PORT.
+/// A value that is not a port number (1–65535) is an error, never a silent fallback.
+pub fn udp_port() -> Result<u16, String> {
+    parse_udp_port(std::env::var(UDP_PORT_VARIABLE).ok().as_deref())
+}
+
+fn parse_udp_port(value: Option<&str>) -> Result<u16, String> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(DEFAULT_UDP_PORT),
+        Some(text) => Some(text).filter(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|digits| digits.parse::<u16>().ok()).filter(|port| *port != 0)
+            .ok_or_else(|| format!("{UDP_PORT_VARIABLE} must be a port number from 1 to 65535, got {text:?}")),
+    }
+}
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_FRAME: usize = u16::MAX as usize; // a Noise frame carries a 2-byte length
@@ -185,7 +202,8 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
         if changed {
             chat.say(t("peer.key_changed", &[("name", &name), ("ip", &ip)]));
         } else {
-            chat.say(t("peer.fingerprint", &[("name", &name), ("code", &code)]));
+            let label = store::key_label(&key);
+            chat.say(t("peer.fingerprint", &[("name", &name), ("ip", &ip), ("label", &label), ("code", &code)]));
         }
     }
 }
@@ -465,6 +483,29 @@ mod tests {
     use crate::store::Trusted;
     use std::fs;
     use std::io::Cursor;
+
+    #[test]
+    fn udp_port_defaults_when_unset_or_empty() {
+        assert_eq!(parse_udp_port(None), Ok(DEFAULT_UDP_PORT));
+        assert_eq!(parse_udp_port(Some("")), Ok(DEFAULT_UDP_PORT));
+        assert_eq!(parse_udp_port(Some("   ")), Ok(DEFAULT_UDP_PORT));
+        assert_eq!(DEFAULT_UDP_PORT, 47850);
+    }
+
+    #[test]
+    fn udp_port_takes_the_set_value() {
+        assert_eq!(parse_udp_port(Some("47851")), Ok(47851));
+        assert_eq!(parse_udp_port(Some(" 1 ")), Ok(1));
+        assert_eq!(parse_udp_port(Some("65535")), Ok(65535));
+    }
+
+    #[test]
+    fn udp_port_rejects_anything_else_without_a_fallback() {
+        for bad in ["0", "65536", "-1", "abc", "47850x", "4.5", "+47850"] {
+            let error = parse_udp_port(Some(bad)).unwrap_err();
+            assert!(error.contains(UDP_PORT_VARIABLE) && error.contains(bad), "{error}");
+        }
+    }
 
     fn chat() -> Chat {
         Chat::new(Me { id: "me".into(), name: "Me".into(), port: 1, key: vec![], secret: vec![] })

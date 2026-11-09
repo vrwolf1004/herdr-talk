@@ -30,6 +30,11 @@ pub fn peer_id(key: &[u8]) -> String {
     to_hex(&Sha256::digest(key))
 }
 
+/// The first 8 hex digits of the peer id: enough to tell peers apart on screen, never the full id.
+pub fn key_label(key: &[u8]) -> String {
+    peer_id(key)[..8].to_string()
+}
+
 /// Code both users compare on their screens: 128 bits of SHA-256 over the two public keys, sorted,
 /// so both PCs compute the same value. Each side has its own key in the hash, so one attacker cannot
 /// make the two screens show the same code for two different keys (a short code could be collided).
@@ -168,6 +173,13 @@ mod tests {
         assert_eq!(read.len(), 1);
         assert_eq!((read[0].name.as_str(), read[0].key.clone(), read[0].ip.as_str()), ("Bob", vec![9; 32], "10.0.0.2"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn key_label_is_the_first_eight_digits_of_the_id() {
+        let key = [3u8; 32];
+        assert_eq!(key_label(&key), &peer_id(&key)[..8]);
+        assert_eq!(key_label(&key).len(), 8);
     }
 
     #[test]

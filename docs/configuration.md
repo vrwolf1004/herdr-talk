@@ -9,6 +9,7 @@ herdr-talk has no required settings. Everything below is optional.
 | `--name` | command line | random name for the PC's language | Name shown to others |
 | `--tcp-port` | command line | `0` (pick a free port) | TCP port for incoming messages |
 | `--udp-port` | command line | `47850` | Discovery port. Use the same value on every PC. |
+| `HERDR_TALK_UDP_PORT` | environment | `47850` | Discovery port for separate test networks, so test nodes do not mix with a real LAN. Read by Rust and Python, and by the GUI and the `serve` it starts. A value that is not 1–65535 is an error, not a fallback. `--udp-port` wins when given. |
 | `HERDR_TALK_LANG` | environment | not set | Language code: `en`, `ko`, `ru`, `fr`, `es`, `de`, `ja` |
 | `"lang"` | `config.json` in the plugin config folder | not set | Same as `HERDR_TALK_LANG` |
 | `"plaintext"` | `config.json` in the plugin config folder | `false` | Allow plain text to peers that do not encrypt (an old Python edition without keys). See [Encryption](#encryption). |
@@ -97,7 +98,7 @@ These values are constants in `rust/crates/talk-core/src/net.rs` and `chat.rs`. 
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| `UDP_PORT` | `47850` | Discovery port |
+| `UDP_PORT` | `47850` | Discovery port (`HERDR_TALK_UDP_PORT` overrides it) |
 | `ANNOUNCE_SECONDS` | `2` | How often a chat announces itself |
 | `PEER_TIMEOUT_SECONDS` | `10` | A peer not seen for this long leaves the list |
 | `NAME_SETTLE` | `2100 ms` | A new chat listens this long before its first announcement, so a name clash is settled first |

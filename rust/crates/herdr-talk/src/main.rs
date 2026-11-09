@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use talk_core::{start, t, Chat, UDP_PORT};
+use talk_core::{start, t, udp_port, Chat};
 
 const DOCK_KEY: &str = "herdr-talk";
 const DOCK_REPORT: Duration = Duration::from_secs(2);
@@ -80,7 +80,11 @@ fn keep_dock_block(pane: String, chat: Arc<Chat>) {
 }
 
 fn run(args: RunArgs) -> Result<(), String> {
-    let chat = start(args.name, args.tcp_port.unwrap_or(0), args.udp_port.unwrap_or(UDP_PORT)).map_err(|error| error.to_string())?;
+    let udp = match args.udp_port {
+        Some(port) => port,
+        None => udp_port()?,
+    };
+    let chat = start(args.name, args.tcp_port.unwrap_or(0), udp).map_err(|error| error.to_string())?;
     let dock_pane = args.pane.filter(|_| args.dock);
     if let Some(pane) = &dock_pane {
         herdr_api::try_request("pane.report_agent", json!({"pane_id": pane, "source": SOURCE, "agent": AGENT_ID, "state": "idle"}));
@@ -107,7 +111,11 @@ fn serve(args: RunArgs) -> Result<(), String> {
     if args.dock || args.pane.is_some() {
         return Err("serve has no dock: --dock and --pane belong to run".to_string());
     }
-    let chat = start(args.name, args.tcp_port.unwrap_or(0), args.udp_port.unwrap_or(UDP_PORT)).map_err(|error| error.to_string())?;
+    let udp = match args.udp_port {
+        Some(port) => port,
+        None => udp_port()?,
+    };
+    let chat = start(args.name, args.tcp_port.unwrap_or(0), udp).map_err(|error| error.to_string())?;
     let control = control::serve(chat.clone(), &talk_core::store::state_dir(), true).map_err(|error| error.to_string())?;
     chat.watch_host();
     let signalled = chat.clone();

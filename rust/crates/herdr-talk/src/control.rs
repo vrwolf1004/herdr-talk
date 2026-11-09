@@ -34,6 +34,51 @@ pub fn control_file(state: &Path) -> PathBuf {
     state.join(format!("control-{}.json", std::process::id()))
 }
 
+/// Delete control-<pid>.json of nodes whose process has ended. A live node keeps its file.
+/// Best effort: a file that cannot be read or removed is skipped, so this never stops a start.
+fn remove_stale_files(state: &Path) {
+    let Ok(entries) = fs::read_dir(state) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name.strip_prefix("control-").and_then(|rest| rest.strip_suffix(".json")).and_then(|pid| pid.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid != std::process::id() && !process_alive(pid) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Whether a process with this pid exists. Windows asks the OS; Linux looks at /proc; other systems say yes (keep the file).
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    const STILL_ACTIVE: u32 = 259;
+    // SAFETY: the handle is checked before use and closed once; the code pointer is a local u32.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // Access denied means the process exists but belongs to someone else.
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let mut code = 0u32;
+        let known = GetExitCodeProcess(handle, &mut code) != 0;
+        CloseHandle(handle);
+        !known || code == STILL_ACTIVE
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn process_alive(_pid: u32) -> bool {
+    true
+}
+
 /// Start the listener on a free loopback port and write the control file.
 /// With `allow_shutdown`, a client may end the chat (the headless `serve` mode, which has no terminal to close).
 pub fn serve(chat: Arc<Chat>, state: &Path, allow_shutdown: bool) -> io::Result<Control> {
@@ -41,6 +86,7 @@ pub fn serve(chat: Arc<Chat>, state: &Path, allow_shutdown: bool) -> io::Result<
     let port = listener.local_addr()?.port();
     let token = new_token()?;
     create_private_dir(state)?;
+    remove_stale_files(state);
     let file = control_file(state);
     write_private(&file, &json!({"port": port, "token": token, "pid": std::process::id()}).to_string())?;
     let active = Arc::new(AtomicUsize::new(0));
@@ -172,6 +218,21 @@ fn reply(writer: &mut impl Write, value: Value) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_files_go_and_live_ones_stay() {
+        let dir = std::env::temp_dir().join(format!("herdr-talk-stale-test-{}", std::process::id()));
+        create_private_dir(&dir).unwrap();
+        let own = control_file(&dir);
+        fs::write(&own, "{}").unwrap();
+        // A pid that cannot exist: the process has ended.
+        let gone = dir.join("control-4000000.json");
+        fs::write(&gone, "{}").unwrap();
+        remove_stale_files(&dir);
+        assert!(!gone.exists());
+        assert!(own.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn control_file_is_private_and_replaced() {
