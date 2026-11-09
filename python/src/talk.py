@@ -16,6 +16,7 @@ Commands (typed in the input line)
 """
 
 import argparse
+import errno
 import itertools
 import hmac
 import ipaddress
@@ -759,6 +760,19 @@ def deliver(data, key, chat):
         say(f"{label}: {row}")
 
 
+_PEER_CLOSED_ERRNOS = {getattr(errno, name) for name in ("ENOTCONN", "ECONNRESET", "EPIPE") if hasattr(errno, name)}
+_PEER_CLOSED_WINERRORS = {10053, 10054}  # WSAECONNABORTED, WSAECONNRESET
+
+
+def _peer_closed(error):
+    """True when the error only says the other side has already closed the connection."""
+    if isinstance(error, (ConnectionResetError, BrokenPipeError)):
+        return True
+    if getattr(error, "winerror", None) in _PEER_CLOSED_WINERRORS:
+        return True
+    return getattr(error, "errno", None) in _PEER_CLOSED_ERRNOS
+
+
 def send_to(peer, me, text):
     """Send one message. A peer with a key only ever gets the encrypted form.
     Whether a keyless peer may get plain text is decided by the caller (Chat)."""
@@ -776,8 +790,11 @@ def send_to(peer, me, text):
                 raise OSError(str(error)) from error
         try:
             conn.shutdown(socket.SHUT_WR)
-        except ConnectionResetError:
-            pass  # the peer closed first (e.g. it dropped a plain message); the data was already sent
+        except OSError as error:
+            # The peer closed first (it dropped a plain message), so the data was already sent. Windows reports
+            # WinError 10054 (ConnectionResetError); Linux reports ENOTCONN (107) after the peer's RST. Other errors stay.
+            if not _peer_closed(error):
+                raise
 
 
 def _send_encrypted(conn, me, peer_key, message):
