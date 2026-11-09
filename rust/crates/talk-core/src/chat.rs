@@ -9,6 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -162,6 +163,10 @@ pub struct Chat {
     phone_until: Mutex<Option<Instant>>,
     /// When the name last changed by itself because of a clash. Names the user types do not count.
     last_auto_rename: Mutex<Option<Instant>>,
+    /// The relay thread's inbox and its stop flag, while a relay runs (see relay_chat).
+    relay_inbox: Mutex<Option<(Sender<String>, Arc<AtomicBool>)>>,
+    /// What the status row says about the relay ("" when it is off).
+    relay_status: Mutex<String>,
 }
 
 /// How long the phone address and token stay on screen when nobody hides them.
@@ -186,6 +191,8 @@ impl Chat {
             host: Mutex::new(None),
             phone_until: Mutex::new(None),
             last_auto_rename: Mutex::new(None),
+            relay_inbox: Mutex::new(None),
+            relay_status: Mutex::new(String::new()),
         }
     }
 
@@ -321,6 +328,33 @@ impl Chat {
         let extra = lines.len().saturating_sub(MAX_LINES);
         lines.drain(..extra);
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Hand a running relay its inbox and stop flag. Replaces nothing: call stop_relay first.
+    pub(crate) fn attach_relay(&self, inbox: Sender<String>, stop: Arc<AtomicBool>) {
+        *self.relay_inbox.lock().unwrap() = Some((inbox, stop));
+    }
+
+    /// Stop the running relay thread (it exits at its next check) and forget its inbox.
+    pub fn stop_relay(&self) {
+        if let Some((_, stop)) = self.relay_inbox.lock().unwrap().take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn set_relay_status(&self, text: &str) {
+        *self.relay_status.lock().unwrap() = text.to_string();
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// The relay state for the status row ("" when the relay is off).
+    pub fn relay_status(&self) -> String {
+        self.relay_status.lock().unwrap().clone()
+    }
+
+    /// A received relay message: shown like a verified LAN message (the sender's verified name, one line).
+    pub(crate) fn add_relay_line(&self, line: Line) {
+        self.add(vec![line]);
     }
 
     /// Show one notice line in the chat.
@@ -473,7 +507,13 @@ impl Chat {
                 self.say(t("peer.unreachable", &[("name", &peer.name)]));
             }
         }
-        self.add(vec![Line { sender: Some(format!("{} {}", me.name, t("chat.you", &[]))), text, mine: true }]);
+        self.add(vec![Line { sender: Some(format!("{} {}", me.name, t("chat.you", &[]))), text: text.to_string(), mine: true }]);
+        // The relay is an extra path: plain messages also go to it. Commands never do.
+        if !text.starts_with('/') {
+            if let Some((inbox, _)) = self.relay_inbox.lock().unwrap().as_ref() {
+                let _ = inbox.send(text.to_string());
+            }
+        }
         true
     }
 

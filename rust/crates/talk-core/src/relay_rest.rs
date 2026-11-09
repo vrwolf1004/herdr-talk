@@ -25,6 +25,18 @@ impl std::fmt::Debug for Config {
     }
 }
 
+impl Config {
+    /// The relay URL (no trailing slash). Crate-internal: the key must not leave this crate through here.
+    pub(crate) fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// The publishable key. Crate-internal, used only to build the websocket URL.
+    pub(crate) fn key(&self) -> &str {
+        &self.key
+    }
+}
+
 /// One HTTP request, ready to send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -39,6 +51,8 @@ pub struct Request {
 pub struct Peer {
     pub pk: String,
     pub name: String,
+    /// The X25519 key of the peer's Noise identity, as written by put-peer.
+    pub noise_pk: String,
 }
 
 /// Settings from two values. Either one missing (or empty) means the relay is off: Ok(None).
@@ -133,7 +147,7 @@ pub fn get_request(config: &Config, pk: &str) -> Result<Request, String> {
     headers.push(("Accept".to_string(), "application/json".to_string()));
     Ok(Request {
         method: "GET",
-        url: format!("{}/rest/v1/peers?pk=eq.{pk}&select=pk,name", config.url),
+        url: format!("{}/rest/v1/peers?pk=eq.{pk}&select=pk,name,noise_pk", config.url),
         headers,
         body: None,
     })
@@ -158,13 +172,17 @@ pub fn read_get_response(status: u16, body: &str, pk: &str) -> Result<Option<Pee
     };
     let answered_pk = row["pk"].as_str().ok_or("row has no pk")?;
     let name = row["name"].as_str().ok_or("row has no name")?;
+    let noise_pk = row["noise_pk"].as_str().ok_or("row has no noise_pk")?;
+    if !valid_hex(noise_pk, 64) {
+        return Err("row noise_pk is not valid".to_string());
+    }
     if answered_pk != pk || !valid_pk(answered_pk) {
         return Err("row pk does not match the request".to_string());
     }
     if !valid_name(name) {
         return Err("row name is not valid".to_string());
     }
-    Ok(Some(Peer { pk: answered_pk.to_string(), name: name.to_string() }))
+    Ok(Some(Peer { pk: answered_pk.to_string(), name: name.to_string(), noise_pk: noise_pk.to_string() }))
 }
 
 /// Agent for one relay: 5 seconds for the whole request, no proxy for loopback (a test server), the environment's proxy otherwise.
@@ -246,6 +264,7 @@ mod tests {
     // The signature was made with OpenSSL 3.5.4 (pkeyutl -sign -rawin) over the message bytes below.
     const VECTOR_PK: &str = "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8";
     const VECTOR_NOISE: &str = "abababababababababababababababababababababababababababababababab";
+    const NOISE: &str = "abababababababababababababababababababababababababababababababab";
     const VECTOR_NONCE: &str = "00112233445566778899aabbccddeeff";
     const VECTOR_SIG: &str = "afc3815f65780c85d388896dea433086219bd41938750cf27af23b77e79a01020b458f9fc33207b7cfc472f3fdb4e8eb235cd70269255854569559c3a70d4c08";
 
@@ -278,7 +297,7 @@ mod tests {
     fn get_request_selects_pk_and_name() {
         let request = get_request(&dummy(), PK).unwrap();
         assert_eq!(request.method, "GET");
-        assert_eq!(request.url, format!("http://127.0.0.1:9/rest/v1/peers?pk=eq.{PK}&select=pk,name"));
+        assert_eq!(request.url, format!("http://127.0.0.1:9/rest/v1/peers?pk=eq.{PK}&select=pk,name,noise_pk"));
         assert!(request.body.is_none());
     }
 
@@ -300,14 +319,14 @@ mod tests {
 
     #[test]
     fn answers_are_checked() {
-        let good = format!(r#"[{{"pk":"{PK}","name":"Alice"}}]"#);
-        assert_eq!(read_get_response(200, &good, PK), Ok(Some(Peer { pk: PK.into(), name: "Alice".into() })));
+        let good = format!(r#"[{{"pk":"{PK}","name":"Alice","noise_pk":"abababababababababababababababababababababababababababababababab"}}]"#);
+        assert_eq!(read_get_response(200, &good, PK), Ok(Some(Peer { pk: PK.into(), name: "Alice".into(), noise_pk: NOISE.into() })));
         assert_eq!(read_get_response(200, "[]", PK), Ok(None));
         assert!(read_get_response(401, &good, PK).is_err());
         assert!(read_get_response(200, "{}", PK).is_err());
         assert!(read_get_response(200, "not json", PK).is_err());
         assert!(read_get_response(200, &good, &"2".repeat(64)).is_err());
-        assert!(read_get_response(200, &format!(r#"[{{"pk":"{PK}","name":""}}]"#), PK).is_err());
+        assert!(read_get_response(200, &format!(r#"[{{"pk":"{PK}","name":"","noise_pk":"abababababababababababababababababababababababababababababababab"}}]"#), PK).is_err());
         assert!(read_get_response(200, &format!("[{good_row},{good_row}]", good_row = r#"{"pk":"x"}"#), PK).is_err());
     }
 
@@ -372,11 +391,11 @@ mod tests {
 
     #[test]
     fn get_peer_reads_one_checked_row() {
-        let body = format!(r#"[{{"pk":"{PK}","name":"Alice"}}]"#);
+        let body = format!(r#"[{{"pk":"{PK}","name":"Alice","noise_pk":"abababababababababababababababababababababababababababababababab"}}]"#);
         let response: &'static str = Box::leak(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_boxed_str());
         let (config, received) = serve_once(response);
-        assert_eq!(get_peer(&config, PK), Some(Peer { pk: PK.into(), name: "Alice".into() }));
+        assert_eq!(get_peer(&config, PK), Some(Peer { pk: PK.into(), name: "Alice".into(), noise_pk: NOISE.into() }));
         let request = received.recv().unwrap().to_ascii_lowercase();
-        assert!(request.starts_with(&format!("get /rest/v1/peers?pk=eq.{PK}&select=pk,name http/1.1")), "{request}");
+        assert!(request.starts_with(&format!("get /rest/v1/peers?pk=eq.{PK}&select=pk,name,noise_pk http/1.1")), "{request}");
     }
 }

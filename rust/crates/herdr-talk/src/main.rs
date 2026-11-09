@@ -1,6 +1,7 @@
 //! herdr-talk: chat between PCs on the same network, as a herdr plugin.
 
 mod control;
+mod settings_form;
 mod dock;
 mod herdr_api;
 mod screen;
@@ -95,7 +96,12 @@ fn run(args: RunArgs) -> Result<(), String> {
     chat.watch_host(); // the first node on this PC owns the phone address; another takes over when it ends
     let me = chat.me.lock().unwrap().clone();
     chat.say(t("start.hello", &[("name", &me.name), ("port", &me.port.to_string())]));
+    // The relay is optional: a bad setting shows in the status row and never stops the chat.
+    if let Err(error) = talk_core::relay_chat::start(&chat, &talk_core::store::state_dir()) {
+        chat.say(format!("relay: {error}"));
+    }
     let result = screen::run(&chat).map_err(|error| error.to_string());
+    chat.stop_relay();
     chat.stop.set();
     chat.release_host();
     if let Some(pane) = dock_pane {

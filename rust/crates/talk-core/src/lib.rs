@@ -10,8 +10,14 @@ pub mod i18n;
 pub mod net;
 pub mod phone;
 pub mod relay;
+pub mod relay_chat;
+#[cfg(test)]
+mod relay_e2e_test;
 pub mod relay_key;
+pub mod relay_realtime;
+pub mod relay_replay;
 pub mod relay_rest;
+pub mod relay_settings;
 pub mod store;
 pub mod text;
 

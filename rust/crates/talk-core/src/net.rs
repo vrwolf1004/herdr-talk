@@ -447,7 +447,7 @@ fn send_encrypted(conn: &mut (impl Read + Write), me: &Me, peer_key: &[u8], mess
     write_frame(conn, &buffer[..n])
 }
 
-fn noise_builder<'a>() -> snow::Builder<'a> {
+pub(crate) fn noise_builder<'a>() -> snow::Builder<'a> {
     snow::Builder::new(NOISE_PATTERN.parse().expect("built-in Noise pattern"))
 }
 

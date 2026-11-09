@@ -13,5 +13,6 @@ sha2 = "0.10"
 snow = "0.10"
 socket2 = "0.5"
 sys-locale = "0.3"
+tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 unicode-width = "0.2"
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }

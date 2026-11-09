@@ -5,8 +5,10 @@ use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetBac
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute, queue};
 use std::io::{self, Stdout, Write};
+use std::sync::Arc;
 use std::time::Duration;
 use talk_core::text::{char_width, wrap_line};
+use crate::settings_form::{self, Form};
 use talk_core::{t, Chat, Line, IDLE_LIMIT};
 
 const POLL: Duration = Duration::from_millis(100);
@@ -75,7 +77,9 @@ fn render(out: &mut Stdout, chat: &Chat, input: &str) -> io::Result<()> {
     let name = chat.me.lock().unwrap().name.clone();
     let peers = chat.fresh_peers().len().to_string();
     let badge = if chat.is_host() { format!("{} ", t("host.badge", &[])) } else { String::new() };
-    let status = fit(&format!("{badge}{}", t("status.line", &[("name", &name), ("peers", &peers)])), width);
+    let relay = chat.relay_status();
+    let relay = if relay.is_empty() { String::new() } else { format!(" · {relay}") };
+    let status = fit(&format!("{badge}{}{relay}", t("status.line", &[("name", &name), ("peers", &peers)])), width);
     let padding = " ".repeat(width - char_width(&status));
     queue!(out, cursor::Hide, cursor::MoveTo(0, 0), SetBackgroundColor(Color::DarkGrey), SetForegroundColor(Color::White),
         Print(status), Print(padding), ResetColor)?;
@@ -127,10 +131,11 @@ fn on_key(key: KeyEvent, chat: &Chat, input: &mut String) -> bool {
     true
 }
 
-pub fn run(chat: &Chat) -> io::Result<()> {
+pub fn run(chat: &Arc<Chat>) -> io::Result<()> {
     let mut terminal = Terminal::enter()?;
     let mut input = String::new();
     let mut last_status = String::new();
+    let mut form: Option<Form> = None;
     render(&mut terminal.0, chat, &input)?;
     loop {
         chat.phone_visible(); // hides the phone address when its time is up, and asks for a redraw
@@ -138,7 +143,13 @@ pub fn run(chat: &Chat) -> io::Result<()> {
         if event::poll(POLL)? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    if !on_key(key, chat, &mut input) {
+                    if let Some(open) = form.as_mut() {
+                        if let settings_form::Action::Leave = settings_form::on_key(open, key, chat) {
+                            form = None;
+                        }
+                    } else if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+                        form = Some(Form::open(&talk_core::store::state_dir()));
+                    } else if !on_key(key, chat, &mut input) {
                         break;
                     }
                     redraw = true;
@@ -148,10 +159,16 @@ pub fn run(chat: &Chat) -> io::Result<()> {
             }
         }
         // Peers come and go without a chat line, and the status row shows their count.
-        let status = format!("{}/{}/{}", chat.me.lock().unwrap().name, chat.fresh_peers().len(), chat.is_host());
+        let status = format!("{}/{}/{}/{}", chat.me.lock().unwrap().name, chat.fresh_peers().len(), chat.is_host(), chat.relay_status());
         if redraw || status != last_status {
             last_status = status;
-            render(&mut terminal.0, chat, &input)?;
+            match &form {
+                Some(open) => {
+                    let (cols, rows) = terminal::size()?;
+                    settings_form::render(&mut terminal.0, open, usize::from(cols), usize::from(rows))?;
+                }
+                None => render(&mut terminal.0, chat, &input)?,
+            }
         }
         if chat.idle_for() >= IDLE_LIMIT {
             drop(terminal);
