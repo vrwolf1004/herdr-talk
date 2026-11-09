@@ -110,6 +110,16 @@ Open:
 - [ ] **Stale `control-<pid>.json` files** pile up after killed nodes. Harmless; maybe clean them at start.
 - [ ] **Commit the work.** `net.rs`, `chat.rs`, `phone.rs`, `screen.rs`, `gui/src/main.rs`, `talk.py`, `noise.py`, `phone.py`, `store.py`, locales, tests, `bridge.js`, docs.
 
+## Review (2026-11-09)
+
+Found by reading the relay, node-folder and CLI code after commit `222aee8`. Not run; each item says what was checked.
+
+- [ ] **Crashed node leaves its server row behind.** `remove_dead_sessions` (Rust `store.rs`, Python `sessions.py`) deletes a dead node's folder, and that folder holds the key. The row is never sent to `delete-peer`, and the key is gone, so nobody can remove it. Fix: before the folder is removed, sign and send the delete with that folder's key (best effort, same as `leave`). (코드 읽기로 확인. 실제 충돌 종료로는 재현 안 함)
+- [ ] **Rust does not delete the relay row when the run ends with an error.** `rust/crates/herdr-talk/src/main.rs` calls `relay_chat::leave` only when `result.is_ok()`, but it still removes the folder (and the key) afterwards. The row stays on the server. Python does the leave in `finally`, so it is not affected. Fix: call `leave` whenever a session exists. (코드 읽기로 확인)
+- [ ] **`delete-peer` records the nonce before the delete.** `supabase/functions/delete-peer/index.ts`: `takeNonce` runs before `deletePeer`. If the DELETE fails (500), the nonce stays used, so the same signed body gets 401 on retry. The client signs a new body per try, so the impact is small. Fix: delete the nonce on failure, or take it after the delete. (코드 읽기로 확인)
+- [ ] **A reused pid keeps a dead node's folder.** `_has_live_node` / `has_live_node` treat any live pid in a `control-<pid>.json` as the node. After a crash the OS can give that pid to another program, and the folder is kept until that program exits. Fix: store the process start time in the control file and compare it. Low priority. (코드 읽기로 확인)
+- [ ] **`herdr_cli()` still has no timeout** (`python/src/talk.py:1366`). `subprocess.run` waits forever if herdr does not answer. The item in `improvements.md` (2026-10-22) is still open. Fix the shared copy in herdr-dock-grid first, then sync (shared-module rule).
+
 ## Later (phase 2 and beyond)
 
 - [x] Chat across the internet through Supabase, with end-to-end encryption. (2026-11-09: 노드마다 새 세션 폴더, 자동 이름, 상대 이름은 행 이름을 따름. 남은 확인은 `supabase-relay.md` "남은 일") (2026-11-09: Rust TUI·GUI·Python·안드로이드 구현. 폰 ↔ PC 실사용 송수신 확인. 남은 확인은 `supabase-relay.md` "남은 일")
