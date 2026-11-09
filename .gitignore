@@ -3,3 +3,6 @@ target/
 bin/
 __pycache__/
 *.pyc
+
+# Supabase CLI temp files (local only)
+supabase/.temp/
