@@ -49,7 +49,8 @@ fn remove_stale_files(state: &Path) {
     }
 }
 
-/// Whether a process with this pid exists. Windows asks the OS; Linux looks at /proc; other systems say yes (keep the file).
+/// Whether a process with this pid exists. Windows asks the OS; other Unix systems send signal 0 (which sends
+/// nothing and only checks): "no such process" means gone, and any other error (EPERM) means it exists.
 #[cfg(windows)]
 fn process_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError};
@@ -69,14 +70,21 @@ fn process_alive(pid: u32) -> bool {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn process_alive(pid: u32) -> bool {
-    Path::new("/proc").join(pid.to_string()).exists()
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    // A pid above i32::MAX cannot be a live process on Unix.
+    let Ok(pid) = i32::try_from(pid) else { return false };
+    // SAFETY: signal 0 is only a permission and existence check; it delivers nothing.
+    let result = unsafe { kill(pid, 0) };
+    result == 0 || io::Error::last_os_error().kind() != io::ErrorKind::NotFound
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, unix)))]
 fn process_alive(_pid: u32) -> bool {
-    true
+    true // unknown system: keep the file
 }
 
 /// Start the listener on a free loopback port and write the control file.
