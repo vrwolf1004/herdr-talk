@@ -77,9 +77,11 @@ fn process_alive(pid: u32) -> bool {
     }
     // A pid above i32::MAX cannot be a live process on Unix.
     let Ok(pid) = i32::try_from(pid) else { return false };
+    // ESRCH: "no such process". Linux and macOS both use 3. Other errors (EPERM) mean the process exists.
+    const ESRCH: i32 = 3;
     // SAFETY: signal 0 is only a permission and existence check; it delivers nothing.
     let result = unsafe { kill(pid, 0) };
-    result == 0 || io::Error::last_os_error().kind() != io::ErrorKind::NotFound
+    result == 0 || io::Error::last_os_error().raw_os_error() != Some(ESRCH)
 }
 
 #[cfg(not(any(windows, unix)))]
