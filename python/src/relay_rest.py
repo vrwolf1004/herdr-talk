@@ -2,6 +2,9 @@
 
 Same rules as rust/crates/talk-core/src/relay_rest.rs. Standard library only (urllib for sending).
 The key is the publishable key; the secret key is never read or stored here.
+
+Row writes are signed (format v3). The signed text carries the short id (8 characters, [a-z0-9]) that people type to
+find this PC. The short id is unique on the server; a write that takes an id owned by another key gets 409.
 """
 
 import json
@@ -18,11 +21,12 @@ import ed25519
 
 URL_VARIABLE = "HERDR_TALK_RELAY_URL"
 KEY_VARIABLE = "HERDR_TALK_RELAY_KEY"
-PUT_TAG = "herdr-talk-put-v2"
+PUT_TAG = "herdr-talk-put-v3"
 TIMEOUT_SECONDS = 5
 
 _PK_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _NONCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_SHORT_PATTERN = re.compile(r"^[a-z0-9]{8}$")
 
 
 class Config:
@@ -58,6 +62,11 @@ def valid_pk(text):
     return isinstance(text, str) and _PK_PATTERN.match(text) is not None
 
 
+def valid_short(text):
+    """A short id: exactly 8 characters, lowercase letters and digits."""
+    return isinstance(text, str) and _SHORT_PATTERN.match(text) is not None
+
+
 def valid_name(text):
     """1 to 32 characters, no control characters (category Cc, the same rule the table enforces)."""
     if not isinstance(text, str) or not 1 <= len(text) <= 32:
@@ -69,28 +78,31 @@ def _common_headers(config):
     return {"apikey": config.key, "Authorization": f"Bearer {config.key}"}
 
 
-def put_message(pk, noise_pk, name, ts, nonce):
-    """The bytes that are signed (v2): PUT_TAG, pk, noise_pk, name, ts, nonce, one per line, no newline at the end, UTF-8."""
-    return "\n".join([PUT_TAG, pk, noise_pk, name, str(ts), nonce]).encode("utf-8")
+def put_message(pk, noise_pk, short_id, name, ts, nonce):
+    """The bytes that are signed (v3): PUT_TAG, pk, noise_pk, short_id, name, ts, nonce, one per line, no newline at
+    the end, UTF-8."""
+    return "\n".join([PUT_TAG, pk, noise_pk, short_id, name, str(ts), nonce]).encode("utf-8")
 
 
-def put_request(config, seed, noise_pk, name, ts=None, nonce=None):
+def put_request(config, seed, noise_pk, short_id, name, ts=None, nonce=None):
     """Signed write of this PC's row through the put-peer function. `seed` is the 32-byte Ed25519 private key (pk is its
     public key); `noise_pk` is the X25519 key of the Noise identity. ts defaults to now, nonce to 16 random bytes.
-    The body keeps the fixed order pk, noise_pk, name, ts, nonce, sig. Raises ValueError for bad input."""
+    The body keeps the fixed order pk, noise_pk, short_id, name, ts, nonce, sig. Raises ValueError for bad input."""
     pk = ed25519.public_key(seed).hex()
     if not _PK_PATTERN.match(noise_pk or ""):
         raise ValueError("noise_pk must be 64 lowercase hex characters")
+    if not valid_short(short_id):
+        raise ValueError("short_id must be 8 lowercase letters or digits")
     if not valid_name(name):
         raise ValueError("name must be 1 to 32 characters without control characters")
     ts = int(time.time()) if ts is None else ts
     nonce = secrets.token_hex(16) if nonce is None else nonce
     if not isinstance(ts, int) or isinstance(ts, bool) or not _NONCE_PATTERN.match(nonce):
         raise ValueError("ts must be an integer and nonce 32 lowercase hex characters")
-    sig = ed25519.sign(seed, put_message(pk, noise_pk, name, ts, nonce)).hex()
+    sig = ed25519.sign(seed, put_message(pk, noise_pk, short_id, name, ts, nonce)).hex()
     headers = _common_headers(config)
     headers["Content-Type"] = "application/json"
-    body = {"pk": pk, "noise_pk": noise_pk, "name": name, "ts": ts, "nonce": nonce, "sig": sig}
+    body = {"pk": pk, "noise_pk": noise_pk, "short_id": short_id, "name": name, "ts": ts, "nonce": nonce, "sig": sig}
     return {
         "method": "POST",
         "url": f"{config.url}/functions/v1/put-peer",
@@ -99,13 +111,13 @@ def put_request(config, seed, noise_pk, name, ts=None, nonce=None):
     }
 
 
-def get_request(config, pk):
-    """Lookup of one peer by pk. Raises ValueError for bad input."""
-    if not valid_pk(pk):
-        raise ValueError("pk must be 64 lowercase hex characters")
+def get_request(config, short_id):
+    """Lookup of one peer by its short id (unique on the server). Raises ValueError for bad input."""
+    if not valid_short(short_id):
+        raise ValueError("short_id must be 8 lowercase letters or digits")
     headers = _common_headers(config)
     headers["Accept"] = "application/json"
-    query = urllib.parse.urlencode({"pk": f"eq.{pk}", "select": "pk,name"}, safe=",.")
+    query = urllib.parse.urlencode({"short_id": f"eq.{short_id}", "select": "pk,name,noise_pk,short_id"}, safe=",.")
     return {"method": "GET", "url": f"{config.url}/rest/v1/peers?{query}", "headers": headers, "body": None}
 
 
@@ -113,7 +125,7 @@ def put_succeeded(status):
     return 200 <= status < 300
 
 
-def read_get_response(status, body, pk):
+def read_get_response(status, body, short_id):
     """The answer to a lookup: None when there is no such peer. Malformed answers raise ValueError (drop them)."""
     if status != 200:
         raise ValueError(f"status {status}")
@@ -128,13 +140,15 @@ def read_get_response(status, body, pk):
     if len(rows) != 1 or not isinstance(rows[0], dict):
         raise ValueError("expected one row")
     row = rows[0]
-    answered = row.get("pk")
-    name = row.get("name")
-    if not valid_pk(answered) or answered != pk:
-        raise ValueError("row pk does not match the request")
-    if not valid_name(name):
+    if row.get("short_id") != short_id:
+        raise ValueError("row short_id does not match the request")
+    if not valid_pk(row.get("pk")):
+        raise ValueError("row pk is not valid")
+    if not valid_name(row.get("name")):
         raise ValueError("row name is not valid")
-    return {"pk": answered, "name": name}
+    if not valid_pk(row.get("noise_pk")):
+        raise ValueError("row noise_pk is not valid")
+    return {"pk": row["pk"], "name": row["name"], "noise_pk": row["noise_pk"], "short_id": short_id}
 
 
 def _send(request):
@@ -148,18 +162,26 @@ def _send(request):
         return error.code, ""
 
 
-def put_peer(config, seed, noise_pk, name):
-    """True when the relay accepted the signed write."""
+def put_status(config, seed, noise_pk, short_id, name):
+    """The HTTP status of the signed write (2xx accepted, 409 short id taken by another key), or None when the request
+    could not be made or sent."""
     try:
-        return put_succeeded(_send(put_request(config, seed, noise_pk, name))[0])
+        status, _ = _send(put_request(config, seed, noise_pk, short_id, name))
+        return status
     except (OSError, ValueError):
-        return False
+        return None
 
 
-def get_peer(config, pk):
-    """The relay's record for pk, or None (no such peer, a failure, or an answer that does not check out)."""
+def put_peer(config, seed, noise_pk, short_id, name):
+    """True when the relay accepted the signed write."""
+    status = put_status(config, seed, noise_pk, short_id, name)
+    return status is not None and put_succeeded(status)
+
+
+def get_peer(config, short_id):
+    """The relay's record for short_id, or None (no such peer, a failure, or an answer that does not check out)."""
     try:
-        status, body = _send(get_request(config, pk))
-        return read_get_response(status, body, pk)
+        status, body = _send(get_request(config, short_id))
+        return read_get_response(status, body, short_id)
     except (OSError, ValueError):
         return None

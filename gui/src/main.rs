@@ -6,6 +6,8 @@
 
 #![windows_subsystem = "windows"]
 
+mod relay_form;
+
 use eframe::egui;
 use serde_json::{json, Value};
 use std::fs;
@@ -14,6 +16,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -49,6 +52,10 @@ struct Shared {
     peers: Vec<String>,
     /// This chat's own name and port. None until the chat says it (an older herdr-talk never does).
     me: Option<(String, u16)>,
+    /// The relay state as the chat reports it ("" when the relay is off).
+    relay: String,
+    /// The connection mode as the chat reports it: "local" or "supabase".
+    mode: String,
 }
 
 /// Which screen is shown. The connection work runs in the background on both.
@@ -75,6 +82,16 @@ struct App {
     phone_until: Option<Instant>,
     /// The auto-show at the first chat screen was decided (it happens once, and only when this window's node is the host).
     phone_checked: bool,
+    /// Set when the settings were saved: the session asks the serve node to start the relay again.
+    reload: Arc<AtomicBool>,
+    /// The Ctrl+R settings window, while it is open.
+    relay_form: Option<relay_form::Form>,
+    /// No connection mode saved yet: the first-run choice comes before the chat.
+    first_run: bool,
+    /// The last result line (saved, or left without saving), shown in the top bar.
+    notice: String,
+    /// The 30-second default of the first-run choice. None until the choice is shown.
+    choice_timer: Option<talk_core::choice_timer::ChoiceTimer>,
 }
 
 const PHONE_SHOWN: Duration = Duration::from_secs(30);
@@ -220,7 +237,7 @@ fn control_file(dir: &Path, pid: u32) -> PathBuf {
 
 /// Worker, first choice: start `herdr-talk serve` hidden and connect to it.
 /// When that fails (program missing, no control file in time), the chat runs inside this window instead.
-fn worker(shared: Arc<Mutex<Shared>>, outgoing: Receiver<String>, started: Started) {
+fn worker(shared: Arc<Mutex<Shared>>, outgoing: Receiver<String>, started: Started, reload: Arc<AtomicBool>) {
     let dir = state_dir();
     let (mut starts, mut waiting_since) = (0, None);
     loop {
@@ -240,7 +257,7 @@ fn worker(shared: Arc<Mutex<Shared>>, outgoing: Receiver<String>, started: Start
         };
         waiting_since = None;
         set_status(&shared, &format!("{STATUS_CONNECTED} (port {})", control.port));
-        if let Err(error) = session(&mut link, &shared, &outgoing) {
+        if let Err(error) = session(&mut link, &shared, &outgoing, &reload) {
             set_status(&shared, &format!("연결 끊김: {error}"));
         }
         thread::sleep(RETRY);
@@ -265,6 +282,10 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
         }
     };
     chat.watch_host();
+    // The relay in this window: a bad setting shows in the status bar, the chat goes on.
+    if let Err(error) = talk_core::relay_chat::start(&chat, &talk_core::store::state_dir()) {
+        chat.set_relay_status(&format!("relay: {error}"));
+    }
     set_status(shared, &format!("{STATUS_EMBEDDED} (herdr-talk 실패: {reason})"));
     loop {
         while let Ok(text) = outgoing.try_recv() {
@@ -277,13 +298,19 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
             Some((me.name.clone(), me.port))
         };
         state.peers = chat.fresh_peers().iter().map(|peer| format!("{} ({}:{})", peer.name, peer.ip, peer.port)).collect();
+        state.relay = chat.relay_status();
+        state.mode = chat.mode_name().to_string();
         drop(state);
         thread::sleep(POLL);
     }
 }
 
-fn session(link: &mut Link, shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>) -> std::io::Result<()> {
+fn session(link: &mut Link, shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, reload: &AtomicBool) -> std::io::Result<()> {
     loop {
+        // Settings were saved in this window: the serve node starts the relay again with them.
+        if reload.swap(false, Ordering::SeqCst) {
+            link.call(&json!({"cmd": "relay_reload"}))?;
+        }
         while let Ok(text) = outgoing.try_recv() {
             let answer = link.call(&json!({"cmd": "send", "text": text}))?;
             if answer["ok"] != true {
@@ -301,6 +328,8 @@ fn session(link: &mut Link, shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<Str
         state.peers = peers["peers"].as_array().into_iter().flatten()
             .map(|peer| format!("{} ({}:{})", peer["name"].as_str().unwrap_or("?"), peer["ip"].as_str().unwrap_or("?"), peer["port"]))
             .collect();
+        state.relay = peers["relay"].as_str().unwrap_or("").to_string();
+        state.mode = peers["mode"].as_str().unwrap_or("local").to_string();
         drop(state);
         thread::sleep(POLL);
     }
@@ -327,6 +356,35 @@ fn status_label(status: &str) -> (&'static str, Kind) {
 }
 
 impl App {
+    /// One frame of the settings window: Stay, Saved (reload the relay; first run goes to the chat), or Discard.
+    fn settings_frame(&mut self, ctx: &egui::Context, palette: &Palette) {
+        let Some(form) = self.relay_form.as_mut() else { return };
+        let action = relay_form::show(ctx, palette, form);
+        let message = form.message.clone();
+        match action {
+            relay_form::Action::Stay => {}
+            relay_form::Action::Saved => {
+                self.reload.store(true, Ordering::SeqCst);
+                self.notice = message;
+                self.relay_form = None;
+                if self.first_run {
+                    self.first_run = false;
+                    self.screen = Screen::Chat;
+                }
+            }
+            relay_form::Action::Discard => {
+                self.relay_form = None;
+                // Back to the first-run choice: its 30 seconds start again.
+                self.choice_timer = None;
+                self.notice = talk_core::t("settings.cancel_discard", &[]);
+            }
+        }
+        if self.crt {
+            draw_scanlines(ctx);
+            draw_bezel(ctx);
+        }
+    }
+
     /// First screen: name, one line about the app, the connection state, and the button into the chat.
     fn intro(&mut self, ctx: &egui::Context, palette: &Palette, status: &str) {
         let (label, kind) = status_label(status);
@@ -363,9 +421,60 @@ impl eframe::App for App {
             style_frame(self.hwnd, &palette);
             self.frame_theme = Some(self.theme);
         }
+        // The settings window takes the whole window while it is open (first run, or the top-bar button).
+        if self.relay_form.is_some() {
+            self.settings_frame(ctx, &palette);
+            return;
+        }
+        // First run: pick the connection mode before anything else. Local is saved at once; Supabase opens the settings.
+        if self.first_run {
+            // Any input stops the 30-second default; when it runs out, the chat starts in Local mode and nothing is saved.
+            let input_seen = ctx.input(|input| {
+                input.events.iter().any(|event| {
+                    matches!(event, egui::Event::Key { pressed: true, .. } | egui::Event::Text(_) | egui::Event::PointerButton { pressed: true, .. })
+                })
+            });
+            if relay_form::tick(&mut self.choice_timer, Instant::now(), input_seen) == relay_form::Tick::Start {
+                self.first_run = false;
+                self.choice_timer = None;
+                self.screen = Screen::Chat;
+            }
+        }
+        if self.first_run {
+            let remaining = self.choice_timer.and_then(|timer| timer.remaining(Instant::now()));
+            match relay_form::choose(ctx, &palette, remaining) {
+                Some(relay_form::Pick::Local) => {
+                    match talk_core::relay_settings::set_mode(&state_dir(), talk_core::relay_settings::Mode::Local) {
+                        Ok(()) => {
+                            self.reload.store(true, Ordering::SeqCst);
+                            self.first_run = false;
+                            self.choice_timer = None;
+                            self.screen = Screen::Chat;
+                        }
+                        Err(error) => self.notice = error,
+                    }
+                }
+                Some(relay_form::Pick::Supabase) => {
+                    self.choice_timer = None;
+                    self.relay_form = Some(relay_form::Form::open_supabase(&state_dir()));
+                }
+                None => {}
+            }
+            if self.first_run {
+                if self.crt {
+                    draw_scanlines(ctx);
+                    draw_bezel(ctx);
+                }
+                return;
+            }
+        }
         if self.screen == Screen::Intro {
             let status = locked(&*self.shared, "update.intro").status.clone();
             self.intro(ctx, &palette, &status);
+            return;
+        }
+        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::R)) {
+            self.relay_form = Some(relay_form::Form::open(&state_dir()));
             return;
         }
         let state = locked(&*self.shared, "update.chat");
@@ -389,6 +498,7 @@ impl eframe::App for App {
         } else if typed || !visible {
             self.phone_until = None;
         }
+        let mut open_settings = false;
         egui::TopBottomPanel::top("status").frame(inset(&palette, self.crt)).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let color = match status_label(&state.status).1 {
@@ -400,6 +510,14 @@ impl eframe::App for App {
                     ui.colored_label(palette.accent, talk_core::t("host.badge", &[]));
                 }
                 ui.colored_label(color, &state.status);
+                let mode = talk_core::relay_settings::Mode::from_saved(&state.mode);
+                ui.colored_label(palette.muted, relay_form::status_line(mode, &state.relay));
+                if !self.notice.is_empty() {
+                    ui.colored_label(palette.muted, self.notice.as_str());
+                }
+                if ui.button("연결 방식").clicked() {
+                    open_settings = true;
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     egui::ComboBox::from_id_salt("theme")
                         .selected_text(self.theme.name())
@@ -413,6 +531,10 @@ impl eframe::App for App {
             });
         });
         ctx.set_theme(self.theme.preference());
+        if open_settings {
+            self.relay_form = Some(relay_form::Form::open(&state_dir()));
+            ctx.request_repaint();
+        }
         egui::SidePanel::right("peers").default_width(220.0).frame(inset(&palette, self.crt)).show(ctx, |ui| {
             ui.colored_label(palette.accent, egui::RichText::new("피어").heading());
             if let Some((name, port)) = &state.me {
@@ -583,9 +705,10 @@ fn main() -> eframe::Result<()> {
     let shared = Arc::new(Mutex::new(Shared { status: STATUS_STARTING.into(), ..Default::default() }));
     let (outgoing, queue) = mpsc::channel();
     let started: Started = Arc::default();
+    let reload = Arc::new(AtomicBool::new(false));
     {
-        let (shared, started) = (shared.clone(), started.clone());
-        thread::Builder::new().name("worker".into()).spawn(move || worker(shared, queue, started)).expect("worker thread");
+        let (shared, started, reload) = (shared.clone(), started.clone(), reload.clone());
+        thread::Builder::new().name("worker".into()).spawn(move || worker(shared, queue, started, reload)).expect("worker thread");
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 520.0]).with_title("herdr-talk"),
@@ -598,7 +721,7 @@ fn main() -> eframe::Result<()> {
             install_korean_font(&cc.egui_ctx);
             let hwnd = window_hwnd(cc);
             cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
-            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None, phone_until: None, phone_checked: false }))
+            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None, phone_until: None, phone_checked: false, reload: reload.clone(), relay_form: None, first_run: talk_core::relay_settings::needs_first_run(&state_dir()), notice: String::new(), choice_timer: None }))
         }),
     );
     stop_serve(&started);

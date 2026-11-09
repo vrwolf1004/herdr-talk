@@ -146,7 +146,7 @@ fn new_token() -> io::Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn client(stream: TcpStream, chat: &Chat, token: &str, allow_shutdown: bool) -> io::Result<()> {
+fn client(stream: TcpStream, chat: &Arc<Chat>, token: &str, allow_shutdown: bool) -> io::Result<()> {
     stream.set_read_timeout(Some(IDLE_TIMEOUT))?;
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
@@ -183,7 +183,7 @@ fn read_request(reader: &mut impl BufRead) -> io::Result<Value> {
     serde_json::from_slice(&line).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-fn answer(chat: &Chat, request: &Value, allow_shutdown: bool) -> Value {
+fn answer(chat: &Arc<Chat>, request: &Value, allow_shutdown: bool) -> Value {
     match request.get("cmd").and_then(Value::as_str) {
         Some("lines") => {
             let lines: Vec<Line> = chat.lines();
@@ -202,7 +202,7 @@ fn answer(chat: &Chat, request: &Value, allow_shutdown: bool) -> Value {
                 .collect();
             // This chat's own name and port, so a GUI can list it above the others.
             let me = chat.me.lock().unwrap().clone();
-            json!({"ok": true, "peers": peers, "me": {"name": me.name, "port": me.port}})
+            json!({"ok": true, "peers": peers, "me": {"name": me.name, "port": me.port}, "relay": chat.relay_status(), "mode": chat.mode_name()})
         }
         Some("send") => match request.get("text").and_then(Value::as_str) {
             // Same path as typing in the terminal: commands and plain messages both work.
@@ -211,6 +211,11 @@ fn answer(chat: &Chat, request: &Value, allow_shutdown: bool) -> Value {
                 json!({"ok": true})
             }
             None => json!({"ok": false, "error": "text missing"}),
+        },
+        // The settings were saved (by the GUI or the terminal screen): start the relay again with them.
+        Some("relay_reload") => match talk_core::relay_chat::start(chat, &talk_core::store::state_dir()) {
+            Ok(on) => json!({"ok": true, "on": on}),
+            Err(error) => json!({"ok": false, "error": error}),
         },
         Some("shutdown") if allow_shutdown => {
             chat.stop.set();

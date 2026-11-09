@@ -167,6 +167,8 @@ pub struct Chat {
     relay_inbox: Mutex<Option<(Sender<String>, Arc<AtomicBool>)>>,
     /// What the status row says about the relay ("" when it is off).
     relay_status: Mutex<String>,
+    /// True in Supabase mode: messages go only through the relay, never over the LAN.
+    supabase: AtomicBool,
 }
 
 /// How long the phone address and token stay on screen when nobody hides them.
@@ -193,6 +195,7 @@ impl Chat {
             last_auto_rename: Mutex::new(None),
             relay_inbox: Mutex::new(None),
             relay_status: Mutex::new(String::new()),
+            supabase: AtomicBool::new(false),
         }
     }
 
@@ -342,7 +345,7 @@ impl Chat {
         }
     }
 
-    pub(crate) fn set_relay_status(&self, text: &str) {
+    pub fn set_relay_status(&self, text: &str) {
         *self.relay_status.lock().unwrap() = text.to_string();
         self.dirty.store(true, Ordering::Relaxed);
     }
@@ -350,6 +353,31 @@ impl Chat {
     /// The relay state for the status row ("" when the relay is off).
     pub fn relay_status(&self) -> String {
         self.relay_status.lock().unwrap().clone()
+    }
+
+    /// The connection mode for this run: true in Supabase mode.
+    pub fn set_supabase_mode(&self, on: bool) {
+        self.supabase.store(on, Ordering::Relaxed);
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_supabase(&self) -> bool {
+        self.supabase.load(Ordering::Relaxed)
+    }
+
+    /// "supabase" or "local", as the control channel reports it.
+    pub fn mode_name(&self) -> &'static str {
+        if self.is_supabase() { "supabase" } else { "local" }
+    }
+
+    /// Hand one plain message to the running relay. Without a running relay the user is told it was not sent.
+    pub fn relay_send(&self, text: &str) {
+        match self.relay_inbox.lock().unwrap().as_ref() {
+            Some((inbox, _)) => {
+                let _ = inbox.send(text.to_string());
+            }
+            None => self.say(t("relay.not_sent", &[])),
+        }
     }
 
     /// A received relay message: shown like a verified LAN message (the sender's verified name, one line).
@@ -470,6 +498,13 @@ impl Chat {
             return true;
         }
         let text = text.chars().take(MAX_TEXT_CHARS).collect::<String>().replace('\n', " ");
+        if self.is_supabase() {
+            // Supabase mode: the relay is the only path, so the LAN peers get nothing.
+            let name = self.me.lock().unwrap().name.clone();
+            self.add(vec![Line { sender: Some(format!("{name} {}", t("chat.you", &[]))), text: text.clone(), mine: true }]);
+            self.relay_send(&text);
+            return true;
+        }
         let found = self.fresh_peers();
         if found.is_empty() {
             self.say(t("peers.none_hint", &[]));
@@ -508,12 +543,6 @@ impl Chat {
             }
         }
         self.add(vec![Line { sender: Some(format!("{} {}", me.name, t("chat.you", &[]))), text: text.to_string(), mine: true }]);
-        // The relay is an extra path: plain messages also go to it. Commands never do.
-        if !text.starts_with('/') {
-            if let Some((inbox, _)) = self.relay_inbox.lock().unwrap().as_ref() {
-                let _ = inbox.send(text.to_string());
-            }
-        }
         true
     }
 
@@ -1024,5 +1053,38 @@ mod tests {
         assert!(!chat.phone_visible());
         assert!(chat.take_dirty(), "the screen is asked to redraw");
     }
-}
 
+    #[test]
+    fn supabase_mode_sends_nothing_to_lan_peers() {
+        let chat = chat(&["a", "b"]);
+        chat.set_supabase_mode(true);
+        let sent = Mutex::new(0);
+        chat.handle_with("hello", |_, _, _| {
+            *sent.lock().unwrap() += 1;
+            Ok(())
+        });
+        assert_eq!(*sent.lock().unwrap(), 0);
+        assert!(chat.lines().iter().any(|line| line.text == "hello" && line.mine), "the own line is still shown");
+    }
+
+    #[test]
+    fn local_mode_sends_to_lan_peers() {
+        let mut chat = chat(&["a", "b"]);
+        chat.plaintext = true;
+        assert!(!chat.is_supabase());
+        let sent = Mutex::new(0);
+        chat.handle_with("hello", |_, _, _| {
+            *sent.lock().unwrap() += 1;
+            Ok(())
+        });
+        assert_eq!(*sent.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn supabase_mode_without_a_running_relay_says_so() {
+        let chat = chat(&["a"]);
+        chat.set_supabase_mode(true);
+        chat.handle_with("hello", |_, _, _| Ok(()));
+        assert!(chat.lines().iter().any(|line| line.text == t("relay.not_sent", &[])));
+    }
+}

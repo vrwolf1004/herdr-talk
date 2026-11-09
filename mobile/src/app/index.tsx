@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
 import { ChatState, Config, Line, fetchState, sendText } from '../bridge';
 import { CHOICES, Choice, Palette, palette } from '../theme';
 
@@ -114,6 +115,12 @@ function ConnectScreen({ colors, onConnect }: { colors: Palette; onConnect: (con
         style={[styles.button, { borderColor: colors.accent, opacity: busy ? 0.5 : 1 }]}
       >
         <Text style={[styles.buttonText, { color: colors.accent }]}>{busy ? '연결 중…' : '연결'}</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => router.push('/relay')}
+        style={[styles.button, { borderColor: colors.accent, marginTop: 10 }]}
+      >
+        <Text style={[styles.buttonText, { color: colors.accent }]}>Supabase 연결</Text>
       </Pressable>
     </View>
   );

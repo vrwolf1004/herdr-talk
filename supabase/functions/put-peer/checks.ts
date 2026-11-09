@@ -1,7 +1,7 @@
 // Pure checks for the put-peer function. No network, no environment, no secret: everything here can be tested alone.
 // Only erasable TypeScript syntax, so the same file runs under Deno (the function) and under Node's type stripping (tests).
 
-export const PUT_TAG = "herdr-talk-put-v2";
+export const PUT_TAG = "herdr-talk-put-v3";
 export const WINDOW_SECONDS = 300;
 
 export type Verdict = "ok" | "format" | "time" | "signature" | "nonce";
@@ -9,6 +9,7 @@ export type Verdict = "ok" | "format" | "time" | "signature" | "nonce";
 export interface PutBody {
   pk: string;
   noise_pk: string;
+  short_id: string;
   name: string;
   ts: number;
   nonce: string;
@@ -17,6 +18,7 @@ export interface PutBody {
 
 const PK_PATTERN = /^[0-9a-f]{64}$/;
 const NOISE_PK_PATTERN = /^[0-9a-f]{64}$/;
+const SHORT_ID_PATTERN = /^[a-z0-9]{8}$/;
 const NONCE_PATTERN = /^[0-9a-f]{32}$/;
 const SIG_PATTERN = /^[0-9a-f]{128}$/;
 // Unicode category Cc: C0 controls, DEL, C1 controls. Same rule as the table constraint and both editions.
@@ -29,9 +31,10 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 // Shape and size only. Anything that fails here is a 400 and never reaches the signature check.
 export function checkFormat(body: unknown): body is PutBody {
   if (!isPlainObject(body)) return false;
-  const { pk, noise_pk, name, ts, nonce, sig } = body;
+  const { pk, noise_pk, short_id, name, ts, nonce, sig } = body;
   if (typeof pk !== "string" || !PK_PATTERN.test(pk)) return false;
   if (typeof noise_pk !== "string" || !NOISE_PK_PATTERN.test(noise_pk)) return false;
+  if (typeof short_id !== "string" || !SHORT_ID_PATTERN.test(short_id)) return false;
   if (typeof name !== "string" || CONTROL_PATTERN.test(name)) return false;
   // Length is counted in characters (code points), the same way the database counts char_length.
   const length = [...name].length;
@@ -42,9 +45,9 @@ export function checkFormat(body: unknown): body is PutBody {
   return true;
 }
 
-// The signed bytes (v2): PUT_TAG, pk, noise_pk, name, ts, nonce, one per line, no newline at the end, UTF-8.
-export function signedMessage(pk: string, noisePk: string, name: string, ts: number, nonce: string): Uint8Array {
-  return new TextEncoder().encode([PUT_TAG, pk, noisePk, name, String(ts), nonce].join("\n"));
+// The signed bytes (v3): PUT_TAG, pk, noise_pk, short_id, name, ts, nonce, one per line, no newline at the end, UTF-8.
+export function signedMessage(pk: string, noisePk: string, shortId: string, name: string, ts: number, nonce: string): Uint8Array {
+  return new TextEncoder().encode([PUT_TAG, pk, noisePk, shortId, name, String(ts), nonce].join("\n"));
 }
 
 export function hexToBytes(hex: string): Uint8Array {
@@ -64,7 +67,7 @@ export function withinWindow(ts: number, nowSeconds: number): boolean {
 export async function signatureOk(body: PutBody): Promise<boolean> {
   try {
     const key = await crypto.subtle.importKey("raw", hexToBytes(body.pk), { name: "Ed25519" }, false, ["verify"]);
-    const message = signedMessage(body.pk, body.noise_pk, body.name, body.ts, body.nonce);
+    const message = signedMessage(body.pk, body.noise_pk, body.short_id, body.name, body.ts, body.nonce);
     return await crypto.subtle.verify("Ed25519", key, hexToBytes(body.sig), message);
   } catch {
     return false;

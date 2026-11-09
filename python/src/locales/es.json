@@ -51,5 +51,19 @@
   "phone.new_done": "Token nuevo creado. Los móviles deben escribir el nuevo.",
   "usage.phone": "uso: /phone   o   /phone new",
   "host.name": "Anfitrión",
-  "host.badge": "[anfitrión]"
+  "host.badge": "[anfitrión]",
+  "mode.local": "Local (LAN)",
+  "mode.supabase": "Supabase",
+  "mode.hint_local": "Chat solo por la LAN. Nada se envía a Supabase.",
+  "mode.hint_supabase": "Chat solo por Supabase. Los mensajes no van por la LAN.",
+  "mode.status": "modo: {mode}",
+  "mode.first_run_title": "¿Cómo quieres conectarte?",
+  "mode.change": "Ctrl+R: cambiar el modo de conexión",
+  "mode.timeout_hint": "Inicio en modo local en {n} s",
+  "relay.not_sent": "relay: sin conexión, el mensaje no se envió por el relay",
+  "settings.mode_row": "Modo de conexión",
+  "settings.save_ok_local": "Guardado: modo local. El relay está detenido.",
+  "settings.save_ok_supabase": "Guardado: modo Supabase. El relay está iniciado.",
+  "settings.save_refused_missing": "No guardado. Falta: {fields}",
+  "settings.cancel_discard": "Salido de los ajustes sin guardar."
 }

@@ -373,6 +373,10 @@ fn receive_encrypted(conn: &mut (impl Read + Write), first: u8, chat: &Chat) -> 
 
 /// Show one message. With a key, the id must be that key's id. Without one, the id must not be a key-derived id.
 fn deliver(data: &[u8], key: Option<&[u8]>, chat: &Chat) {
+    // Supabase mode: chat messages that came over the LAN are not shown. Discovery and trust still work.
+    if chat.is_supabase() {
+        return;
+    }
     let Ok(message) = serde_json::from_slice::<Value>(data) else { return };
     if message.get("app").and_then(Value::as_str) != Some(APP) {
         return;
@@ -949,5 +953,17 @@ mod tests {
         drop(many);
         assert_eq!(open.lock().unwrap().total, 0);
         assert!(open.lock().unwrap().per_ip.is_empty());
+    }
+
+    #[test]
+    fn lan_chat_text_is_dropped_in_supabase_mode() {
+        let chat = chat_with_plain_text();
+        chat.set_supabase_mode(true);
+        let payload = format!(r#"{{"app":"{APP}","id":"x","from":"Bob","text":"hi over lan"}}"#);
+        deliver_plain(&chat, &payload);
+        assert!(chat.lines().iter().all(|line| line.text != "hi over lan"));
+        chat.set_supabase_mode(false);
+        deliver_plain(&chat, &payload);
+        assert!(chat.lines().iter().any(|line| line.text == "hi over lan"));
     }
 }

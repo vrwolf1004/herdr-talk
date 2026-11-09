@@ -6,6 +6,7 @@
 //! - A message is sent straight to each peer over TCP. Nothing is stored.
 
 pub mod chat;
+pub mod choice_timer;
 pub mod i18n;
 pub mod net;
 pub mod phone;
@@ -13,6 +14,8 @@ pub mod relay;
 pub mod relay_chat;
 #[cfg(test)]
 mod relay_e2e_test;
+#[cfg(test)]
+mod relay_vectors_test;
 pub mod relay_key;
 pub mod relay_realtime;
 pub mod relay_replay;

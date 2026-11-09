@@ -51,5 +51,19 @@
   "phone.new_done": "Neuer Token erzeugt. Handys müssen den neuen eingeben.",
   "usage.phone": "Verwendung: /phone   oder   /phone new",
   "host.name": "Gastgeber",
-  "host.badge": "[Gastgeber]"
+  "host.badge": "[Gastgeber]",
+  "mode.local": "Lokal (LAN)",
+  "mode.supabase": "Supabase",
+  "mode.hint_local": "Chat nur im LAN. Nichts wird an Supabase gesendet.",
+  "mode.hint_supabase": "Chat nur über Supabase. Nachrichten gehen nicht über das LAN.",
+  "mode.status": "Modus: {mode}",
+  "mode.first_run_title": "Wie möchtest du dich verbinden?",
+  "mode.change": "Strg+R: Verbindungsart ändern",
+  "mode.timeout_hint": "Start im lokalen Modus in {n} s",
+  "relay.not_sent": "relay: nicht verbunden, Nachricht nicht über das Relay gesendet",
+  "settings.mode_row": "Verbindungsart",
+  "settings.save_ok_local": "Gespeichert: lokaler Modus. Das Relay ist gestoppt.",
+  "settings.save_ok_supabase": "Gespeichert: Supabase-Modus. Das Relay ist gestartet.",
+  "settings.save_refused_missing": "Nicht gespeichert. Fehlt: {fields}",
+  "settings.cancel_discard": "Einstellungen ohne Speichern verlassen."
 }

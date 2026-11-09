@@ -8,7 +8,7 @@ use std::time::Duration;
 
 pub const URL_VARIABLE: &str = "HERDR_TALK_RELAY_URL";
 pub const KEY_VARIABLE: &str = "HERDR_TALK_RELAY_KEY";
-pub const PUT_TAG: &str = "herdr-talk-put-v2";
+pub const PUT_TAG: &str = "herdr-talk-put-v3";
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where the relay is and the publishable key. Never the secret key.
@@ -105,16 +105,24 @@ fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// The bytes that are signed (v2): PUT_TAG, pk, noise_pk, name, ts, nonce, one per line, no newline at the end.
-pub fn put_message(pk: &str, noise_pk: &str, name: &str, ts: u64, nonce: &str) -> String {
-    format!("{PUT_TAG}\n{pk}\n{noise_pk}\n{name}\n{ts}\n{nonce}")
+/// 8 lowercase characters, letters and digits: the short ID that others type to find this PC.
+pub fn valid_short_id(text: &str) -> bool {
+    text.len() == 8 && text.bytes().all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+}
+
+/// The bytes that are signed (v3): PUT_TAG, pk, noise_pk, short_id, name, ts, nonce, one per line, no newline at the end.
+pub fn put_message(pk: &str, noise_pk: &str, short_id: &str, name: &str, ts: u64, nonce: &str) -> String {
+    format!("{PUT_TAG}\n{pk}\n{noise_pk}\n{short_id}\n{name}\n{ts}\n{nonce}")
 }
 
 /// Signed write of this PC's row through the put-peer function. `seed` is the Ed25519 private key (32 bytes);
-/// pk is the matching public key. The body keeps the fixed order pk, noise_pk, name, ts, nonce, sig.
-pub fn put_request(config: &Config, seed: &[u8; 32], noise_pk: &str, name: &str, ts: u64, nonce: &str) -> Result<Request, String> {
+/// pk is the matching public key. The body keeps the fixed order pk, noise_pk, short_id, name, ts, nonce, sig.
+pub fn put_request(config: &Config, seed: &[u8; 32], noise_pk: &str, short_id: &str, name: &str, ts: u64, nonce: &str) -> Result<Request, String> {
     if !valid_hex(noise_pk, 64) {
         return Err("noise_pk must be 64 lowercase hex characters".to_string());
+    }
+    if !valid_short_id(short_id) {
+        return Err("short_id must be 8 lowercase letters or digits".to_string());
     }
     if !valid_name(name) {
         return Err("name must be 1 to 32 characters without control characters".to_string());
@@ -124,7 +132,7 @@ pub fn put_request(config: &Config, seed: &[u8; 32], noise_pk: &str, name: &str,
     }
     let signing = SigningKey::from_bytes(seed);
     let pk = to_hex(&signing.verifying_key().to_bytes());
-    let signature = to_hex(&signing.sign(put_message(&pk, noise_pk, name, ts, nonce).as_bytes()).to_bytes());
+    let signature = to_hex(&signing.sign(put_message(&pk, noise_pk, short_id, name, ts, nonce).as_bytes()).to_bytes());
     let name_json = serde_json::to_string(name).map_err(|error| error.to_string())?;
     let mut headers = common_headers(config);
     headers.push(("Content-Type".to_string(), "application/json".to_string()));
@@ -133,7 +141,7 @@ pub fn put_request(config: &Config, seed: &[u8; 32], noise_pk: &str, name: &str,
         url: format!("{}/functions/v1/put-peer", config.url),
         headers,
         body: Some(format!(
-            r#"{{"pk":"{pk}","noise_pk":"{noise_pk}","name":{name_json},"ts":{ts},"nonce":"{nonce}","sig":"{signature}"}}"#
+            r#"{{"pk":"{pk}","noise_pk":"{noise_pk}","short_id":"{short_id}","name":{name_json},"ts":{ts},"nonce":"{nonce}","sig":"{signature}"}}"#
         )),
     })
 }
@@ -153,9 +161,20 @@ pub fn get_request(config: &Config, pk: &str) -> Result<Request, String> {
     })
 }
 
-/// A write worked when the status is 2xx.
-pub fn put_succeeded(status: u16) -> bool {
-    (200..300).contains(&status)
+/// What the put-peer answer means: written, the short ID belongs to another key (409), or any other failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PutOutcome {
+    Written,
+    Taken,
+    Failed,
+}
+
+pub fn put_outcome(status: u16) -> PutOutcome {
+    match status {
+        200..=299 => PutOutcome::Written,
+        409 => PutOutcome::Taken,
+        _ => PutOutcome::Failed,
+    }
 }
 
 /// The answer to a lookup. Ok(None): no such peer. Anything malformed is an error, and the caller drops it.
@@ -185,6 +204,58 @@ pub fn read_get_response(status: u16, body: &str, pk: &str) -> Result<Option<Pee
     Ok(Some(Peer { pk: answered_pk.to_string(), name: name.to_string(), noise_pk: noise_pk.to_string() }))
 }
 
+/// Lookup by short ID: `short_id = eq.<id>`, at most one row (the column is unique).
+pub fn short_id_request(config: &Config, short_id: &str) -> Result<Request, String> {
+    if !valid_short_id(short_id) {
+        return Err("short_id must be 8 lowercase letters or digits".to_string());
+    }
+    let mut headers = common_headers(config);
+    headers.push(("Accept".to_string(), "application/json".to_string()));
+    Ok(Request {
+        method: "GET",
+        url: format!("{}/rest/v1/peers?short_id=eq.{short_id}&select=pk,name,noise_pk,short_id", config.url),
+        headers,
+        body: None,
+    })
+}
+
+/// The answer to a short ID lookup: exactly one checked row. Zero rows (or anything else) is "not found" for the user.
+pub fn read_short_response(status: u16, body: &str, short_id: &str) -> Result<Peer, String> {
+    if status != 200 {
+        return Err("the relay did not answer".to_string());
+    }
+    let rows: Value = serde_json::from_str(body).map_err(|_| "the relay answer is not JSON".to_string())?;
+    let rows = rows.as_array().ok_or("the relay answer is not a list")?;
+    let row = match rows.as_slice() {
+        [row] => row,
+        _ => return Err("상대를 찾지 못함".to_string()),
+    };
+    let pk = row["pk"].as_str().ok_or("row has no pk")?;
+    let name = row["name"].as_str().ok_or("row has no name")?;
+    let noise_pk = row["noise_pk"].as_str().ok_or("row has no noise_pk")?;
+    if row["short_id"].as_str() != Some(short_id) || !valid_pk(pk) {
+        return Err("row does not match the request".to_string());
+    }
+    if !valid_name(name) || !valid_hex(noise_pk, 64) {
+        return Err("row is not valid".to_string());
+    }
+    Ok(Peer { pk: pk.to_string(), name: name.to_string(), noise_pk: noise_pk.to_string() })
+}
+
+/// Find the peer for the short ID the user typed. The full key of the row found is what the caller uses from then on.
+/// Every error is a message for the user.
+pub fn find_peer(config: &Config, short_id: &str) -> Result<Peer, String> {
+    let request = short_id_request(config, short_id).map_err(|_| "상대 ID는 8자리 (소문자 영문·숫자)".to_string())?;
+    let mut builder = agent(config).get(&request.url);
+    for (key, value) in &request.headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+    let mut response = builder.call().map_err(|_| "the relay did not answer".to_string())?;
+    let status = response.status().as_u16();
+    let body = response.body_mut().read_to_string().map_err(|_| "the relay did not answer".to_string())?;
+    read_short_response(status, &body, short_id)
+}
+
 /// Agent for one relay: 5 seconds for the whole request, no proxy for loopback (a test server), the environment's proxy otherwise.
 fn agent(config: &Config) -> ureq::Agent {
     let proxy = if is_loopback(&config.url) { None } else { ureq::Proxy::try_from_env() };
@@ -196,22 +267,22 @@ fn agent(config: &Config) -> ureq::Agent {
     ureq::Agent::new_with_config(settings)
 }
 
-/// Signed write of this PC's row. True only for a 2xx answer. Every failure is false; no error text is kept, so a key never reaches a log.
-pub fn put_peer(config: &Config, seed: &[u8; 32], noise_pk: &str, name: &str) -> bool {
-    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else { return false };
+/// Signed write of this PC's row. Every failure is Failed; no error text is kept, so a key never reaches a log.
+pub fn put_peer(config: &Config, seed: &[u8; 32], noise_pk: &str, short_id: &str, name: &str) -> PutOutcome {
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else { return PutOutcome::Failed };
     let mut random = [0u8; 16];
     if getrandom::getrandom(&mut random).is_err() {
-        return false;
+        return PutOutcome::Failed;
     }
-    let Ok(request) = put_request(config, seed, noise_pk, name, now.as_secs(), &to_hex(&random)) else { return false };
+    let Ok(request) = put_request(config, seed, noise_pk, short_id, name, now.as_secs(), &to_hex(&random)) else { return PutOutcome::Failed };
     let mut builder = agent(config).post(&request.url);
     for (key, value) in &request.headers {
         builder = builder.header(key.as_str(), value.as_str());
     }
     let body = request.body.unwrap_or_default();
     match builder.send(body.as_str()) {
-        Ok(response) => put_succeeded(response.status().as_u16()),
-        Err(_) => false,
+        Ok(response) => put_outcome(response.status().as_u16()),
+        Err(_) => PutOutcome::Failed,
     }
 }
 
@@ -260,32 +331,29 @@ mod tests {
     const SEED: [u8; 32] = [
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
     ];
-    // v2 test vector: seed 00..1f, noise_pk ab×32, name Alice, ts 1700000000, nonce 00112233445566778899aabbccddeeff.
-    // The signature was made with OpenSSL 3.5.4 (pkeyutl -sign -rawin) over the message bytes below.
-    const VECTOR_PK: &str = "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8";
-    const VECTOR_NOISE: &str = "abababababababababababababababababababababababababababababababab";
     const NOISE: &str = "abababababababababababababababababababababababababababababababab";
     const VECTOR_NONCE: &str = "00112233445566778899aabbccddeeff";
-    const VECTOR_SIG: &str = "afc3815f65780c85d388896dea433086219bd41938750cf27af23b77e79a01020b458f9fc33207b7cfc472f3fdb4e8eb235cd70269255854569559c3a70d4c08";
+    const SHORT: &str = "abcd2345";
 
     #[test]
-    fn v2_vector_message_body_and_signature() {
-        let message = put_message(VECTOR_PK, VECTOR_NOISE, "Alice", 1700000000, VECTOR_NONCE);
-        assert_eq!(message, format!("herdr-talk-put-v2\n{VECTOR_PK}\n{VECTOR_NOISE}\nAlice\n1700000000\n{VECTOR_NONCE}"));
-        let request = put_request(&dummy(), &SEED, VECTOR_NOISE, "Alice", 1700000000, VECTOR_NONCE).unwrap();
-        assert_eq!(
-            request.body.unwrap(),
-            format!(r#"{{"pk":"{VECTOR_PK}","noise_pk":"{VECTOR_NOISE}","name":"Alice","ts":1700000000,"nonce":"{VECTOR_NONCE}","sig":"{VECTOR_SIG}"}}"#)
-        );
-        let public: [u8; 32] = std::array::from_fn(|index| u8::from_str_radix(&VECTOR_PK[index * 2..index * 2 + 2], 16).unwrap());
-        let sig: [u8; 64] = std::array::from_fn(|index| u8::from_str_radix(&VECTOR_SIG[index * 2..index * 2 + 2], 16).unwrap());
+    fn v3_message_and_body_are_signed_over_the_fixed_order() {
+        let signing = SigningKey::from_bytes(&SEED);
+        let pk = to_hex(&signing.verifying_key().to_bytes());
+        let message = put_message(&pk, NOISE, SHORT, "Alice", 1700000000, VECTOR_NONCE);
+        assert_eq!(message, format!("herdr-talk-put-v3\n{pk}\n{NOISE}\n{SHORT}\nAlice\n1700000000\n{VECTOR_NONCE}"));
+        let request = put_request(&dummy(), &SEED, NOISE, SHORT, "Alice", 1700000000, VECTOR_NONCE).unwrap();
+        let body = request.body.unwrap();
+        let sig = to_hex(&signing.sign(message.as_bytes()).to_bytes());
+        assert_eq!(body, format!(r#"{{"pk":"{pk}","noise_pk":"{NOISE}","short_id":"{SHORT}","name":"Alice","ts":1700000000,"nonce":"{VECTOR_NONCE}","sig":"{sig}"}}"#));
+        let public: [u8; 32] = std::array::from_fn(|index| u8::from_str_radix(&pk[index * 2..index * 2 + 2], 16).unwrap());
+        let sig_bytes: [u8; 64] = std::array::from_fn(|index| u8::from_str_radix(&sig[index * 2..index * 2 + 2], 16).unwrap());
         let key = ed25519_dalek::VerifyingKey::from_bytes(&public).unwrap();
-        assert!(key.verify_strict(message.as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig)).is_ok());
+        assert!(key.verify_strict(message.as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig_bytes)).is_ok());
     }
 
     #[test]
     fn put_request_is_a_signed_put_peer_call() {
-        let request = put_request(&dummy(), &SEED, VECTOR_NOISE, "Alice", 1700000000, VECTOR_NONCE).unwrap();
+        let request = put_request(&dummy(), &SEED, NOISE, SHORT, "Alice", 1700000000, VECTOR_NONCE).unwrap();
         assert_eq!(request.method, "POST");
         assert_eq!(request.url, "http://127.0.0.1:9/functions/v1/put-peer");
         assert_eq!(header(&request, "apikey"), Some("dummy-test-key"));
@@ -303,11 +371,13 @@ mod tests {
 
     #[test]
     fn bad_input_is_refused_before_a_request_exists() {
-        assert!(put_request(&dummy(), &SEED, &"AB".repeat(32), "A", 1, VECTOR_NONCE).is_err());
-        assert!(put_request(&dummy(), &SEED, VECTOR_NOISE, "", 1, VECTOR_NONCE).is_err());
-        assert!(put_request(&dummy(), &SEED, VECTOR_NOISE, &"x".repeat(33), 1, VECTOR_NONCE).is_err());
-        assert!(put_request(&dummy(), &SEED, VECTOR_NOISE, "a\u{7}b", 1, VECTOR_NONCE).is_err());
-        assert!(put_request(&dummy(), &SEED, VECTOR_NOISE, "A", 1, "ABC").is_err());
+        assert!(put_request(&dummy(), &SEED, &"AB".repeat(32), SHORT, "A", 1, VECTOR_NONCE).is_err());
+        assert!(put_request(&dummy(), &SEED, NOISE, SHORT, "", 1, VECTOR_NONCE).is_err());
+        assert!(put_request(&dummy(), &SEED, NOISE, SHORT, &"x".repeat(33), 1, VECTOR_NONCE).is_err());
+        assert!(put_request(&dummy(), &SEED, NOISE, SHORT, "a\u{7}b", 1, VECTOR_NONCE).is_err());
+        assert!(put_request(&dummy(), &SEED, NOISE, SHORT, "A", 1, "ABC").is_err());
+        assert!(put_request(&dummy(), &SEED, NOISE, "ABCD2345", "A", 1, VECTOR_NONCE).is_err());
+        assert!(put_request(&dummy(), &SEED, NOISE, "abc", "A", 1, VECTOR_NONCE).is_err());
         assert!(get_request(&dummy(), "abc").is_err());
     }
 
@@ -331,11 +401,11 @@ mod tests {
     }
 
     #[test]
-    fn write_status_must_be_2xx() {
-        assert!(put_succeeded(201));
-        assert!(put_succeeded(204));
-        assert!(!put_succeeded(401));
-        assert!(!put_succeeded(409));
+    fn write_status_decides_the_outcome() {
+        assert_eq!(put_outcome(201), PutOutcome::Written);
+        assert_eq!(put_outcome(204), PutOutcome::Written);
+        assert_eq!(put_outcome(409), PutOutcome::Taken);
+        assert_eq!(put_outcome(401), PutOutcome::Failed);
     }
 
     /// One-shot local HTTP server on 127.0.0.1. Hands back the request it read, then answers with `response`.
@@ -373,20 +443,22 @@ mod tests {
     #[test]
     fn put_peer_sends_the_signed_body_and_accepts_201() {
         let (config, received) = serve_once("HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        assert!(put_peer(&config, &SEED, VECTOR_NOISE, "Alice"));
+        assert_eq!(put_peer(&config, &SEED, NOISE, SHORT, "Alice"), PutOutcome::Written);
         let raw = received.recv().unwrap();
         let request = raw.to_ascii_lowercase();
         assert!(request.starts_with("post /functions/v1/put-peer http/1.1\r\n"), "{request}");
         assert!(request.contains("apikey: dummy-test-key\r\n"));
         assert!(request.contains("authorization: bearer dummy-test-key\r\n"));
         assert!(!request.contains("x-herdr-pk"));
-        assert!(raw.contains(&format!(r#""pk":"{VECTOR_PK}","noise_pk":"{VECTOR_NOISE}","name":"Alice""#)), "{raw}");
+        assert!(raw.contains(&format!(r#""short_id":"{SHORT}","name":"Alice""#)), "{raw}");
     }
 
     #[test]
-    fn put_peer_is_false_for_a_refusal() {
+    fn put_peer_reports_a_taken_short_id_and_a_refusal() {
+        let (config, _received) = serve_once("HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        assert_eq!(put_peer(&config, &SEED, NOISE, SHORT, "Alice"), PutOutcome::Taken);
         let (config, _received) = serve_once("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        assert!(!put_peer(&config, &SEED, VECTOR_NOISE, "Alice"));
+        assert_eq!(put_peer(&config, &SEED, NOISE, SHORT, "Alice"), PutOutcome::Failed);
     }
 
     #[test]
@@ -397,5 +469,38 @@ mod tests {
         assert_eq!(get_peer(&config, PK), Some(Peer { pk: PK.into(), name: "Alice".into(), noise_pk: NOISE.into() }));
         let request = received.recv().unwrap().to_ascii_lowercase();
         assert!(request.starts_with(&format!("get /rest/v1/peers?pk=eq.{PK}&select=pk,name,noise_pk http/1.1")), "{request}");
+    }
+
+    #[test]
+    fn short_id_is_eight_lowercase_letters_or_digits() {
+        assert!(valid_short_id("abcd2345"));
+        for bad in ["abcd234", "abcd23456", "ABCD2345", "abcd-234", "ab cd234", ""] {
+            assert!(!valid_short_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn short_lookup_needs_exactly_one_row_with_the_same_short_id() {
+        let full = "ab".repeat(32);
+        let row = format!(r#"{{"pk":"{full}","name":"Bob","noise_pk":"{}","short_id":"abcd2345"}}"#, "cd".repeat(32));
+        assert_eq!(read_short_response(200, &format!("[{row}]"), "abcd2345").unwrap().pk, full);
+        assert!(read_short_response(200, "[]", "abcd2345").unwrap_err().contains("찾지"));
+        assert!(read_short_response(200, &format!("[{row},{row}]"), "abcd2345").unwrap_err().contains("찾지"));
+        assert!(read_short_response(500, &format!("[{row}]"), "abcd2345").is_err());
+        assert!(read_short_response(200, &format!("[{row}]"), "zzzz9999").is_err(), "row must carry the asked short_id");
+    }
+
+    #[test]
+    fn short_lookup_request_uses_eq() {
+        let request = short_id_request(&dummy(), "abcd2345").unwrap();
+        assert!(request.url.ends_with("/rest/v1/peers?short_id=eq.abcd2345&select=pk,name,noise_pk,short_id"), "{}", request.url);
+        assert!(short_id_request(&dummy(), "abc").is_err());
+        assert!(short_id_request(&dummy(), "ABCD2345").is_err());
+    }
+
+    #[test]
+    fn find_peer_refuses_other_forms_without_a_request() {
+        assert!(find_peer(&dummy(), &"ab".repeat(32)).unwrap_err().contains("8"));
+        assert!(find_peer(&dummy(), "abc").unwrap_err().contains("8"));
     }
 }

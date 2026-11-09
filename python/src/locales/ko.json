@@ -51,5 +51,19 @@
   "phone.new_done": "새 토큰을 만들었습니다. 폰에서 새 토큰을 다시 입력하세요.",
   "usage.phone": "사용법: /phone   또는   /phone new",
   "host.name": "방장",
-  "host.badge": "[방장]"
+  "host.badge": "[방장]",
+  "mode.local": "로컬/자체",
+  "mode.supabase": "Supabase",
+  "mode.hint_local": "같은 네트워크(LAN)에서만 채팅한다. Supabase 로는 아무것도 보내지 않는다.",
+  "mode.hint_supabase": "Supabase 로만 채팅한다. 메시지는 LAN 으로 보내지 않는다.",
+  "mode.status": "방식: {mode}",
+  "mode.first_run_title": "어떻게 연결할까요?",
+  "mode.change": "Ctrl+R: 연결 방식 바꾸기",
+  "mode.timeout_hint": "{n}초 후 로컬/자체로 시작합니다",
+  "relay.not_sent": "relay: 연결되어 있지 않아 relay 로 보내지 않았다",
+  "settings.mode_row": "연결 방식",
+  "settings.save_ok_local": "저장됨: 로컬/자체. relay 를 멈췄다.",
+  "settings.save_ok_supabase": "저장됨: Supabase. relay 를 시작했다.",
+  "settings.save_refused_missing": "저장하지 않음. 빠진 항목: {fields}",
+  "settings.cancel_discard": "저장하지 않고 설정을 나갔다."
 }

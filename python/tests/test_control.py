@@ -80,7 +80,7 @@ class ControlTest(unittest.TestCase):
         client = Client(self.info)
         answer = client.call({"cmd": "peers"})
         client.close()
-        self.assertEqual(answer, {"ok": True, "peers": [{"name": "Bob", "ip": "10.0.0.2", "port": 5000}], "me": {"name": "Me", "port": 1234}})
+        self.assertEqual(answer, {"ok": True, "peers": [{"name": "Bob", "ip": "10.0.0.2", "port": 5000}], "me": {"name": "Me", "port": 1234}, "mode": "local", "relay": ""})
 
     def test_send_goes_to_the_peer(self):
         server = socket.socket()

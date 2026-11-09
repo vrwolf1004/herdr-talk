@@ -125,8 +125,8 @@ fn a_message_goes_from_one_chat_to_the_other_through_the_relay() {
         (bob_pk.clone(), store::to_hex(&bob_noise.public)),
     ]);
     let config = relay_rest::config(Some(&format!("http://127.0.0.1:{port}")), Some("dummy-test-key")).unwrap().unwrap();
-    let alice_session = Session { seed: alice_seed, noise_secret: alice_noise.private.clone(), noise_public: alice_noise.public.clone() };
-    let bob_session = Session { seed: bob_seed, noise_secret: bob_noise.private.clone(), noise_public: bob_noise.public.clone() };
+    let alice_session = Session { seed: alice_seed, short_id: "abcd2345".into(), noise_secret: alice_noise.private.clone(), noise_public: alice_noise.public.clone() };
+    let bob_session = Session { seed: bob_seed, short_id: "abcd2345".into(), noise_secret: bob_noise.private.clone(), noise_public: bob_noise.public.clone() };
 
     // Each side has verified the other with /trust.
     let alice_chat = chat_for("Alice", ("Bob", bob_noise.public.clone()));
@@ -170,7 +170,7 @@ fn a_peer_that_is_not_verified_gets_nothing() {
         (bob_pk.clone(), store::to_hex(&mallory_noise.public)),
     ]);
     let config = relay_rest::config(Some(&format!("http://127.0.0.1:{port}")), Some("dummy-test-key")).unwrap().unwrap();
-    let alice_session = Session { seed: alice_seed, noise_secret: alice_noise.private.clone(), noise_public: alice_noise.public.clone() };
+    let alice_session = Session { seed: alice_seed, short_id: "abcd2345".into(), noise_secret: alice_noise.private.clone(), noise_public: alice_noise.public.clone() };
     let alice_chat = chat_for("Alice", ("Bob", bob_noise.public.clone()));
     let channel = channel_name(&alice_noise.public, &bob_noise.public);
     let mut alice_link = Link::connect(&config, &channel).unwrap();

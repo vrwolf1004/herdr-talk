@@ -1,6 +1,7 @@
 //! herdr-talk: chat between PCs on the same network, as a herdr plugin.
 
 mod control;
+mod first_run;
 mod settings_form;
 mod dock;
 mod herdr_api;
@@ -100,7 +101,17 @@ fn run(args: RunArgs) -> Result<(), String> {
     if let Err(error) = talk_core::relay_chat::start(&chat, &talk_core::store::state_dir()) {
         chat.say(format!("relay: {error}"));
     }
-    let result = screen::run(&chat).map_err(|error| error.to_string());
+    let state = talk_core::store::state_dir();
+    let result = if talk_core::relay_settings::needs_first_run(&state) {
+        match screen::choose_mode(&chat) {
+            Ok(screen::Choice::Saved | screen::Choice::TimedOut) => screen::run(&chat),
+            Ok(screen::Choice::Quit) => Ok(()),
+            Err(error) => Err(error),
+        }
+    } else {
+        screen::run(&chat)
+    }
+    .map_err(|error| error.to_string());
     chat.stop_relay();
     chat.stop.set();
     chat.release_host();
@@ -124,6 +135,10 @@ fn serve(args: RunArgs) -> Result<(), String> {
     let chat = start(args.name, args.tcp_port.unwrap_or(0), udp).map_err(|error| error.to_string())?;
     let control = control::serve(chat.clone(), &talk_core::store::state_dir(), true).map_err(|error| error.to_string())?;
     chat.watch_host();
+    // The relay runs here too, so a GUI (which talks to this serve) gets it. A bad setting only shows a line.
+    if let Err(error) = talk_core::relay_chat::start(&chat, &talk_core::store::state_dir()) {
+        chat.say(format!("relay: {error}"));
+    }
     let signalled = chat.clone();
     ctrlc::set_handler(move || signalled.stop.set()).map_err(|error| error.to_string())?;
     let me = chat.me.lock().unwrap().clone();

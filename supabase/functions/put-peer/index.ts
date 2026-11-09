@@ -1,5 +1,6 @@
 // Supabase Edge Function `put-peer` (Deno). The only writer of public.peers.
 // Order: format (400) -> time window (401) -> Ed25519 signature (401) -> nonce not used before (401) -> upsert (service role).
+// A short_id that belongs to another pk makes the unique column fail: PostgREST answers 409, and the client picks another.
 // Failures carry no reason in the body. Keys and bodies are never logged.
 //
 // Deploy (owner, once): supabase functions deploy put-peer
@@ -30,18 +31,21 @@ async function takeNonce(nonce: string, ts: number): Promise<"fresh" | "used" | 
   return response.ok ? "fresh" : "failed";
 }
 
-async function upsertPeer(body: PutBody): Promise<boolean> {
+// "taken": the short_id already belongs to another pk (unique violation, 409). The same pk keeps its short_id.
+async function upsertPeer(body: PutBody): Promise<"ok" | "taken" | "failed"> {
   const response = await fetch(`${BASE_URL}/rest/v1/peers?on_conflict=pk`, {
     method: "POST",
     headers: restHeaders({ Prefer: "resolution=merge-duplicates,return=minimal" }),
     body: JSON.stringify({
       pk: body.pk,
       noise_pk: body.noise_pk,
+      short_id: body.short_id,
       name: body.name,
       updated_at: new Date().toISOString(),
     }),
   });
-  return response.ok;
+  if (response.status === 409) return "taken";
+  return response.ok ? "ok" : "failed";
 }
 
 function answer(verdict: Verdict): Response {
@@ -67,6 +71,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
   if (nonce === "used") return answer("nonce");
   if (nonce === "failed") return new Response(null, { status: 500 });
 
-  if (!(await upsertPeer(checked))) return new Response(null, { status: 500 });
+  const written = await upsertPeer(checked);
+  if (written === "taken") return new Response(null, { status: 409 });
+  if (written === "failed") return new Response(null, { status: 500 });
   return answer("ok");
 });

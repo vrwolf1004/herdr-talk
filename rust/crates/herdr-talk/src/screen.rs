@@ -6,9 +6,11 @@ use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlt
 use crossterm::{cursor, execute, queue};
 use std::io::{self, Stdout, Write};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use talk_core::text::{char_width, wrap_line};
+use crate::first_run::{self, Chooser, Step};
 use crate::settings_form::{self, Form};
+use talk_core::relay_settings::Mode;
 use talk_core::{t, Chat, Line, IDLE_LIMIT};
 
 const POLL: Duration = Duration::from_millis(100);
@@ -77,8 +79,10 @@ fn render(out: &mut Stdout, chat: &Chat, input: &str) -> io::Result<()> {
     let name = chat.me.lock().unwrap().name.clone();
     let peers = chat.fresh_peers().len().to_string();
     let badge = if chat.is_host() { format!("{} ", t("host.badge", &[])) } else { String::new() };
+    let mode = t(if chat.is_supabase() { "mode.supabase" } else { "mode.local" }, &[]);
     let relay = chat.relay_status();
     let relay = if relay.is_empty() { String::new() } else { format!(" · {relay}") };
+    let relay = format!(" · {}{relay}", t("mode.status", &[("mode", &mode)]));
     let status = fit(&format!("{badge}{}{relay}", t("status.line", &[("name", &name), ("peers", &peers)])), width);
     let padding = " ".repeat(width - char_width(&status));
     queue!(out, cursor::Hide, cursor::MoveTo(0, 0), SetBackgroundColor(Color::DarkGrey), SetForegroundColor(Color::White),
@@ -131,6 +135,75 @@ fn on_key(key: KeyEvent, chat: &Chat, input: &mut String) -> bool {
     true
 }
 
+/// How the first-run choice ended.
+pub enum Choice {
+    /// The user picked a mode, and it was saved (Local or a complete Supabase setting).
+    Saved,
+    /// No choice within the time limit: the chat starts in Local mode, and nothing is saved.
+    TimedOut,
+    /// The user pressed Esc on the choice.
+    Quit,
+}
+
+/// First run: ask for the connection mode before the chat. Supabase goes to the settings screen; Esc there comes
+/// back to the choice (the timer starts again), saving nothing.
+pub fn choose_mode(chat: &Arc<Chat>) -> io::Result<Choice> {
+    let state = talk_core::store::state_dir();
+    let mut terminal = Terminal::enter()?;
+    let mut chooser = Chooser::new(Instant::now());
+    let mut shown: Option<Option<u64>> = None;
+    loop {
+        let now = Instant::now();
+        if first_run::timed_out(&chooser, now) {
+            return Ok(Choice::TimedOut);
+        }
+        let remaining = first_run::remaining(&chooser, now);
+        if shown != Some(remaining) {
+            let (cols, rows) = terminal::size()?;
+            first_run::render(&mut terminal.0, &chooser, remaining, usize::from(cols), usize::from(rows))?;
+            shown = Some(remaining);
+        }
+        if !event::poll(POLL)? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else { continue };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        shown = None;
+        match first_run::on_key(&mut chooser, key) {
+            Step::Stay => {}
+            Step::Quit => return Ok(Choice::Quit),
+            Step::Pick(Mode::Local) => {
+                first_run::save_local(&state).map_err(io::Error::other)?;
+                return Ok(Choice::Saved);
+            }
+            Step::Pick(Mode::Supabase) => {
+                let mut form = Form::open_supabase(&state);
+                loop {
+                    let (cols, rows) = terminal::size()?;
+                    settings_form::render(&mut terminal.0, &form, usize::from(cols), usize::from(rows))?;
+                    if !event::poll(POLL)? {
+                        continue;
+                    }
+                    let Event::Key(key) = event::read()? else { continue };
+                    if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
+                    if let settings_form::Action::Leave = settings_form::on_key(&mut form, key, chat) {
+                        break;
+                    }
+                    if form.is_saved() {
+                        return Ok(Choice::Saved);
+                    }
+                }
+                // Esc in the settings: back to the choice, with a fresh countdown.
+                chooser = Chooser::new(Instant::now());
+            }
+        }
+    }
+}
+
 pub fn run(chat: &Arc<Chat>) -> io::Result<()> {
     let mut terminal = Terminal::enter()?;
     let mut input = String::new();
@@ -144,8 +217,12 @@ pub fn run(chat: &Arc<Chat>) -> io::Result<()> {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     if let Some(open) = form.as_mut() {
-                        if let settings_form::Action::Leave = settings_form::on_key(open, key, chat) {
+                        let action = settings_form::on_key(open, key, chat);
+                        if open.is_saved() {
                             form = None;
+                        } else if let settings_form::Action::Leave = action {
+                            form = None;
+                            chat.say(t("settings.cancel_discard", &[]));
                         }
                     } else if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
                         form = Some(Form::open(&talk_core::store::state_dir()));

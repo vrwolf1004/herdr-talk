@@ -51,5 +51,19 @@
   "phone.new_done": "Новый токен создан. Телефонам нужно ввести новый.",
   "usage.phone": "использование: /phone   или   /phone new",
   "host.name": "Хост",
-  "host.badge": "[хост]"
+  "host.badge": "[хост]",
+  "mode.local": "Локально (LAN)",
+  "mode.supabase": "Supabase",
+  "mode.hint_local": "Чат только по LAN. Ничего не отправляется в Supabase.",
+  "mode.hint_supabase": "Чат только через Supabase. Сообщения не идут по LAN.",
+  "mode.status": "режим: {mode}",
+  "mode.first_run_title": "Как вы хотите подключиться?",
+  "mode.change": "Ctrl+R: сменить режим подключения",
+  "mode.timeout_hint": "Запуск в локальном режиме через {n} с",
+  "relay.not_sent": "relay: нет соединения, сообщение не отправлено через relay",
+  "settings.mode_row": "Режим подключения",
+  "settings.save_ok_local": "Сохранено: локальный режим. Relay остановлен.",
+  "settings.save_ok_supabase": "Сохранено: режим Supabase. Relay запущен.",
+  "settings.save_refused_missing": "Не сохранено. Не заполнено: {fields}",
+  "settings.cancel_discard": "Настройки закрыты без сохранения."
 }

@@ -51,5 +51,19 @@
   "phone.new_done": "New token made. Phones must enter the new one.",
   "usage.phone": "usage: /phone   or   /phone new",
   "host.name": "Host",
-  "host.badge": "[host]"
+  "host.badge": "[host]",
+  "mode.local": "Local (LAN)",
+  "mode.supabase": "Supabase",
+  "mode.hint_local": "Chat over the LAN only. Nothing is sent to Supabase.",
+  "mode.hint_supabase": "Chat through Supabase only. Messages do not go over the LAN.",
+  "mode.status": "mode: {mode}",
+  "mode.first_run_title": "How do you want to connect?",
+  "mode.change": "Ctrl+R: change connection mode",
+  "mode.timeout_hint": "Starting in local mode in {n}s",
+  "relay.not_sent": "relay: not connected, the message was not sent over the relay",
+  "settings.mode_row": "Connection mode",
+  "settings.save_ok_local": "Saved: local mode. The relay is stopped.",
+  "settings.save_ok_supabase": "Saved: Supabase mode. The relay is started.",
+  "settings.save_refused_missing": "Not saved. Missing: {fields}",
+  "settings.cancel_discard": "Left the settings without saving."
 }

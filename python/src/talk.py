@@ -39,6 +39,9 @@ from concurrent.futures import ThreadPoolExecutor
 import herdr_api
 import noise
 import phone
+import relay_chat
+import relay_form
+import relay_settings
 import store
 
 
@@ -191,6 +194,9 @@ class Chat:
         self.lines_lock = threading.Lock()  # 네트워크 스레드와 화면이 같은 목록을 쓴다
         self.last_activity = time.time()
         self.last_auto_rename = None  # 자동 이름 변경 시각 (time.monotonic)
+        self.supabase = False     # connection mode: True sends and shows chat only through the relay (no LAN chat)
+        self.relay = None         # relay_chat.Relay while the relay runs
+        self.relay_status = ""    # short text for the status row, empty when the relay is off
 
     def touch(self):
         """Mark activity so the idle timer restarts. Used by every view, not only add_line()."""
@@ -344,6 +350,33 @@ class Chat:
             return
         say(t("trust.done", name=info["name"], ip=info["ip"]))
 
+    def start_relay(self):
+        """(Re)start the relay for the saved settings and set the connection mode. Returns the status text."""
+        self.stop_relay()
+        settings = relay_settings.effective(self.state_dir) if self.state_dir else relay_settings.empty()
+        self.supabase = settings["mode"] == relay_settings.SUPABASE
+        secret, key = self.me.get("secret"), self.me.get("key")
+        self.relay_status = ""
+        if not self.supabase or secret is None or key is None:
+            return ""
+        self.relay, self.relay_status = relay_chat.start(RelayHooks(self), self.state_dir, settings, secret, key)
+        if self.relay_status:
+            say(self.relay_status)
+        return self.relay_status
+
+    def stop_relay(self):
+        relay, self.relay = self.relay, None
+        if relay is not None:
+            relay.stop()
+
+    def _send_over_relay(self, text):
+        if self.relay is None:
+            say(t("relay.not_sent"))
+            return True
+        self.relay.send(text)
+        say(f"{self.me['name']} {t('chat.you')}: {text}", mine=True)
+        return True
+
     def handle(self, text):
         """Handle one line typed by the user. Return False to leave the chat."""
         text = text.strip()
@@ -413,6 +446,8 @@ class Chat:
                 say(t("usage.trust"))
             return True
         text = text[:MAX_TEXT_CHARS].replace("\n", " ")
+        if self.supabase:
+            return self._send_over_relay(text)
         found = self.fresh_peers()
         if not found:
             say(t("peers.none_hint"))
@@ -440,6 +475,25 @@ class Chat:
                     say(t("peer.unreachable", name=info["name"]))
         say(f"{self.me['name']} {t('chat.you')}: {text}", mine=True)
         return True
+
+
+class RelayHooks:
+    """What relay_chat needs from the chat (relay_chat does not import this module)."""
+
+    def __init__(self, chat):
+        self.chat = chat
+
+    def say(self, text):
+        say(text)
+
+    def show(self, sender, text):
+        say(f"{sender}: {text}")
+
+    def trusted_name(self, key):
+        return self.chat.trusted_name(key)
+
+    def set_status(self, text):
+        self.chat.relay_status = text
 
 
 def announce(udp_port, me):
@@ -731,7 +785,10 @@ def _receive_encrypted(conn, first, chat):
 
 
 def deliver(data, key, chat):
-    """Show one message. With a key, the id must be that key's id. Without one, the id must not be a key-derived id."""
+    """Show one message. With a key, the id must be that key's id. Without one, the id must not be a key-derived id.
+    In Supabase mode the LAN carries no chat: the message is dropped (discovery and trust are not affected)."""
+    if chat.supabase:
+        return
     try:
         message = json.loads(data.decode("utf-8"))
     except ValueError:
@@ -832,7 +889,8 @@ def control_answer(chat, request, allow_shutdown):
         return {"ok": True, "lines": [{"text": text, "mine": mine} for text, mine in rows]}
     if cmd == "peers":
         peers = [{"name": info["name"], "ip": info["ip"], "port": info["port"]} for info in chat.fresh_peers().values()]
-        return {"ok": True, "peers": peers, "me": {"name": chat.me["name"], "port": chat.me["port"]}}
+        mode = relay_settings.SUPABASE if chat.supabase else relay_settings.LOCAL
+        return {"ok": True, "peers": peers, "me": {"name": chat.me["name"], "port": chat.me["port"]}, "mode": mode, "relay": chat.relay_status}
     if cmd == "send":
         text = request.get("text")
         if not isinstance(text, str):
@@ -1023,9 +1081,30 @@ def read_char():
         return ch
     fd = sys.stdin.fileno()
     first = os.read(fd, 1)
+    if first == b"":
+        # An arrow or function key sends Esc plus more bytes at once: drop them, so only a lone Esc is Esc.
+        import select
+        if select.select([fd], [], [], 0.02)[0]:
+            os.read(fd, 16)
+            return ""
+        return ""
     need = 4 if first[0] >= 0xF0 else 3 if first[0] >= 0xE0 else 2 if first[0] >= 0xC0 else 1
     data = first + (os.read(fd, need - 1) if need > 1 else b"")
     return data.decode("utf-8", "ignore")
+
+
+def read_char_timeout(seconds):
+    """A typed key as text, or None when nothing was typed within `seconds`."""
+    deadline = time.monotonic() + seconds
+    if os.name == "nt":
+        import msvcrt
+        while time.monotonic() < deadline:
+            if msvcrt.kbhit():
+                return read_char()
+            time.sleep(0.03)
+        return None
+    import select
+    return read_char() if select.select([sys.stdin.fileno()], [], [], seconds)[0] else None
 
 
 def wrap_line(line, cols):
@@ -1153,6 +1232,57 @@ def _enter_screen():
     return leave
 
 
+def _draw(frame):
+    sys.stdout.write(frame)
+    sys.stdout.flush()
+
+
+def settings_screen(state, open_supabase=False):
+    """The Ctrl+R screen (inside the full-screen mode that is already on). Returns ("saved" | "cancel", message)."""
+    form = relay_form.SettingsForm(state)
+    if open_supabase:
+        form.open_supabase()
+    while True:
+        size = shutil.get_terminal_size((80, 24))
+        _draw(form.render(size.columns, size.lines))
+        outcome = form.on_key(read_char())
+        if outcome:
+            return outcome, form.message
+
+
+def first_run_screen(state):
+    """Ask how to connect before the chat starts. Returns "done" (the mode was saved, or 30 seconds passed and the chat
+    starts in local mode without saving) or "quit" (Esc)."""
+    leave = _enter_screen()
+    try:
+        choice = relay_form.FirstRun()
+        shown = object()
+        while True:
+            left = choice.remaining()
+            if left != shown:
+                size = shutil.get_terminal_size((80, 24))
+                _draw(choice.render(size.columns, size.lines))
+                shown = left
+            key = read_char_timeout(0.25)
+            if key is None:
+                if choice.timed_out():
+                    return "done"
+                continue
+            picked = choice.on_key(key)
+            shown = object()
+            if picked == "quit":
+                return "quit"
+            if picked == "local":
+                relay_settings.set_mode(state, relay_settings.LOCAL)
+                return "done"
+            if picked == "supabase":
+                if settings_screen(state, open_supabase=True)[0] == "saved":
+                    return "done"
+                choice.restart_timer()
+    finally:
+        leave()
+
+
 def on_key(ch, chat, typed):
     """Apply one key to the typed text (a one-item list, changed in place). The keys are the Rust edition's.
     Return False to leave the chat."""
@@ -1184,9 +1314,16 @@ def run_ansi(chat):
     typed = [""]
     screen_lock = threading.Lock()
 
+    paused = [False]
+
     def redraw():
+        if paused[0]:
+            return
         size = shutil.get_terminal_size((80, 24))
         status = t("status.line", name=chat.me["name"], peers=len(chat.fresh_peers()))
+        status += " · " + t("mode.status", mode=t("mode.supabase" if chat.supabase else "mode.local"))
+        if chat.relay_status:
+            status += f" · {chat.relay_status}"
         if chat.is_host():
             status = f"{t('host.badge')} {status}"
         with chat.lines_lock:
@@ -1207,7 +1344,23 @@ def run_ansi(chat):
     redraw()
     threading.Thread(target=leave_when_idle, args=(chat,), daemon=True).start()
     try:
-        while on_key(read_char(), chat, typed):
+        while True:
+            ch = read_char()
+            if ch == "":  # Ctrl+R: connection mode and relay settings
+                paused[0] = True
+                try:
+                    outcome, message = settings_screen(chat.state_dir) if chat.state_dir else ("cancel", "")
+                finally:
+                    paused[0] = False
+                if outcome == "saved":
+                    chat.start_relay()
+                    say(message)
+                else:
+                    say(t("settings.cancel_discard"))
+                redraw()
+                continue
+            if not on_key(ch, chat, typed):
+                break
             redraw()
     finally:
         chat.on_phone_change = None
@@ -1279,6 +1432,7 @@ def serve(args):
     server, chat = start_node(args)
     control = start_control(chat, state_dir(), allow_shutdown=True)
     chat.watch_host()
+    chat.start_relay()
     STOP.wait(ANNOUNCE_SECONDS + 0.5)
     renamed = resolve_name_clash(chat)
     if renamed:
@@ -1291,6 +1445,7 @@ def serve(args):
         pass
     finally:
         STOP.set()
+        chat.stop_relay()
         chat.release_host()
         control.close()
         server.close()
@@ -1302,6 +1457,13 @@ def run(args):
     me = chat.me
     control = start_control(chat, state_dir())
     chat.watch_host()  # the first node on this PC owns the phone address; another takes over when it ends
+    if chat.state_dir and relay_settings.needs_first_run(chat.state_dir) and first_run_screen(chat.state_dir) == "quit":
+        STOP.set()
+        chat.release_host()
+        control.close()
+        server.close()
+        return 0
+    chat.start_relay()
 
     if args.dock:
         herdr_api.try_request("pane.report_agent", {"pane_id": args.pane, "source": SOURCE, "agent": AGENT_ID, "state": "idle"})
@@ -1316,6 +1478,7 @@ def run(args):
         return run_ansi(chat)
     finally:
         STOP.set()
+        chat.stop_relay()
         chat.release_host()
         control.close()
         server.close()

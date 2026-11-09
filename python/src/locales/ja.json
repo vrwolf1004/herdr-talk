@@ -51,5 +51,19 @@
   "phone.new_done": "新しいトークンを作りました。スマホで新しいトークンを入力してください。",
   "usage.phone": "使い方: /phone   または   /phone new",
   "host.name": "ホスト",
-  "host.badge": "[ホスト]"
+  "host.badge": "[ホスト]",
+  "mode.local": "ローカル (LAN)",
+  "mode.supabase": "Supabase",
+  "mode.hint_local": "LAN だけでチャットします。Supabase には何も送りません。",
+  "mode.hint_supabase": "Supabase だけでチャットします。メッセージは LAN を通りません。",
+  "mode.status": "方式: {mode}",
+  "mode.first_run_title": "接続方法を選んでください",
+  "mode.change": "Ctrl+R: 接続方式を変更",
+  "mode.timeout_hint": "{n}秒後にローカルモードで開始します",
+  "relay.not_sent": "relay: 未接続のため relay では送信しませんでした",
+  "settings.mode_row": "接続方式",
+  "settings.save_ok_local": "保存しました: ローカルモード。relay を停止しました。",
+  "settings.save_ok_supabase": "保存しました: Supabase モード。relay を開始しました。",
+  "settings.save_refused_missing": "保存しませんでした。未入力: {fields}",
+  "settings.cancel_discard": "保存せずに設定を閉じました。"
 }

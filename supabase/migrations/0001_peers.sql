@@ -3,7 +3,7 @@
 -- If this file was already run, the two privilege lines under the peers table can be run by hand (they are idempotent).
 --
 -- Write rule: no client role may insert or update peers. The only writer is the Edge Function `put-peer`, which
--- verifies an Ed25519 signature over the v2 string (pk, noise_pk, name, ts, nonce) and then upserts with the service role (it bypasses RLS).
+-- verifies an Ed25519 signature over the v2 string (pk, noise_pk, name, ts, nonce; v3 in 0002 adds short_id) and then upserts with the service role (it bypasses RLS).
 -- The publishable key only passes the function gate; it is not a write right.
 --
 -- What is stored: pk (Ed25519 public key, hex), name, noise_pk (X25519 key, hex, required), updated_at.
