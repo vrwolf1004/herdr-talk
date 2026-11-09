@@ -21,6 +21,8 @@ import { computeVectors, INPUTS } from "./vectors.ts";
 import { codeMatches, emptySettings, isHttpsUrl, isPeerInput, keyLabel, missingFields } from "./settings.ts";
 import { readShortAnswer } from "./client.ts";
 import { receiveLine, sealText, type Keys } from "./engine.ts";
+import { NAMES_BY_LANGUAGE, namesFor } from "./names.ts";
+import { parseNames } from "../../scripts/gen-names.mjs";
 
 const FILE = JSON.parse(readFileSync(new URL("../../test-vectors/relay.json", import.meta.url), "utf8"));
 
@@ -138,7 +140,7 @@ test("base64 and UTF-8 helpers", () => {
 });
 
 test("settings: four fields are required, the URL must be https, the key is shown by length", () => {
-  assert.deepEqual(missingFields(emptySettings()), ["url", "key", "name", "peer"]);
+  assert.deepEqual(missingFields(emptySettings()), ["url", "key", "peer"]);
   const full = { url: "https://x.supabase.co", key: "k", name: "Alice", peer: "abcd2345" };
   assert.deepEqual(missingFields(full), []);
   assert.deepEqual(missingFields({ ...full, url: "http://x.example" }), ["url"]);
@@ -203,4 +205,15 @@ test("short ID lookup: exactly one row with the same short_id; 0 or 2 rows give 
   assert.deepEqual(readShortAnswer(200, `[${row},${row}]`, "abcd2345"), { reason: "상대를 찾지 못함" });
   assert.ok("reason" in readShortAnswer(500, `[${row}]`, "abcd2345"));
   assert.ok("reason" in readShortAnswer(200, `[${row}]`, "zzzz9999"), "row must carry the asked short_id");
+});
+
+test("names.ts equals the talk-core name table (regenerate with scripts/gen-names.mjs)", () => {
+  const rust = readFileSync(new URL("../../../rust/crates/talk-core/src/chat.rs", import.meta.url), "utf8");
+  assert.deepEqual(NAMES_BY_LANGUAGE.map(([code, names]) => [code, [...names]]), parseNames(rust));
+});
+
+test("default names follow the language; an unlisted language gets every name", () => {
+  assert.equal(namesFor("ko_KR")[0], "민준");
+  assert.equal(namesFor("en-US")[0], "Liam");
+  assert.ok(namesFor("xx").includes("민준") && namesFor("xx").includes("Liam"));
 });

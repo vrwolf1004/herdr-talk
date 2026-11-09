@@ -2,13 +2,15 @@
 // expo-secure-store (never in AsyncStorage). Random bytes come from expo-crypto (the platform CSPRNG).
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { NativeModules } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { getRandomBytes } from "expo-crypto";
 import { bytesToHex, hexToBytes } from "./bytes.ts";
 import { publicKeyOf } from "./noise.ts";
-import { emptySettings, isPeerInput, type RelaySettings } from "./settings.ts";
+import { emptySettings, isPeerInput, isValidName, type RelaySettings } from "./settings.ts";
 import { type Keys } from "./engine.ts";
 import { signingPublicKey } from "./protocol.ts";
+import { namesFor } from "./names.ts";
 
 // Settings: encrypted in expo-secure-store (Android Keystore). The old AsyncStorage copy is only read once, to move it.
 const SETTINGS_KEY = "herdr-talk.relay.settings";
@@ -17,6 +19,7 @@ const TRUSTED_KEY = "herdr-talk.relay.trusted";
 const SIGNING_SEED_KEY = "herdr-talk.relay.signing-seed";
 const NOISE_PRIVATE_KEY = "herdr-talk.relay.noise-private";
 const SHORT_ID_KEY = "herdr-talk.relay.short-id";
+const DISPLAY_NAME_KEY = "herdr-talk.relay.display-name";
 const SHORT_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
 /** Random bytes from expo-crypto (the platform CSPRNG). Throws when no bytes come back: never a weak key. */
@@ -40,7 +43,7 @@ function parseSettings(text: string | null): RelaySettings | null {
 
 /**
  * App defaults from mobile/.env (EXPO_PUBLIC_RELAY_URL, _KEY, _PEER). Expo inlines them at build time.
- * The display name is never a default: the user types it. Nothing here logs or prints a value.
+ * The display name is not part of these defaults: the app assigns it (loadOrCreateDisplayName). Nothing here logs or prints a value.
  */
 export function defaultSettings(): RelaySettings {
   return {
@@ -67,6 +70,19 @@ export async function loadSettings(): Promise<LoadedSettings> {
     return { settings: legacy, fromDefaults: false };
   }
   return { settings: defaultSettings(), fromDefaults: true };
+}
+
+/** This phone's language as the platform reports it (for example ko_KR); the JS engine's locale when that is missing. */
+function phoneLocale(): string {
+  const native: unknown = NativeModules.I18nManager?.localeIdentifier;
+  return typeof native === "string" && native.length > 0 ? native : Intl.DateTimeFormat().resolvedOptions().locale;
+}
+
+/** A person's name for this phone's language, picked at random (talk-core's list, see names.ts). */
+export function defaultDisplayName(): string {
+  const names = namesFor(phoneLocale());
+  const [high, low] = randomBytes(2);
+  return names[((high << 8) | low) % names.length];
 }
 
 /** Save to the encrypted store. A failure throws (the caller shows a message without any value). */
@@ -120,6 +136,20 @@ export async function loadOrCreateShortId(): Promise<string> {
   }
   if (!isPeerInput(saved)) throw new Error("short ID in secure storage is damaged");
   return saved;
+}
+
+/** This phone's display name: assigned once, kept in secure storage, and used for every row write. Any other saved name is replaced. */
+export async function loadOrCreateDisplayName(): Promise<string> {
+  const saved = await SecureStore.getItemAsync(DISPLAY_NAME_KEY);
+  if (saved && isValidName(saved)) return saved;
+  const name = defaultDisplayName();
+  await SecureStore.setItemAsync(DISPLAY_NAME_KEY, name);
+  return name;
+}
+
+/** Forget the assigned display name (the next assignment is a new name). */
+export async function clearDisplayName(): Promise<void> {
+  await SecureStore.deleteItemAsync(DISPLAY_NAME_KEY);
 }
 
 /** After the relay answered 409 (another key has this short ID): keep a new one. */

@@ -11,11 +11,12 @@ export function isPeerInput(text: string): boolean {
 export type RelaySettings = {
   url: string; // project URL, https://<ref>.supabase.co
   key: string; // publishable key (not a secret, but it is never printed in full)
-  name: string; // display name, 1 to 32 characters, no control characters
+  name: string; // display name, 1 to 32 characters, no control characters; assigned by the app, never typed
   peer: string; // the peer's short ID, 8 lowercase letters or digits
 };
 
-export const FIELD_IDS = ["url", "key", "name", "peer"] as const;
+// The display name is not a field: the app assigns it (store.loadOrCreateDisplayName).
+export const FIELD_IDS = ["url", "key", "peer"] as const;
 export type FieldId = (typeof FIELD_IDS)[number];
 
 export function emptySettings(): RelaySettings {
@@ -27,7 +28,6 @@ export function missingFields(settings: RelaySettings): FieldId[] {
   const missing: FieldId[] = [];
   if (!isHttpsUrl(settings.url)) missing.push("url");
   if (settings.key.trim().length === 0) missing.push("key");
-  if (!isValidName(settings.name)) missing.push("name");
   if (!isPeerInput(settings.peer)) missing.push("peer");
   return missing;
 }

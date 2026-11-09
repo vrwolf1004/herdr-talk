@@ -66,10 +66,6 @@ pub fn config(url: Option<&str>, key: Option<&str>) -> Result<Option<Config>, St
     Ok(Some(Config { url, key: key.to_string() }))
 }
 
-pub fn config_from_env() -> Result<Option<Config>, String> {
-    config(std::env::var(URL_VARIABLE).ok().as_deref(), std::env::var(KEY_VARIABLE).ok().as_deref())
-}
-
 fn is_loopback(url: &str) -> bool {
     url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost")
 }
@@ -144,6 +140,54 @@ pub fn put_request(config: &Config, seed: &[u8; 32], noise_pk: &str, short_id: &
             r#"{{"pk":"{pk}","noise_pk":"{noise_pk}","short_id":"{short_id}","name":{name_json},"ts":{ts},"nonce":"{nonce}","sig":"{signature}"}}"#
         )),
     })
+}
+
+/// Tag of the signed string for deleting a row (its own format; a put signature never verifies as a delete).
+pub const DELETE_TAG: &str = "herdr-talk-del-v1";
+
+/// The bytes that are signed for a delete: DELETE_TAG, pk, short_id, ts, nonce, one per line, no newline at the end.
+pub fn delete_message(pk: &str, short_id: &str, ts: u64, nonce: &str) -> String {
+    format!("{DELETE_TAG}\n{pk}\n{short_id}\n{ts}\n{nonce}")
+}
+
+/// Signed request to delete this PC's own row through delete-peer. The relay removes the row only when pk and short_id both match.
+pub fn delete_request(config: &Config, seed: &[u8; 32], short_id: &str, ts: u64, nonce: &str) -> Result<Request, String> {
+    if !valid_short_id(short_id) {
+        return Err("short_id must be 8 lowercase letters or digits".to_string());
+    }
+    if !valid_hex(nonce, 32) {
+        return Err("nonce must be 32 lowercase hex characters".to_string());
+    }
+    let signing = SigningKey::from_bytes(seed);
+    let pk = to_hex(&signing.verifying_key().to_bytes());
+    let signature = to_hex(&signing.sign(delete_message(&pk, short_id, ts, nonce).as_bytes()).to_bytes());
+    let mut headers = common_headers(config);
+    headers.push(("Content-Type".to_string(), "application/json".to_string()));
+    Ok(Request {
+        method: "POST",
+        url: format!("{}/functions/v1/delete-peer", config.url),
+        headers,
+        body: Some(format!(r#"{{"pk":"{pk}","short_id":"{short_id}","ts":{ts},"nonce":"{nonce}","sig":"{signature}"}}"#)),
+    })
+}
+
+/// Ask the relay to delete this PC's row. True only for a 2xx answer. Every failure is false; no error text is kept.
+pub fn delete_peer(config: &Config, seed: &[u8; 32], short_id: &str) -> bool {
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else { return false };
+    let mut random = [0u8; 16];
+    if getrandom::getrandom(&mut random).is_err() {
+        return false;
+    }
+    let Ok(request) = delete_request(config, seed, short_id, now.as_secs(), &to_hex(&random)) else { return false };
+    let mut builder = agent(config).post(&request.url);
+    for (key, value) in &request.headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+    let body = request.body.unwrap_or_default();
+    match builder.send(body.as_str()) {
+        Ok(response) => (200..300).contains(&response.status().as_u16()),
+        Err(_) => false,
+    }
 }
 
 /// Lookup of one peer by pk.
@@ -359,6 +403,34 @@ mod tests {
         assert_eq!(header(&request, "apikey"), Some("dummy-test-key"));
         assert_eq!(header(&request, "Authorization"), Some("Bearer dummy-test-key"));
         assert_eq!(header(&request, "x-herdr-pk"), None);
+    }
+
+    #[test]
+    fn delete_message_and_body_are_signed_over_the_fixed_order() {
+        let signing = SigningKey::from_bytes(&SEED);
+        let pk = to_hex(&signing.verifying_key().to_bytes());
+        let message = delete_message(&pk, SHORT, 1700000000, VECTOR_NONCE);
+        assert_eq!(message, format!("herdr-talk-del-v1\n{pk}\n{SHORT}\n1700000000\n{VECTOR_NONCE}"));
+        let request = delete_request(&dummy(), &SEED, SHORT, 1700000000, VECTOR_NONCE).unwrap();
+        assert_eq!(request.url, "http://127.0.0.1:9/functions/v1/delete-peer");
+        let sig = to_hex(&signing.sign(message.as_bytes()).to_bytes());
+        assert_eq!(request.body.unwrap(), format!(r#"{{"pk":"{pk}","short_id":"{SHORT}","ts":1700000000,"nonce":"{VECTOR_NONCE}","sig":"{sig}"}}"#));
+        assert!(delete_request(&dummy(), &SEED, "ABCD2345", 1, VECTOR_NONCE).is_err());
+    }
+
+    #[test]
+    fn delete_peer_sends_the_signed_body_and_accepts_204() {
+        let (config, received) = serve_once("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        assert!(delete_peer(&config, &SEED, SHORT));
+        let raw = received.recv().unwrap();
+        assert!(raw.starts_with("POST /functions/v1/delete-peer HTTP/1.1\r\n"), "{raw}");
+        assert!(raw.contains(&format!(r#""short_id":"{SHORT}","ts":"#)), "{raw}");
+    }
+
+    #[test]
+    fn delete_peer_is_false_for_a_refusal() {
+        let (config, _received) = serve_once("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        assert!(!delete_peer(&config, &SEED, SHORT));
     }
 
     #[test]

@@ -1,6 +1,5 @@
-//! The connection-mode screens of the window. Two kinds:
-//! - The first-run choice (choose): shown before the chat when relay.json has no `mode`. Local or Supabase.
-//! - The settings window (Form, Ctrl+R and the top-bar button): the mode row on top, then the four Supabase fields.
+//! The connection-mode screens of the window. Two kinds: the first-run choice (`choose`), shown before the chat
+//! when relay.json has no `mode`, and the settings window (`Form`, Ctrl+R and the top-bar button) with the mode row and the four Supabase fields.
 //! The rules (validation, saving, BOM, mode, texts) live in talk-core; this file only draws and keeps the typed text.
 
 use crate::Palette;
@@ -11,7 +10,15 @@ use talk_core::relay_settings::{self, Mode, Settings};
 use talk_core::t;
 use std::time::Instant;
 
-const LABELS: [&str; 4] = ["프로젝트 URL", "publishable 키", "표시 이름", "상대 ID (8자리)"];
+/// The four field labels, in field order.
+fn labels() -> [String; 4] {
+    [
+        t("gui.relay.label.url", &[]),
+        t("gui.relay.label.key", &[]),
+        t("gui.relay.label.name", &[]),
+        t("gui.relay.label.peer", &[]),
+    ]
+}
 const KEY_FIELD: usize = 1;
 
 /// The first-run pick.
@@ -46,7 +53,7 @@ impl Form {
         let saved = relay_settings::load_saved(state);
         let mine = talk_core::relay_chat::my_keys(state).ok();
         let short_id = talk_core::relay_key::short_id(state).unwrap_or_default();
-        let message = if mine.is_none() { "채팅을 한 번 시작해야 이 PC의 키가 생긴다".to_string() } else { String::new() };
+        let message = if mine.is_none() { t("gui.relay.no_keys", &[]) } else { String::new() };
         Form {
             mode: saved.mode,
             fields: [saved.url, saved.key, saved.name, saved.peer],
@@ -79,7 +86,8 @@ impl Form {
     pub fn save(&mut self) -> bool {
         let settings = self.settings();
         if settings.mode == Mode::Supabase {
-            let missing: Vec<&str> = (0..LABELS.len()).filter(|&index| self.fields[index].trim().is_empty()).map(|index| LABELS[index]).collect();
+            let labels = labels();
+            let missing: Vec<&str> = (0..labels.len()).filter(|&index| self.fields[index].trim().is_empty()).map(|index| labels[index].as_str()).collect();
             if !missing.is_empty() {
                 self.message = t("settings.save_refused_missing", &[("fields", &missing.join(", "))]);
                 return false;
@@ -91,7 +99,7 @@ impl Form {
                 true
             }
             Err(error) => {
-                self.message = format!("저장하지 않음: {error}");
+                self.message = t("gui.relay.not_saved", &[("error", &error.to_string())]);
                 false
             }
         }
@@ -148,7 +156,7 @@ pub fn choose(ctx: &egui::Context, palette: &Palette, remaining: Option<u64>) ->
         if let Some(seconds) = remaining {
             ui.colored_label(palette.accent, t("mode.timeout_hint", &[("n", &seconds.to_string())]));
         }
-        ui.colored_label(palette.muted, "창을 닫으면 프로그램이 종료된다");
+        ui.colored_label(palette.muted, t("gui.relay.close_quits", &[]));
     });
     picked
 }
@@ -172,38 +180,38 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
         ui.colored_label(palette.muted, hint);
         ui.add_space(8.0);
         let enabled = form.mode == Mode::Supabase;
-        for (index, label) in LABELS.iter().enumerate() {
-            ui.label(*label);
+        for (index, label) in labels().iter().enumerate() {
+            ui.label(label.as_str());
             let edit = egui::TextEdit::singleline(&mut form.fields[index]).desired_width(f32::INFINITY).password(index == KEY_FIELD);
             ui.add_enabled(enabled, edit);
             let (env_url, env_key) = form.from_env;
             if (index == 0 && env_url) || (index == KEY_FIELD && env_key) {
-                ui.colored_label(palette.muted, "환경 변수가 우선한다 (저장 값은 무시됨)");
+                ui.colored_label(palette.muted, t("gui.relay.env_wins", &[]));
             }
             ui.add_space(4.0);
         }
         ui.separator();
         if !form.short_id.is_empty() {
-            ui.label("이 PC의 ID (상대에게 알려 준다)");
+            ui.label(t("gui.relay.my_id", &[]));
             ui.add(egui::Label::new(egui::RichText::new(form.short_id.as_str()).monospace().size(22.0)));
         }
         match &form.mine {
             Some((ed, noise)) => {
-                ui.label("이 PC의 Ed25519 공개키 (상대에게 알려 준다)");
+                ui.label(t("gui.relay.my_ed", &[]));
                 ui.add(egui::Label::new(egui::RichText::new(ed.as_str()).monospace()).wrap());
-                ui.label("이 PC의 Noise 공개키 (상대가 /trust 로 확인한다)");
+                ui.label(t("gui.relay.my_noise", &[]));
                 ui.add(egui::Label::new(egui::RichText::new(noise.as_str()).monospace()).wrap());
             }
             None => {
-                ui.label("이 PC의 키: 아직 없음");
+                ui.label(t("gui.relay.no_keys_yet", &[]));
             }
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if ui.button("저장").clicked() && form.save() {
+            if ui.button(t("gui.button.save", &[])).clicked() && form.save() {
                 action = Action::Saved;
             }
-            if ui.button("닫기").clicked() {
+            if ui.button(t("gui.button.close", &[])).clicked() {
                 action = Action::Discard;
             }
         });
@@ -213,17 +221,6 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
         }
     });
     action
-}
-
-/// The status line text: "방식: …", and for Supabase the relay state after it ("· relay: …"). Local shows no relay state.
-pub fn status_line(mode: Mode, relay: &str) -> String {
-    let label = t(if mode == Mode::Supabase { "mode.supabase" } else { "mode.local" }, &[]);
-    let base = t("mode.status", &[("mode", &label)]);
-    if mode == Mode::Supabase && !relay.is_empty() {
-        format!("{base} · {relay}")
-    } else {
-        base
-    }
 }
 
 #[cfg(test)]
@@ -254,7 +251,7 @@ mod tests {
         form.mode = Mode::Supabase;
         form.fields[0] = "https://example.supabase.co".into();
         assert!(!form.save());
-        assert!(form.message.contains("publishable 키") && form.message.contains("표시 이름"), "{}", form.message);
+        assert!(form.message.contains(&t("gui.relay.label.key", &[])) && form.message.contains(&t("gui.relay.label.name", &[])), "{}", form.message);
         assert!(!dir.join(relay_settings::FILE).exists());
     }
 
@@ -320,12 +317,4 @@ mod tests {
         assert_eq!(tick(&mut timer, start + std::time::Duration::from_secs(60), false), Tick::Wait(Some(30)));
     }
 
-    #[test]
-    fn the_status_line_joins_mode_and_relay_state() {
-        let local = status_line(Mode::Local, "relay: connected");
-        assert_eq!(local, t("mode.status", &[("mode", &t("mode.local", &[]))]), "local shows no relay state");
-        let supabase = status_line(Mode::Supabase, "relay: connected");
-        assert!(supabase.ends_with(" · relay: connected"), "{supabase}");
-        assert!(status_line(Mode::Supabase, "").ends_with(&t("mode.supabase", &[])));
-    }
 }

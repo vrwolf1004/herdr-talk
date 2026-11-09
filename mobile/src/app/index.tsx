@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { ChatState, Config, Line, fetchState, sendText } from '../bridge';
 import { CHOICES, Choice, Palette, palette } from '../theme';
+import { SIZE, TOUCH_MIN } from '../typography.ts';
 
 const CONFIG_KEY = 'herdr-talk.config';
 const PREFS_KEY = 'herdr-talk.prefs';
@@ -260,7 +261,7 @@ function ChatScreen({
   );
 
   return (
-    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       {prefs.crt ? (
         <View style={[styles.bezel, { backgroundColor: colors.bezel }]}>{body}</View>
       ) : (
@@ -297,23 +298,23 @@ const styles = StyleSheet.create({
   bezel: { flex: 1, padding: 10 },
   frame: { flex: 1, borderWidth: 1, borderRadius: 0 },
   connect: { flex: 1, padding: 24, gap: 12, justifyContent: 'center' },
-  title: { fontFamily: FONT, fontSize: 24, marginBottom: 4 },
-  hint: { fontFamily: FONT, fontSize: 13, marginBottom: 8 },
+  title: { fontFamily: FONT, fontSize: SIZE.title, marginBottom: 4 },
+  hint: { fontFamily: FONT, fontSize: SIZE.label, marginBottom: 8 },
   field: { gap: 4 },
-  label: { fontFamily: FONT, fontSize: 12 },
-  input: { fontFamily: FONT, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14 },
+  label: { fontFamily: FONT, fontSize: SIZE.label },
+  input: { minHeight: TOUCH_MIN, fontFamily: FONT, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 8, fontSize: SIZE.body },
   inputText: { flex: 1 },
-  button: { borderWidth: 1, paddingHorizontal: 14, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' },
-  buttonText: { fontFamily: FONT, fontSize: 14 },
-  error: { fontFamily: FONT, fontSize: 12, paddingHorizontal: 10, paddingVertical: 4 },
+  button: { minHeight: TOUCH_MIN, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' },
+  buttonText: { fontFamily: FONT, fontSize: SIZE.body },
+  error: { fontFamily: FONT, fontSize: SIZE.label, paddingHorizontal: 10, paddingVertical: 4 },
   topbar: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, padding: 8, borderBottomWidth: 1 },
-  me: { fontFamily: FONT, fontSize: 14, marginRight: 4, maxWidth: 120 },
-  chip: { borderWidth: 1, paddingHorizontal: 8, paddingVertical: 4 },
-  chipText: { fontFamily: FONT, fontSize: 12 },
+  me: { fontFamily: FONT, fontSize: SIZE.body, marginRight: 4, maxWidth: 120 },
+  chip: { minHeight: TOUCH_MIN, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 4 },
+  chipText: { fontFamily: FONT, fontSize: SIZE.label },
   peers: { flexGrow: 0, borderBottomWidth: 1 },
   peersInner: { padding: 8, gap: 6 },
-  peer: { fontFamily: FONT, fontSize: 12, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 2 },
+  peer: { fontFamily: FONT, fontSize: SIZE.label, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 2 },
   messages: { flex: 1, paddingHorizontal: 10 },
-  line: { fontFamily: FONT, fontSize: 14, lineHeight: 20 },
+  line: { fontFamily: FONT, fontSize: SIZE.body, lineHeight: 22 },
   inputRow: { flexDirection: 'row', gap: 6, padding: 8, borderTopWidth: 1 },
 });

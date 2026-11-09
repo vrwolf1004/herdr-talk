@@ -2,7 +2,6 @@
 //! Same file and rules as python/src/relay_key.py: relay-signing.key in the state folder, 64 hex characters.
 //! The file is created new, never overwritten: a damaged file is an error, not a reason to make a new key.
 
-use crate::store;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -17,16 +16,6 @@ pub fn load_or_create(state: &Path) -> Result<[u8; 32], String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => create(state, &path),
         Err(error) => Err(format!("cannot read {KEY_FILE}: {error}")),
     }
-}
-
-/// The X25519 public key of this PC's Noise identity (identity.json), as 64 lowercase hex characters.
-/// Read only: a missing identity is an error (start a chat first), never a new key.
-pub fn noise_public_hex(state: &Path) -> Result<String, String> {
-    let identity = store::read_identity(state).map_err(|error| error.to_string())?.ok_or("no identity yet: start a chat first")?;
-    if identity.public.len() != 32 {
-        return Err("identity public key is not 32 bytes".to_string());
-    }
-    Ok(store::to_hex(&identity.public))
 }
 
 fn parse(text: &str) -> Option<[u8; 32]> {

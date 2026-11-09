@@ -6,7 +6,6 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest import mock
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))

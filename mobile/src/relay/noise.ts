@@ -11,8 +11,6 @@ import { concatBytes, utf8Encode } from "./bytes.ts";
 const PROTOCOL = utf8Encode("Noise_IK_25519_ChaChaPoly_BLAKE2s");
 const TAG_BYTES = 16;
 
-export type KeyPair = { privateKey: Uint8Array; publicKey: Uint8Array };
-
 export function publicKeyOf(privateKey: Uint8Array): Uint8Array {
   return x25519.getPublicKey(privateKey);
 }

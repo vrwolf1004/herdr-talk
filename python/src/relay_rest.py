@@ -22,6 +22,7 @@ import ed25519
 URL_VARIABLE = "HERDR_TALK_RELAY_URL"
 KEY_VARIABLE = "HERDR_TALK_RELAY_KEY"
 PUT_TAG = "herdr-talk-put-v3"
+DELETE_TAG = "herdr-talk-del-v1"
 TIMEOUT_SECONDS = 5
 
 _PK_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -53,9 +54,6 @@ def config(url, key):
         raise ValueError(f"{URL_VARIABLE} must start with https://")
     return Config(url, key)
 
-
-def config_from_env():
-    return config(os.environ.get(URL_VARIABLE), os.environ.get(KEY_VARIABLE))
 
 
 def valid_pk(text):
@@ -185,3 +183,38 @@ def get_peer(config, short_id):
         return read_get_response(status, body, short_id)
     except (OSError, ValueError):
         return None
+
+
+def delete_message(pk, short_id, ts, nonce):
+    """The bytes that are signed for a row delete: DELETE_TAG, pk, short_id, ts, nonce, one per line, no newline at the end."""
+    return chr(10).join([DELETE_TAG, pk, short_id, str(ts), nonce]).encode("utf-8")
+
+
+def delete_request(config, seed, short_id, ts=None, nonce=None):
+    """Signed delete of this node's own row through the delete-peer function. Raises ValueError for bad input."""
+    pk = ed25519.public_key(seed).hex()
+    if not valid_short(short_id):
+        raise ValueError("short_id must be 8 lowercase letters or digits")
+    ts = int(time.time()) if ts is None else ts
+    nonce = secrets.token_hex(16) if nonce is None else nonce
+    if not isinstance(ts, int) or isinstance(ts, bool) or not _NONCE_PATTERN.match(nonce):
+        raise ValueError("ts must be an integer and nonce 32 lowercase hex characters")
+    sig = ed25519.sign(seed, delete_message(pk, short_id, ts, nonce)).hex()
+    headers = _common_headers(config)
+    headers["Content-Type"] = "application/json"
+    body = {"pk": pk, "short_id": short_id, "ts": ts, "nonce": nonce, "sig": sig}
+    return {
+        "method": "POST",
+        "url": f"{config.url}/functions/v1/delete-peer",
+        "headers": headers,
+        "body": json.dumps(body, separators=(",", ":"), ensure_ascii=False),
+    }
+
+
+def delete_peer(config, seed, short_id):
+    """True when the relay accepted the signed delete (or the row was already gone)."""
+    try:
+        status, _ = _send(delete_request(config, seed, short_id))
+        return put_succeeded(status)
+    except (OSError, ValueError):
+        return False

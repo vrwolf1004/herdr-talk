@@ -33,7 +33,6 @@ import sys
 import threading
 import time
 import unicodedata
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import herdr_api
@@ -42,6 +41,7 @@ import phone
 import relay_chat
 import relay_form
 import relay_settings
+import sessions
 import store
 
 
@@ -197,6 +197,7 @@ class Chat:
         self.supabase = False     # connection mode: True sends and shows chat only through the relay (no LAN chat)
         self.relay = None         # relay_chat.Relay while the relay runs
         self.relay_status = ""    # short text for the status row, empty when the relay is off
+        self.relay_candidate = None  # (name, Noise key) of the configured relay peer, from its row; /trust checks it
 
     def touch(self):
         """Mark activity so the idle timer restarts. Used by every view, not only add_line()."""
@@ -324,8 +325,17 @@ class Chat:
             times.append(now)
         return True
 
+    def _relay_match(self, own, code):
+        """The configured relay peer when its Noise key gives this code (Supabase mode, not yet verified), else None."""
+        if not self.supabase or own is None or self.relay_candidate is None:
+            return None
+        name, key = self.relay_candidate
+        if store.normalize_code(store.fingerprint(own, key)) == code and not self.trusts(key):
+            return {"name": name, "key": key, "ip": RELAY_LABEL}
+        return None
+
     def trust(self, code):
-        """Verify the unverified peer whose code matches: remember its key, and say so."""
+        """Verify the unverified peer whose code matches (a LAN peer or the configured relay peer): remember its key, and say so."""
         own = self.me.get("key")
         found = []
         for info in self.fresh_peers().values():
@@ -333,15 +343,20 @@ class Chat:
             if own is not None and key is not None and self.link_of(info) == "unverified" \
                     and store.normalize_code(store.fingerprint(own, key)) == code:
                 found.append(info)
-        # Two different keys with the same code would mean a collision or an attacker: refuse rather than pick one.
-        if len({info["key"] for info in found}) > 1:
+        relay_hit = self._relay_match(own, code)
+        matching = found + ([relay_hit] if relay_hit else [])
+        # Two different keys with the same code would mean a collision or an attacker, and a LAN peer and the relay
+        # peer with the same code is ambiguous too: refuse rather than pick one.
+        if len({info["key"] for info in matching}) > 1 or (relay_hit and found):
             say(t("trust.ambiguous", code=code))
             return
-        if not found:
+        if not matching:
             say(t("trust.none", code=code))
             return
-        info = found[0]
+        info = matching[0]
         self.trusted.append({"name": info["name"], "key": info["key"], "ip": info["ip"]})
+        if self.relay is not None:
+            self.relay.wake()
         try:
             if self.state_dir is not None:
                 store.write_trusted(self.state_dir, self.trusted)
@@ -366,6 +381,7 @@ class Chat:
 
     def stop_relay(self):
         relay, self.relay = self.relay, None
+        self.relay_candidate = None
         if relay is not None:
             relay.stop()
 
@@ -477,6 +493,9 @@ class Chat:
         return True
 
 
+RELAY_LABEL = "relay"  # the address label of a peer verified through the relay (it has no LAN address)
+
+
 class RelayHooks:
     """What relay_chat needs from the chat (relay_chat does not import this module)."""
 
@@ -494,6 +513,9 @@ class RelayHooks:
 
     def set_status(self, text):
         self.chat.relay_status = text
+
+    def set_relay_candidate(self, name, key):
+        self.chat.relay_candidate = (name, key)
 
 
 def announce(udp_port, me):
@@ -873,12 +895,8 @@ CONTROL_LINES_SHOWN = 300
 
 
 def state_dir():
-    """Rust 판 state_dir() 과 같은 순서: HERDR_PLUGIN_STATE_DIR, 다음 LOCALAPPDATA/herdr-talk, 다음 ~/.local/state/herdr-talk."""
-    folder = os.environ.get("HERDR_PLUGIN_STATE_DIR")
-    if folder:
-        return folder
-    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.environ.get("HOME", ""), ".local", "state")
-    return os.path.join(base, "herdr-talk")
+    """This process's node folder (see sessions.py): the session chosen at start, else the base folder."""
+    return sessions.state_dir()
 
 
 def control_answer(chat, request, allow_shutdown):
@@ -956,33 +974,6 @@ class Control:
             pass
 
 
-def _process_alive(pid):
-    """Whether a process with this pid exists. Windows asks the OS; elsewhere os.kill(pid, 0) (which only probes on POSIX)."""
-    if os.name == "nt":
-        import ctypes
-        from ctypes import wintypes
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not handle:
-            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists, but belongs to someone else
-        try:
-            code = wintypes.DWORD()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return True
-            return code.value == 259  # STILL_ACTIVE
-        finally:
-            kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
-    return True
-
-
 def remove_stale_control_files(state):
     """Delete control-<pid>.json of nodes whose process has ended. A live node keeps its file.
     Best effort: a file that cannot be removed is skipped, so this never stops a start."""
@@ -997,7 +988,7 @@ def remove_stale_control_files(state):
             pid = int(name[len("control-"):-len(".json")])
         except ValueError:
             continue
-        if pid == os.getpid() or _process_alive(pid):
+        if pid == os.getpid() or sessions.process_alive(pid):
             continue
         try:
             os.remove(os.path.join(state, name))
@@ -1547,10 +1538,13 @@ def main(argv=None):
     chat.add_argument("--udp-port", type=int, default=None, help="discovery port (keep the same on every PC; default HERDR_TALK_UDP_PORT or 47850)")
     chat.add_argument("--dock", action="store_true", help="show this pane as the herdr-dock block")
     chat.add_argument("--pane", default=None, help="herdr pane id of the dock block (with --dock)")
+    chat.add_argument("--session", default=None, help="use this node folder (an id, or default); default: a new node")
     serve_parser = commands.add_parser("serve", help="run without a screen; a GUI talks to it over the control channel")
     serve_parser.add_argument("--name", default=None, help="name shown to others (random if omitted)")
     serve_parser.add_argument("--tcp-port", type=int, default=0, help="TCP port for messages (0 = pick one)")
     serve_parser.add_argument("--udp-port", type=int, default=None, help="discovery port (keep the same on every PC; default HERDR_TALK_UDP_PORT or 47850)")
+    serve_parser.add_argument("--session", default=None, help="use this node folder (an id, or default); default: a new node")
+    commands.add_parser("sessions", help="list the node folders with their connection mode")
     commands.add_parser("open", help="split the current pane and run the chat in it")
     commands.add_parser("dock-start", help="show the chat as a block in the herdr-dock workspace")
     commands.add_parser("dock-stop", help="remove the dock block")
@@ -1560,9 +1554,35 @@ def main(argv=None):
     except (OSError, ValueError) as error:  # e.g. a damaged identity.json: say so, never make a new key
         print(error, file=sys.stderr)
         return 1
+    finally:
+        try:  # the node's own relay row goes first; a failure here never stops the exit
+            relay_chat.leave(sessions.state_dir())
+        except Exception:  # noqa: BLE001 - leaving must not block the exit
+            pass
+        failed = sessions.remove_own_session()  # a node's own folder goes when it stops
+        if failed:
+            print(f"could not remove session {failed}", file=sys.stderr)
+
+
+def list_sessions_command():
+    base = sessions.base_dir()
+    for session_id, folder in [(sessions.DEFAULT_SESSION, base), *sessions.list_sessions(base)]:
+        print(f"{session_id}  {folder}  mode={relay_settings.load_saved(folder)['mode']}")
+    return 0
+
+
+def _tidy_sessions():
+    """Remove node folders whose node has ended without cleaning up. Quiet: a folder that cannot be removed is only named."""
+    for session_id in sessions.remove_dead_sessions(sessions.base_dir()):
+        print(f"could not remove dead session {session_id}", file=sys.stderr)
 
 
 def _dispatch(args):
+    if args.command == "sessions":
+        return list_sessions_command()
+    if args.command in ("run", "serve"):
+        sessions.choose_session(args.session)  # a bad or missing --session is reported by main()
+        _tidy_sessions()
     if args.command in ("run", "serve") and args.udp_port is None:
         args.udp_port = udp_port()  # a bad HERDR_TALK_UDP_PORT is reported by main() and stops the start
     if args.command == "run":

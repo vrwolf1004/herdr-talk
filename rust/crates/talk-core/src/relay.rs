@@ -114,7 +114,7 @@ pub fn base64_encode(bytes: &[u8]) -> String {
 
 /// Inverse of `base64_encode`. None for anything that is not padded standard base64.
 pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 4 != 0 {
+    if !text.len().is_multiple_of(4) {
         return None;
     }
     let bytes = text.as_bytes();

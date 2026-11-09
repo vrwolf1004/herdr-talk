@@ -15,7 +15,9 @@ herdr-talk has no required settings. Everything below is optional.
 | `"plaintext"` | `config.json` in the plugin config folder | `false` | Allow plain text to peers that do not encrypt (an old Python edition without keys). See [Encryption](#encryption). |
 | `identity.json`, `trusted.json` | herdr-talk state folder (`HERDR_PLUGIN_STATE_DIR`) | created on first start | This PC's key and the peers you verified. Do not share `identity.json`. |
 | `control-<pid>.json` | herdr-talk state folder | written while `run` or `serve` is up | Port and token of the [control channel](#control-channel). Removed when the chat ends. |
+| `sessions\<id>\` | `%LOCALAPPDATA%\herdr-talk\sessions\` | one folder per launch | Each launch of `run`, `serve` or the GUI is its own node: its own key, short ID, trusted peers and `relay.json`. `--session <id>` reuses one. The old folder `%LOCALAPPDATA%\herdr-talk` is the default node and is kept. |
 | `relay.json` | herdr-talk state folder | not set (Local) | Connection settings. `mode`: `local` (LAN only, the default; a missing or unknown value means local) or `supabase` (messages only through the relay; needs `url`, `key`, `name` and `peer`). Other keys: `url`, `key`, `name`, `peer` (the peer's Ed25519 key). Environment variables `HERDR_TALK_RELAY_URL` and `HERDR_TALK_RELAY_KEY` win over the file. |
+| `relay-signing.key`, `short-id.txt` | herdr-talk state folder | created on first relay start | This PC's Ed25519 signing key for the relay row, and the short ID (8 letters or digits) other people type to find this PC. Do not share `relay-signing.key`. |
 | `HERDR_TALK_EXE` | environment, GUI only | not set | Path of `herdr-talk.exe` for the [Windows GUI](usage.md#11-windows-gui) to start. |
 
 Example:

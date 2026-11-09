@@ -24,6 +24,26 @@ fn text(value: &Value, key: &str) -> String {
 }
 
 #[test]
+fn rust_signs_the_delete_like_the_javascript_side() {
+    let file = vector_file();
+    let inputs = &file["inputs"];
+    let outputs = &file["outputs"];
+    let seed: [u8; 32] = bytes(inputs, "signingSeed").try_into().unwrap();
+    let signing = SigningKey::from_bytes(&seed);
+    let pk = store::to_hex(&signing.verifying_key().to_bytes());
+    assert_eq!(pk, text(outputs, "rowPublic"));
+    let message = relay_rest::delete_message(
+        &pk,
+        &text(inputs, "deleteShortId"),
+        inputs["deleteTs"].as_u64().unwrap(),
+        &text(inputs, "deleteNonce"),
+    );
+    let signature = signing.sign(message.as_bytes());
+    assert_eq!(store::to_hex(&signature.to_bytes()), text(outputs, "deleteSignature"));
+    assert!(signing.verifying_key().verify(message.as_bytes(), &signature).is_ok());
+}
+
+#[test]
 fn rust_computes_the_same_values_as_the_javascript_side() {
     let file = vector_file();
     let inputs = &file["inputs"];

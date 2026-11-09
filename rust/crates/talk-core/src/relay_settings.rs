@@ -59,7 +59,7 @@ pub fn load_saved(state: &Path) -> Settings {
     let Ok(text) = fs::read_to_string(state.join(FILE)) else { return Settings::default() };
     // A UTF-8 byte order mark (written by Windows PowerShell) is allowed and dropped.
     let text = text.trim_start_matches('\u{feff}');
-    let Ok(value) = serde_json::from_str::<Value>(&text) else { return Settings::default() };
+    let Ok(value) = serde_json::from_str::<Value>(text) else { return Settings::default() };
     let field = |name: &str| value[name].as_str().unwrap_or("").to_string();
     // A peer value that is not a short ID (an old 64-character key) is dropped: the user enters the short ID again.
     let peer = field("peer");

@@ -3,6 +3,7 @@
 //! on Unix the folder is made 0o700 and the file 0o600; on Windows the default ACL of %LOCALAPPDATA% already
 //! admits only this user, SYSTEM and Administrators, and the file inherits it.
 
+use talk_core::store::process_alive;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
@@ -47,46 +48,6 @@ fn remove_stale_files(state: &Path) {
             let _ = fs::remove_file(entry.path());
         }
     }
-}
-
-/// Whether a process with this pid exists. Windows asks the OS; other Unix systems send signal 0 (which sends
-/// nothing and only checks): "no such process" means gone, and any other error (EPERM) means it exists.
-#[cfg(windows)]
-fn process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError};
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    const STILL_ACTIVE: u32 = 259;
-    // SAFETY: the handle is checked before use and closed once; the code pointer is a local u32.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            // Access denied means the process exists but belongs to someone else.
-            return GetLastError() == ERROR_ACCESS_DENIED;
-        }
-        let mut code = 0u32;
-        let known = GetExitCodeProcess(handle, &mut code) != 0;
-        CloseHandle(handle);
-        !known || code == STILL_ACTIVE
-    }
-}
-
-#[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
-    unsafe extern "C" {
-        fn kill(pid: i32, signal: i32) -> i32;
-    }
-    // A pid above i32::MAX cannot be a live process on Unix.
-    let Ok(pid) = i32::try_from(pid) else { return false };
-    // ESRCH: "no such process". Linux and macOS both use 3. Other errors (EPERM) mean the process exists.
-    const ESRCH: i32 = 3;
-    // SAFETY: signal 0 is only a permission and existence check; it delivers nothing.
-    let result = unsafe { kill(pid, 0) };
-    result == 0 || io::Error::last_os_error().raw_os_error() != Some(ESRCH)
-}
-
-#[cfg(not(any(windows, unix)))]
-fn process_alive(_pid: u32) -> bool {
-    true // unknown system: keep the file
 }
 
 /// Start the listener on a free loopback port and write the control file.

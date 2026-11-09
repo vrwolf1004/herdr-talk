@@ -20,7 +20,7 @@ const DOCK_REPORT: Duration = Duration::from_secs(2);
 const DOCK_TOKEN_TTL_MS: u64 = 15_000;
 const AGENT_ID: &str = "talk";
 const SOURCE: &str = "plugin:herdr-talk";
-const USAGE: &str = "usage: herdr-talk <run [--name NAME] [--tcp-port N] [--udp-port N] [--dock] [--pane ID] | serve [--name NAME] [--tcp-port N] [--udp-port N] | open | dock-start | dock-stop>";
+const USAGE: &str = "usage: herdr-talk <run [--session ID] [--name NAME] [--tcp-port N] [--udp-port N] [--dock] [--pane ID] | serve [--session ID] [--name NAME] [--tcp-port N] [--udp-port N] | sessions | open | dock-start | dock-stop>";
 
 #[derive(Default)]
 struct RunArgs {
@@ -29,6 +29,8 @@ struct RunArgs {
     udp_port: Option<u16>,
     dock: bool,
     pane: Option<String>,
+    /// The session folder to use (a session id, or "default"). None: a new session.
+    session: Option<String>,
 }
 
 fn parse_run(args: &[String]) -> Result<RunArgs, String> {
@@ -42,6 +44,7 @@ fn parse_run(args: &[String]) -> Result<RunArgs, String> {
             "--tcp-port" => parsed.tcp_port = Some(port(value()?)?),
             "--udp-port" => parsed.udp_port = Some(port(value()?)?),
             "--pane" => parsed.pane = Some(value()?),
+            "--session" => parsed.session = Some(value()?),
             "--dock" => parsed.dock = true,
             other => return Err(format!("unknown option: {other}")),
         }
@@ -81,7 +84,16 @@ fn keep_dock_block(pane: String, chat: Arc<Chat>) {
     }
 }
 
+/// Remove node folders whose node has ended without cleaning up. Quiet: a folder that cannot be removed is only named.
+fn tidy_sessions() {
+    for id in talk_core::store::remove_dead_sessions(&talk_core::store::base_dir()) {
+        eprintln!("could not remove dead session {id}");
+    }
+}
+
 fn run(args: RunArgs) -> Result<(), String> {
+    talk_core::store::choose_session(args.session.as_deref())?;
+    tidy_sessions();
     let udp = match args.udp_port {
         Some(port) => port,
         None => udp_port()?,
@@ -125,6 +137,8 @@ fn run(args: RunArgs) -> Result<(), String> {
 /// Chat without a screen, for a GUI: only the control channel runs. Ends on Ctrl+C, a termination
 /// signal, or a `shutdown` request, and removes the control file on the way out.
 fn serve(args: RunArgs) -> Result<(), String> {
+    talk_core::store::choose_session(args.session.as_deref())?;
+    tidy_sessions();
     if args.dock || args.pane.is_some() {
         return Err("serve has no dock: --dock and --pane belong to run".to_string());
     }
@@ -182,16 +196,36 @@ fn dock_stop() -> Result<(), String> {
     dock::release_dock_pane(DOCK_KEY)
 }
 
+/// Print the sessions under the base folder: id, folder and the connection mode saved there. The default folder first.
+fn list_sessions() -> Result<(), String> {
+    let base = talk_core::store::base_dir();
+    let mut rows = vec![(talk_core::store::DEFAULT_SESSION.to_string(), base.clone())];
+    rows.extend(talk_core::store::list_sessions(&base));
+    for (id, dir) in rows {
+        let mode = talk_core::relay_settings::load_saved(&dir).mode;
+        println!("{id}  {}  mode={}", dir.display(), mode.as_str());
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("run") => parse_run(&args[1..]).and_then(run),
         Some("serve") => parse_run(&args[1..]).and_then(serve),
+        Some("sessions") => list_sessions(),
         Some("open") => open_chat(),
         Some("dock-start") => dock_start(),
         Some("dock-stop") => dock_stop(),
         _ => Err(USAGE.to_string()),
     };
+    // A normal stop deletes this node's own relay row first (best effort), then its folder.
+    if result.is_ok() && talk_core::store::session_id().is_some() {
+        talk_core::relay_chat::leave(&talk_core::store::state_dir());
+    }
+    if let Some(id) = talk_core::store::remove_own_session() {
+        eprintln!("could not remove session {id}");
+    }
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

@@ -169,7 +169,14 @@ pub struct Chat {
     relay_status: Mutex<String>,
     /// True in Supabase mode: messages go only through the relay, never over the LAN.
     supabase: AtomicBool,
+    /// The configured relay peer's name and Noise key, from its row (set by the relay thread; /trust checks it).
+    relay_candidate: Mutex<Option<(String, Vec<u8>)>>,
+    /// Set after /trust verified a relay peer: the relay thread stops waiting and checks the row again now.
+    relay_wake: AtomicBool,
 }
+
+/// The address label shown for a peer verified through the relay (it has no LAN address).
+const RELAY_LABEL: &str = "relay";
 
 /// How long the phone address and token stay on screen when nobody hides them.
 const PHONE_SHOWN: Duration = Duration::from_secs(30);
@@ -196,6 +203,8 @@ impl Chat {
             relay_inbox: Mutex::new(None),
             relay_status: Mutex::new(String::new()),
             supabase: AtomicBool::new(false),
+            relay_candidate: Mutex::new(None),
+            relay_wake: AtomicBool::new(false),
         }
     }
 
@@ -340,9 +349,35 @@ impl Chat {
 
     /// Stop the running relay thread (it exits at its next check) and forget its inbox.
     pub fn stop_relay(&self) {
+        *self.relay_candidate.lock().unwrap() = None;
         if let Some((_, stop)) = self.relay_inbox.lock().unwrap().take() {
             stop.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// The relay thread reports the configured peer's row, so /trust can verify that peer by its Noise key.
+    pub(crate) fn set_relay_candidate(&self, name: &str, key: Vec<u8>) {
+        *self.relay_candidate.lock().unwrap() = Some((name.to_string(), key));
+    }
+
+    /// The name shown for a relay peer: the name in its row (from the latest lookup) while that is a valid name,
+    /// otherwise the name the user verified with /trust. The row name wins, so a renamed phone shows its new name.
+    pub(crate) fn relay_display_name(&self, key: &[u8]) -> Option<String> {
+        let row = self.relay_candidate.lock().unwrap().as_ref().filter(|(_, candidate)| candidate.as_slice() == key).map(|(name, _)| name.clone());
+        match row {
+            Some(name) if crate::relay_rest::valid_name(&name) => Some(name),
+            _ => self.trusted_name(key),
+        }
+    }
+
+    /// Ask the relay thread to check its peer again now (after a trust).
+    pub(crate) fn wake_relay(&self) {
+        self.relay_wake.store(true, Ordering::Relaxed);
+    }
+
+    /// True once after wake_relay: the relay thread's wait ends early.
+    pub(crate) fn take_relay_wake(&self) -> bool {
+        self.relay_wake.swap(false, Ordering::Relaxed)
     }
 
     pub fn set_relay_status(&self, text: &str) {
@@ -546,17 +581,32 @@ impl Chat {
         true
     }
 
-    /// Verify the unverified peer whose code matches: remember its key, and say so.
+    /// The configured relay peer, when its Noise key gives this code (Supabase mode only, and not yet verified).
+    fn relay_match(&self, own: &[u8], code: &str) -> Option<(String, Vec<u8>, String)> {
+        if !self.is_supabase() {
+            return None;
+        }
+        let (name, key) = self.relay_candidate.lock().unwrap().clone()?;
+        let matches = store::normalize_code(&store::fingerprint(own, &key)) == code && !self.trusts(&key);
+        matches.then_some((name, key, RELAY_LABEL.to_string()))
+    }
+
+    /// Verify the unverified peer whose code matches (a LAN peer or the configured relay peer): remember its key, and say so.
     fn trust(&self, code: &str) {
         let own = self.me.lock().unwrap().key.clone();
-        let matching: Vec<(String, Vec<u8>, String)> = self.fresh_peers().into_iter().filter_map(|peer| {
+        let lan: Vec<(String, Vec<u8>, String)> = self.fresh_peers().into_iter().filter_map(|peer| {
             let key = peer.key.clone()?;
             let matches = store::normalize_code(&store::fingerprint(&own, &key)) == code && self.link_of(&peer) == Link::Unverified;
             matches.then_some((peer.name, key, peer.ip))
         }).collect();
-        // Two different keys with the same code would mean a collision or an attacker: refuse rather than pick one.
+        let lan_hits = lan.len();
+        let relay = self.relay_match(&own, code);
+        let relay_hit = relay.is_some();
+        let matching: Vec<(String, Vec<u8>, String)> = lan.into_iter().chain(relay).collect();
+        // Two different keys with the same code would mean a collision or an attacker, and a LAN peer and the relay
+        // peer with the same code is ambiguous too: refuse rather than pick one.
         let distinct: std::collections::BTreeSet<&Vec<u8>> = matching.iter().map(|(_, key, _)| key).collect();
-        if distinct.len() > 1 {
+        if distinct.len() > 1 || (relay_hit && lan_hits > 0) {
             self.say(t("trust.ambiguous", &[("code", code)]));
             return;
         }
@@ -571,6 +621,7 @@ impl Chat {
             None => Ok(()),
         };
         drop(trusted);
+        self.wake_relay();
         match saved {
             Ok(()) => self.say(t("trust.done", &[("name", &name), ("ip", &ip)])),
             Err(error) => self.say(t("trust.save_failed", &[("error", &error.to_string())])),
@@ -950,6 +1001,65 @@ mod tests {
         assert!(chat.trusts(&key));
         assert_eq!(chat.link_of(&chat.fresh_peers()[0]), Link::Encrypted);
         assert!(texts(&chat).contains(&t("trust.done", &[("name", "Bob"), ("ip", "10.0.0.2")])));
+    }
+
+    #[test]
+    fn relay_peer_with_the_matching_code_is_trusted() {
+        let chat = chat(&[]);
+        chat.set_supabase_mode(true);
+        let key = [7u8; 32];
+        chat.set_relay_candidate("Bob", key.to_vec());
+        chat.handle(&format!("/trust {}", store::fingerprint(&[0; 32], &key).to_uppercase()));
+        assert!(chat.trusts(&key));
+        assert!(texts(&chat).contains(&t("trust.done", &[("name", "Bob"), ("ip", "relay")])));
+        assert!(chat.take_relay_wake(), "the relay thread is told to check again");
+    }
+
+    #[test]
+    fn relay_peer_with_another_code_is_refused() {
+        let chat = chat(&[]);
+        chat.set_supabase_mode(true);
+        let key = [7u8; 32];
+        chat.set_relay_candidate("Bob", key.to_vec());
+        chat.handle("/trust 0000");
+        assert!(!chat.trusts(&key));
+        assert_eq!(texts(&chat).last().unwrap(), &t("trust.none", &[("code", "0000")]));
+    }
+
+    #[test]
+    fn relay_peer_shows_its_row_name_and_falls_back_to_the_trusted_one() {
+        let chat = chat(&[]);
+        let key = [7u8; 32];
+        chat.trusted.lock().unwrap().push(Trusted { name: "A".into(), key: key.to_vec(), ip: "relay".into() });
+        chat.set_relay_candidate("B", key.to_vec());
+        assert_eq!(chat.relay_display_name(&key).as_deref(), Some("B"));
+        chat.set_relay_candidate("", key.to_vec());
+        assert_eq!(chat.relay_display_name(&key).as_deref(), Some("A"), "an empty row name falls back");
+        chat.set_relay_candidate(&"x".repeat(33), key.to_vec());
+        assert_eq!(chat.relay_display_name(&key).as_deref(), Some("A"), "a row name over 32 characters falls back");
+        chat.set_relay_candidate("B", vec![9; 32]);
+        assert_eq!(chat.relay_display_name(&key).as_deref(), Some("A"), "a row of another key is not used");
+    }
+
+    #[test]
+    fn relay_candidate_is_ignored_outside_supabase_mode() {
+        let chat = chat(&[]);
+        let key = [7u8; 32];
+        chat.set_relay_candidate("Bob", key.to_vec());
+        chat.handle(&format!("/trust {}", store::fingerprint(&[0; 32], &key).to_uppercase()));
+        assert!(!chat.trusts(&key));
+    }
+
+    #[test]
+    fn lan_and_relay_with_the_same_code_are_ambiguous() {
+        let chat = chat(&[]);
+        chat.set_supabase_mode(true);
+        let key = [7u8; 32];
+        chat.peers.lock().unwrap().push(keyed_peer("Bob", &key));
+        chat.set_relay_candidate("Bob", key.to_vec());
+        chat.handle(&format!("/trust {}", store::fingerprint(&[0; 32], &key).to_uppercase()));
+        assert!(!chat.trusts(&key));
+        assert_eq!(texts(&chat).last().unwrap(), &t("trust.ambiguous", &[("code", &store::normalize_code(&store::fingerprint(&[0; 32], &key)))]));
     }
 
     #[test]

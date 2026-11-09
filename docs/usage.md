@@ -166,6 +166,19 @@ Screens and controls:
 - **CRT checkbox:** on by default. It draws scanlines and a bezel around the window. Turn it off for a plain look.
 - **Font:** Galmuri11, bundled in the program (`gui/assets`, SIL Open Font License). Windows system fonts cover any character it lacks.
 
+## 11a. Connection mode (Local or Supabase)
+
+- **Local (LAN)**: the default. PCs on the same network chat directly.
+- **Supabase**: messages go only through the Supabase relay; nothing goes over the LAN.
+- Each launch (`run`, `serve`, the GUI) is its own **node**, with its own key, short ID and trusted peers, kept in `sessions\<id>\`. Two windows on one PC are two nodes. `--session <id>` reuses one.
+- In Supabase mode, nodes on the same PC do not chat with each other: each one talks to the phone through the relay. Nothing goes over the LAN.
+ Choose it on the first screen (GUI) or the first run (TUI), or change it with `Ctrl+R` (settings) or the 연결 방식 button in the GUI.
+- Supabase needs the project URL, the publishable key, and the other PC's 8-character short ID. Your display name is assigned automatically.
+- Each launch (`run`, `serve`, the GUI) is its own **node**, with its own key, short ID and trusted peers, kept in `sessions\<id>\`. Two windows on one PC are two nodes. `--session <id>` reuses one.
+- In Supabase mode, nodes on the same PC do not chat with each other: each one talks to the phone through the relay.
+ Your own short ID is shown on the settings screen and is kept in `short-id.txt`.
+- Verify each other with `/trust <code>` on both sides before the first message.
+
 ## 12. Headless mode and control channel
 
 ```sh

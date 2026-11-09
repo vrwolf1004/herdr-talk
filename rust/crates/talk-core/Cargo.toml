@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "Peer discovery, messages and chat commands shared by herdr-talk front ends"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [dependencies]
 ed25519-dalek = { version = "2", default-features = false }
 fastrand = "2"

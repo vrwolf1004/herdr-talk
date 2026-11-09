@@ -15,7 +15,15 @@ use talk_core::relay_key;
 use talk_core::relay_settings::{self, Mode, Settings};
 use talk_core::{relay_chat, t, Chat};
 
-const LABELS: [&str; 4] = ["Project URL", "Publishable key", "Display name", "Peer ID (8 characters)"];
+/// The four field labels, in field order.
+fn labels() -> [String; 4] {
+    [
+        t("tui.settings.label.url", &[]),
+        t("tui.settings.label.key", &[]),
+        t("tui.settings.label.name", &[]),
+        t("tui.settings.label.peer", &[]),
+    ]
+}
 const KEY_FIELD: usize = 1;
 /// Rows: 0 is the mode, 1 to 4 are the four fields.
 const ROWS: usize = 5;
@@ -44,7 +52,7 @@ impl Form {
         let saved = relay_settings::load_saved(state);
         let mine = relay_chat::my_keys(state).ok();
         let short_id = relay_key::short_id(state).unwrap_or_default();
-        let message = if mine.is_none() { "start a chat once first: this PC has no keys yet".to_string() } else { String::new() };
+        let message = if mine.is_none() { t("tui.settings.no_keys", &[]) } else { String::new() };
         Form {
             mode: saved.mode,
             fields: [saved.url, saved.key, saved.name, saved.peer],
@@ -85,14 +93,15 @@ impl Form {
         let settings = self.settings();
         // Supabase needs every field: name the missing ones instead of a generic refusal.
         if settings.mode == Mode::Supabase {
-            let missing: Vec<&str> = (0..LABELS.len()).filter(|&index| self.fields[index].trim().is_empty()).map(|index| LABELS[index]).collect();
+            let labels = labels();
+            let missing: Vec<&str> = (0..labels.len()).filter(|&index| self.fields[index].trim().is_empty()).map(|index| labels[index].as_str()).collect();
             if !missing.is_empty() {
                 self.message = t("settings.save_refused_missing", &[("fields", &missing.join(", "))]);
                 return;
             }
         }
         match relay_settings::save(&self.state, &settings) {
-            Err(error) => self.message = format!("not saved: {error}"),
+            Err(error) => self.message = t("tui.settings.not_saved", &[("error", &error.to_string())]),
             Ok(()) => {
                 self.saved = true;
                 let started = relay_chat::start(chat, &self.state);
@@ -138,9 +147,9 @@ pub fn on_key(form: &mut Form, key: KeyEvent, chat: &Arc<Chat>) -> Action {
 
 fn shown(form: &Form, index: usize) -> String {
     let env = match index {
-        0 if form.from_env.0 => " (environment)",
-        KEY_FIELD if form.from_env.1 => " (environment)",
-        _ => "",
+        0 if form.from_env.0 => t("tui.settings.from_env", &[]),
+        KEY_FIELD if form.from_env.1 => t("tui.settings.from_env", &[]),
+        _ => String::new(),
     };
     if index == KEY_FIELD {
         format!("{}{env}", relay_settings::key_label(&form.fields[index]))
@@ -166,7 +175,7 @@ pub fn render(out: &mut Stdout, form: &Form, width: usize, rows: usize) -> io::R
     };
     let marker = |row: usize| if form.focus == row { ">" } else { " " };
     let mut lines: Vec<(String, bool)> = vec![
-        ("relay settings  (Tab/Up/Down move · Left/Right switch mode · Enter next or save · Esc leave)".to_string(), false),
+        (t("tui.settings.help", &[]), false),
         (String::new(), false),
         (format!("{} {}", marker(0), mode_row(form.mode)), false),
         (format!("  {hint}"), false),
@@ -174,19 +183,19 @@ pub fn render(out: &mut Stdout, form: &Form, width: usize, rows: usize) -> io::R
     ];
     // In Local mode the fields are kept but not used: they are drawn dimmed.
     let dimmed = form.mode == Mode::Local;
-    for (index, label) in LABELS.iter().enumerate() {
+    for (index, label) in labels().iter().enumerate() {
         lines.push((format!("{} {label}: {}", marker(index + 1), shown(form, index)), dimmed));
     }
     lines.push((String::new(), false));
     if !form.short_id.is_empty() {
-        lines.push((format!("this PC's ID (give it to the peer): {}", form.short_id), false));
+        lines.push((t("tui.settings.my_id", &[("id", &form.short_id)]), false));
     }
     match &form.mine {
         Some((ed, noise)) => {
-            lines.push((format!("this PC's Ed25519 public key: {ed}"), false));
-            lines.push((format!("this PC's Noise key (verify it with /trust): {noise}"), false));
+            lines.push((t("tui.settings.my_ed", &[("key", ed)]), false));
+            lines.push((t("tui.settings.my_noise", &[("key", noise)]), false));
         }
-        None => lines.push(("this PC's keys: not yet (start a chat once)".to_string(), false)),
+        None => lines.push((t("tui.settings.no_keys_yet", &[]), false)),
     }
     lines.push((String::new(), false));
     lines.push((form.message.clone(), false));
@@ -275,8 +284,8 @@ mod tests {
     fn environment_values_are_marked() {
         let mut form = form_at(&folder("env"));
         form.from_env = (true, false);
-        assert!(shown(&form, 0).ends_with("(environment)"));
-        assert!(!shown(&form, KEY_FIELD).contains("environment"));
+        assert!(shown(&form, 0).ends_with(&t("tui.settings.from_env", &[])));
+        assert!(!shown(&form, KEY_FIELD).contains(&t("tui.settings.from_env", &[])));
     }
 
     #[test]
@@ -299,7 +308,7 @@ mod tests {
         form.mode = Mode::Supabase;
         form.fields[0] = "https://x.example".into();
         form.save(&chat);
-        assert!(form.message.contains("Display name") && form.message.contains("Publishable key"), "{}", form.message);
+        assert!(form.message.contains(&t("tui.settings.label.name", &[])) && form.message.contains(&t("tui.settings.label.key", &[])), "{}", form.message);
         assert!(!dir.join(relay_settings::FILE).exists());
     }
 
@@ -319,7 +328,7 @@ mod tests {
         form.fields[3] = "not a key".into();
         form.focus = 4;
         press(&mut form, &chat, KeyCode::Enter);
-        assert!(form.message.starts_with("not saved"), "{}", form.message);
+        assert!(form.message.starts_with(&t("tui.settings.not_saved", &[("error", "")])), "{}", form.message);
     }
 
     #[test]

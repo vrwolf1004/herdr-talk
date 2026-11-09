@@ -7,7 +7,7 @@ Receiving: relay.open_envelope and the verified-sender check, then Noise decrypt
 (version, time window, nonce not used before). Nothing is stored. Receive failures are silent; a failed send says why.
 
 This module does not import talk.py. The chat gives it a `hooks` object with: say(text), show(sender, text),
-trusted_name(key_bytes) -> name or None, set_status(text).
+trusted_name(key_bytes) -> name or None, set_status(text), set_relay_candidate(name, key_bytes).
 """
 
 import json
@@ -125,6 +125,15 @@ def verified_key(hooks, peer):
     return key if len(key) == 32 and hooks.trusted_name(key) is not None else None
 
 
+def relay_candidate_of(peer):
+    """(name, Noise key) of the configured peer's row, for /trust. None when the row has no usable key."""
+    try:
+        key = bytes.fromhex(peer["noise_pk"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    return (peer.get("name", ""), key) if len(key) == 32 else None
+
+
 def send_text(hooks, config, peer_pk, session, theirs, link, text, now=None):
     """Re-check the row right before sending, then seal and send one envelope. Returns None or the notice to show."""
     peer = relay_rest.get_peer(config, peer_pk)
@@ -161,6 +170,7 @@ class Relay:
         self._connect = connect or relay_realtime.Link.connect
         self.outbox = queue.Queue()
         self.stop_event = threading.Event()
+        self.wake_event = threading.Event()  # set after /trust: the wait ends and the row is read again now
         self.thread = None
 
     def start(self):
@@ -170,6 +180,10 @@ class Relay:
     def stop(self):
         self.stop_event.set()
 
+    def wake(self):
+        """Check the peer again now instead of waiting (called after /trust verified it)."""
+        self.wake_event.set()
+
     def send(self, text):
         """Queue a typed text for the relay thread."""
         self.outbox.put(text)
@@ -177,7 +191,7 @@ class Relay:
     def _wait(self, seconds):
         """Sleep in slices so a stop is seen. Texts typed meanwhile are not sent: a notice says so."""
         until = time.monotonic() + seconds
-        while time.monotonic() < until and not self.stop_event.is_set():
+        while time.monotonic() < until and not self.stop_event.is_set() and not self.wake_event.is_set():
             while True:
                 try:
                     self.outbox.get_nowait()
@@ -193,11 +207,15 @@ class Relay:
             if not self._publish(settings, session):
                 hooks.set_status("relay: could not publish this PC's row")
         while not self.stop_event.is_set():
+            self.wake_event.clear()
             peer = relay_rest.get_peer(self.config, settings["peer"])
             if peer is None:
                 hooks.set_status("relay: peer not found on the relay")
                 self._wait(PEER_WAIT_SECONDS)
                 continue
+            candidate = relay_candidate_of(peer)
+            if candidate is not None:
+                hooks.set_relay_candidate(*candidate)
             theirs = verified_key(hooks, peer)
             if theirs is None:
                 hooks.set_status("relay: peer not verified yet (use /trust)")
@@ -270,3 +288,23 @@ def start(hooks, state, settings, noise_secret, noise_public, connect=None):
     relay_thread = Relay(hooks, state, config, settings, session, connect=connect)
     relay_thread.start()
     return relay_thread, ""
+
+
+def leave(state):
+    """On exit: delete this node's own relay row. Quiet and best effort: no relay, no keys or no short id yet means nothing
+    to do; a failed request is ignored (the row then stays for the owner to clear). Returns True when the row was deleted."""
+    import os
+    settings = relay_settings.load_saved(state)
+    if settings["mode"] != relay_settings.SUPABASE:
+        return False
+    try:
+        config = relay_rest.config(settings["url"], settings["key"])
+    except ValueError:
+        return False
+    seed_path = os.path.join(state, relay_key.KEY_FILE)
+    short_path = os.path.join(state, relay_key.SHORT_FILE)
+    if config is None or not os.path.exists(seed_path) or not os.path.exists(short_path):
+        return False
+    seed = relay_key.load_or_create(state)
+    short = relay_key.load_or_create_short_id(state)
+    return relay_rest.delete_peer(config, seed, short)

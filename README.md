@@ -64,6 +64,16 @@ cd gui
 cargo run --release
 ```
 
+## Connection mode: Local or Supabase
+
+- **Local (LAN)**: the default. PCs on the same network find each other and chat with no server.
+- **Supabase**: messages go only through the Supabase relay. Nothing is sent over the LAN. Pick it on the first screen (GUI) or the first run (TUI), or change it with `Ctrl+R` (settings) or the 연결 방식 button.
+- The Supabase settings are URL, publishable key, and the other side's 8-character short ID. The display name is assigned automatically.
+- Each launch (`run`, `serve`, the GUI) is its own **node**, with its own key, short ID and trusted peers, kept in `sessions\<id>\`. Two windows on one PC are two nodes. `--session <id>` reuses one.
+- In Supabase mode, nodes on the same PC do not chat with each other: each one talks to the phone through the relay.
+ The short ID is made once per PC (`short-id.txt`).
+- Verify each other with `/trust <code>` on both sides before chatting. The relay shows the same code as the LAN does.
+
 ## Phone (Expo Go)
 
 An Android phone can join the chat through `mobile-bridge/bridge.js` and the Expo app in `mobile/`. The phone is not a peer: it talks to the bridge over HTTP and the bridge talks to a herdr-talk node on the same PC. Use it only on a trusted Wi-Fi, because that leg is plain HTTP.

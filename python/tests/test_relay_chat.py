@@ -40,6 +40,9 @@ class Hooks:
     def set_status(self, text):
         self.status = text
 
+    def set_relay_candidate(self, name, key):
+        self.candidate = (name, key)
+
 
 class FakeLink:
     def __init__(self):

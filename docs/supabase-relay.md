@@ -1,7 +1,7 @@
 # Supabase 연동 설계 (인터넷 채팅)
 
 - 작성: 2026-11-09
-- 상태: **설계 초안. 구현 전.** 아래 "결정 필요" 항목을 정한 뒤 구현한다.
+- 상태: **구현됨 (2026-11-09).** Rust TUI, Rust GUI, Python, 안드로이드(Expo Go) 모두 relay 채팅이 된다. 실제 두 기기 송수신은 확인했다 (폰 ↔ PC). 아래 "남은 일" 참고.
 - 관련: [rust-roadmap.md](rust-roadmap.md) 의 relay 단계, [encryption-protocol.md](encryption-protocol.md), [todo.md](todo.md) 의 "Chat across the internet through Supabase".
 
 ## 목표와 범위
@@ -184,12 +184,18 @@
 2. Rust GUI: 같은 배선과 설정 화면
 3. Python: RFC 6455 WebSocket 클라이언트 + Phoenix 배선
 
-## 다음 단계
+## 노드와 이름 (2026-11-09 결정)
 
-0. (사용자) Supabase 프로젝트 생성 → URL, publishable 키 전달. service_role 키는 전달하지 않는다.
-0a. (dev, 네트워크 없음) 와이어 형식 v1 의 채널 이름·봉투 구현과 테스트 벡터를 Rust(`talk-core`)와 Python 에 추가. 세 판 공통 벡터 일치 확인. Supabase 키가 필요 없다.
+- 노드 = 채팅 창 하나 (TUI, GUI, Python 실행 하나). 노드마다 키, 짧은 ID, 신뢰 목록, relay.json 이 따로 있다.
+- 띄울 때마다 새 노드 폴더 (`sessions\<id>\`). `--session <id>` 로 같은 노드를 다시 쓴다.
+- Supabase 모드에서 같은 PC의 노드끼리는 LAN 으로도 릴레이로도 대화하지 않는다. 각 노드는 폰과 따로 대화한다.
+- 안드로이드 표시 이름은 자동 배정 (기기 언어의 사람 이름, 한 번 배정해 저장). 설정 칸에 없다.
+- 릴레이 상대의 표시 이름은 상대 행의 `name` 을 따른다 (신뢰 때 이름은 행 이름이 없을 때만).
 
-1. 결정 항목 1~5 확정 (사용자).
-2. 두 PC LAN 채팅 실제 확인 완료 (구현 전 기준선).
-3. 프로토타입: `peers` 테이블과 RLS, 두 프로세스가 같은 채널에서 암호문을 주고받는 최소 검증 (LAN 판과 별도 브랜치).
-4. 보안 체크리스트 통과 후 플러그인 연결.
+## 남은 일
+
+- 안드로이드 실기기 화면 확인 (설정 입력, 상대 ID, 확인 버튼, 자동 이름, 키보드, 글자 크기).
+- Python 판 실사용 확인 (노드를 Python 으로 띄우고 폰과 송수신). 노드 폴더 방식 적용 확인.
+- Rust GUI 창 확인 (첫 화면 선택, 토스트 알림, 상단 상태 문구, 노드 이름).
+- 소유자 작업: `0002_short_id.sql` 의 적용 여부 확인, `put-peer` 재배포 (배포할 때마다 확인).
+- 요청 한도와 스팸 방지 (Supabase 쪽 설정).

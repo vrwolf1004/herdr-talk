@@ -30,10 +30,20 @@ const INPUT_HEIGHT: f32 = 36.0;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_STARTS: u32 = 3;
 // Status phases, in the order they show: no server of ours yet, our own serve connected, or the chat built into this window.
-const STATUS_STARTING: &str = "기존 서버 없음 → 자체 서버 실행 중";
-const STATUS_CONNECTED: &str = "자체 서버 연결됨";
-const STATUS_EMBEDDED: &str = "내장 모드로 실행 중";
+// The status texts are compared by their start (see status_label), so each one is read through the same function.
+fn status_starting() -> String {
+    talk_core::t("gui.status.starting", &[])
+}
+
+fn status_connected() -> String {
+    talk_core::t("gui.status.connected", &[])
+}
+
+fn status_embedded() -> String {
+    talk_core::t("gui.status.embedded", &[])
+}
 const START_WAIT: Duration = Duration::from_secs(10);
+const TOAST_SECONDS: f32 = 3.0;
 const STOP_WAIT: Duration = Duration::from_secs(3);
 
 /// The `herdr-talk serve` this window started, if any.
@@ -92,6 +102,11 @@ struct App {
     notice: String,
     /// The 30-second default of the first-run choice. None until the choice is shown.
     choice_timer: Option<talk_core::choice_timer::ChoiceTimer>,
+    /// The mode picked on the first screen (Local or Supabase); 입장 enters with it.
+    intro_mode: talk_core::relay_settings::Mode,
+    /// The toast on screen: the text last shown and when it appeared (it fades after TOAST_SECONDS).
+    toast_text: String,
+    toast_started: Option<Instant>,
 }
 
 const PHONE_SHOWN: Duration = Duration::from_secs(30);
@@ -103,12 +118,9 @@ fn local_ip() -> String {
         .map_or_else(|_| "127.0.0.1".to_string(), |address| address.ip().to_string())
 }
 
+/// This window's session folder (chosen at start, see main).
 fn state_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("HERDR_PLUGIN_STATE_DIR").filter(|dir| !dir.is_empty()) {
-        return PathBuf::from(dir);
-    }
-    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default();
-    base.join("herdr-talk")
+    talk_core::store::state_dir()
 }
 
 fn read_control(file: &Path) -> Option<Control> {
@@ -177,7 +189,7 @@ fn talk_program() -> Result<PathBuf, String> {
     let candidates = talk_candidates();
     candidates.iter().find(|path| path.is_file()).cloned().ok_or_else(|| {
         let looked: Vec<String> = candidates.iter().map(|path| path.display().to_string()).collect();
-        format!("herdr-talk.exe 를 찾지 못함. 확인한 경로: {}", looked.join(" | "))
+        talk_core::t("gui.err.exe_not_found", &[("paths", &looked.join(" | "))])
     })
 }
 
@@ -209,12 +221,15 @@ fn ensure_serve(started: &Started, starts: &mut u32) -> Result<(), String> {
         return Ok(());
     }
     if *starts >= MAX_STARTS {
-        return Err(format!("herdr-talk serve 가 {MAX_STARTS}번 시작해도 바로 종료됨"));
+        return Err(talk_core::t("gui.err.serve_exits", &[("max", &MAX_STARTS.to_string())]));
     }
     *starts += 1;
     let program = talk_program()?;
-    let spawned = Command::new(&program).arg("serve").creation_flags(CREATE_NO_WINDOW).spawn()
-        .map_err(|error| format!("herdr-talk 를 실행하지 못함 ({error})"))?;
+    // No --name: the serve node picks its automatic person name for the language, like the TUI does.
+    // The serve node uses this window's session, so both share the same identity, trust and relay keys.
+    let session = talk_core::store::session_id().unwrap_or_else(|| talk_core::store::DEFAULT_SESSION.to_string());
+    let spawned = Command::new(&program).arg("serve").arg("--session").arg(session).creation_flags(CREATE_NO_WINDOW).spawn()
+        .map_err(|error| talk_core::t("gui.err.spawn", &[("error", &error.to_string())]))?;
     *child = Some(spawned);
     Ok(())
 }
@@ -245,20 +260,20 @@ fn worker(shared: Arc<Mutex<Shared>>, outgoing: Receiver<String>, started: Start
             let since = *waiting_since.get_or_insert_with(std::time::Instant::now);
             let failure = match ensure_serve(&started, &mut starts) {
                 Err(reason) => Some(reason),
-                Ok(()) if since.elapsed() > START_WAIT => Some(format!("{}초 안에 연결되지 않음", START_WAIT.as_secs())),
+                Ok(()) if since.elapsed() > START_WAIT => Some(talk_core::t("gui.err.connect_timeout", &[("secs", &START_WAIT.as_secs().to_string())])),
                 Ok(()) => None,
             };
             if let Some(reason) = failure {
                 run_embedded(&shared, &outgoing, &started, &reason);
             }
-            set_status(&shared, STATUS_STARTING);
+            set_status(&shared, &status_starting());
             thread::sleep(Duration::from_millis(500));
             continue;
         };
         waiting_since = None;
-        set_status(&shared, &format!("{STATUS_CONNECTED} (port {})", control.port));
+        set_status(&shared, &format!("{} (port {})", status_connected(), control.port));
         if let Err(error) = session(&mut link, &shared, &outgoing, &reload) {
-            set_status(&shared, &format!("연결 끊김: {error}"));
+            set_status(&shared, &talk_core::t("gui.status.connection_lost", &[("error", &error.to_string())]));
         }
         thread::sleep(RETRY);
     }
@@ -276,7 +291,7 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
         match attempt {
             Ok(chat) => break chat,
             Err(error) => {
-                set_status(shared, &format!("내장 모드를 시작하지 못함: {error} (herdr-talk 실패: {reason})"));
+                set_status(shared, &talk_core::t("gui.err.embedded_failed", &[("error", &error.to_string()), ("reason", reason)]));
                 thread::sleep(RETRY);
             }
         }
@@ -286,12 +301,12 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
     if let Err(error) = talk_core::relay_chat::start(&chat, &talk_core::store::state_dir()) {
         chat.set_relay_status(&format!("relay: {error}"));
     }
-    set_status(shared, &format!("{STATUS_EMBEDDED} (herdr-talk 실패: {reason})"));
+    set_status(shared, &talk_core::t("gui.status.embedded_after", &[("reason", reason)]));
     loop {
         while let Ok(text) = outgoing.try_recv() {
             chat.handle(&text);
         }
-        let mut state = locked(&*shared, "run_embedded");
+        let mut state = locked(shared, "run_embedded");
         state.lines = chat.lines().into_iter().map(|line| (line.render(), line.mine)).collect();
         state.me = {
             let me = locked(&chat.me, "run_embedded.me");
@@ -314,7 +329,7 @@ fn session(link: &mut Link, shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<Str
         while let Ok(text) = outgoing.try_recv() {
             let answer = link.call(&json!({"cmd": "send", "text": text}))?;
             if answer["ok"] != true {
-                set_status(shared, &format!("보내기 실패: {}", answer["error"]));
+                set_status(shared, &talk_core::t("gui.err.send_failed", &[("error", &answer["error"].to_string())]));
             }
         }
         let lines = link.call(&json!({"cmd": "lines"}))?;
@@ -343,15 +358,16 @@ enum Kind {
     Problem,
 }
 
-fn status_label(status: &str) -> (&'static str, Kind) {
-    if status.starts_with(STATUS_CONNECTED) {
-        ("자체 서버 연결됨", Kind::Ok)
-    } else if status.starts_with(STATUS_EMBEDDED) {
-        ("내장 모드", Kind::Ok)
-    } else if status == STATUS_STARTING {
-        ("자체 서버 실행 중…", Kind::Pending)
+fn status_label(status: &str, supabase: bool) -> (String, Kind) {
+    if status.starts_with(&status_connected()) {
+        // In Supabase mode the local serve only runs the chat; the label must not call it our own server.
+        (talk_core::t(if supabase { "gui.mode.supabase" } else { "gui.status.connected" }, &[]), Kind::Ok)
+    } else if status.starts_with(&status_embedded()) {
+        (talk_core::t("gui.mode.embedded", &[]), Kind::Ok)
+    } else if status == status_starting() {
+        (talk_core::t("gui.status.running", &[]), Kind::Pending)
     } else {
-        ("연결 문제", Kind::Problem)
+        (talk_core::t("gui.status.problem", &[]), Kind::Problem)
     }
 }
 
@@ -386,27 +402,103 @@ impl App {
     }
 
     /// First screen: name, one line about the app, the connection state, and the button into the chat.
-    fn intro(&mut self, ctx: &egui::Context, palette: &Palette, status: &str) {
-        let (label, kind) = status_label(status);
+    fn intro(&mut self, ctx: &egui::Context, palette: &Palette, _status: &str) {
+        let mode = self.intro_mode;
+        let supabase = mode == talk_core::relay_settings::Mode::Supabase;
+        let picked_label = if supabase { talk_core::t("gui.mode.supabase", &[]) } else { talk_core::t("gui.mode.local", &[]) };
+        let mut enter = false;
+        let mut select = None;
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(ui.available_height() * 0.22);
+                ui.add_space(ui.available_height() * 0.10);
                 ui.colored_label(palette.accent, egui::RichText::new("herdr-talk").size(36.0));
                 ui.add_space(8.0);
-                ui.label("같은 네트워크의 PC들과 서버 없이 바로 채팅합니다. 메시지는 저장되지 않습니다.");
-                ui.add_space(28.0);
-                let color = match kind {
-                    Kind::Ok => palette.accent,
-                    Kind::Pending => palette.muted,
-                    Kind::Problem => palette.danger,
-                };
-                ui.colored_label(color, egui::RichText::new(label).size(18.0));
-                ui.colored_label(palette.muted, status);
-                ui.add_space(28.0);
-                if ui.add(egui::Button::new(egui::RichText::new("입장").size(18.0)).min_size(egui::vec2(160.0, 40.0))).clicked() {
-                    self.screen = Screen::Chat;
+                ui.label(talk_core::t("gui.intro", &[]));
+                ui.add_space(14.0);
+                // The selected mode, then the selector: [로컬/자체] [Supabase].
+                ui.colored_label(palette.accent, egui::RichText::new(picked_label).size(18.0));
+                ui.add_space(8.0);
+                // Two equal buttons, centered by padding the row on the left (the row width is 2 * 160 + spacing 8).
+                ui.horizontal(|ui| {
+                    ui.add_space(((ui.available_width() - 328.0) / 2.0).max(0.0));
+                    let size = egui::vec2(160.0, 36.0);
+                    if ui.add(egui::Button::new(egui::RichText::new(talk_core::t("gui.mode.local_button", &[])).size(16.0)).selected(!supabase).min_size(size)).clicked() {
+                        select = Some(talk_core::relay_settings::Mode::Local);
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new("Supabase").size(16.0)).selected(supabase).min_size(size)).clicked() {
+                        select = Some(talk_core::relay_settings::Mode::Supabase);
+                    }
+                });
+                ui.add_space(14.0);
+                if ui.add(egui::Button::new(egui::RichText::new(talk_core::t("gui.button.enter", &[])).size(18.0)).min_size(egui::vec2(160.0, 40.0))).clicked() {
+                    enter = true;
                 }
             });
+        });
+        if let Some(picked) = select {
+            self.intro_mode = picked;
+        }
+        if enter {
+            self.enter(self.intro_mode);
+        }
+    }
+
+    /// Enter the chat in `mode`: save the mode, let the relay reload. Supabase with missing settings opens the form first.
+    fn enter(&mut self, mode: talk_core::relay_settings::Mode) {
+        let state = state_dir();
+        if mode == talk_core::relay_settings::Mode::Local {
+            match talk_core::relay_settings::set_mode(&state, mode) {
+                Ok(()) => {
+                    self.reload.store(true, Ordering::SeqCst);
+                    self.screen = Screen::Chat;
+                }
+                Err(error) => self.notice = error,
+            }
+            return;
+        }
+        let saved = talk_core::relay_settings::load_saved(&state);
+        let as_supabase = talk_core::relay_settings::Settings { mode, ..saved };
+        if talk_core::relay_settings::validate(&as_supabase).is_ok() {
+            match talk_core::relay_settings::set_mode(&state, mode) {
+                Ok(()) => {
+                    self.reload.store(true, Ordering::SeqCst);
+                    self.screen = Screen::Chat;
+                }
+                Err(error) => self.notice = error,
+            }
+        } else {
+            // Missing settings: the form opens, and a successful save goes straight into the chat.
+            self.first_run = true;
+            self.relay_form = Some(relay_form::Form::open_supabase(&state));
+        }
+    }
+}
+
+impl App {
+    /// A short message at the bottom of the window. A new message restarts the timer; it fades after TOAST_SECONDS.
+    fn show_toast(&mut self, ctx: &egui::Context, palette: &Palette) {
+        if self.notice != self.toast_text {
+            self.toast_text = self.notice.clone();
+            self.toast_started = (!self.notice.is_empty()).then(Instant::now);
+        }
+        let Some(started) = self.toast_started else { return };
+        let left = TOAST_SECONDS - started.elapsed().as_secs_f32();
+        if left <= 0.0 {
+            self.toast_started = None;
+            return;
+        }
+        ctx.request_repaint_after(Duration::from_millis(100));
+        let alpha = if left < 0.5 { left / 0.5 } else { 1.0 };
+        let text = self.toast_text.clone();
+        egui::Area::new(egui::Id::new("toast")).anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -64.0)).interactable(false).show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(palette.panel.gamma_multiply(alpha))
+                .stroke(egui::Stroke::new(1.0_f32, palette.accent.gamma_multiply(alpha)))
+                .corner_radius(6)
+                .inner_margin(egui::Margin::symmetric(14, 8))
+                .show(ui, |ui| {
+                    ui.colored_label(palette.text.gamma_multiply(alpha), text);
+                });
         });
     }
 }
@@ -416,6 +508,7 @@ impl eframe::App for App {
         ctx.request_repaint_after(POLL);
         // eframe may re-apply the OS theme's visuals, so the chosen theme's colors are set every frame.
         let palette = palette(self.theme);
+        self.show_toast(ctx, &palette);
         ctx.set_visuals(visuals(&palette, ctx.theme()));
         if self.frame_theme != Some(self.theme) {
             style_frame(self.hwnd, &palette);
@@ -501,7 +594,8 @@ impl eframe::App for App {
         let mut open_settings = false;
         egui::TopBottomPanel::top("status").frame(inset(&palette, self.crt)).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let color = match status_label(&state.status).1 {
+                let supabase = talk_core::relay_settings::Mode::from_saved(&state.mode) == talk_core::relay_settings::Mode::Supabase;
+                let color = match status_label(&state.status, supabase).1 {
                     Kind::Ok => palette.accent,
                     Kind::Pending => palette.muted,
                     Kind::Problem => palette.danger,
@@ -509,13 +603,15 @@ impl eframe::App for App {
                 if talk_core::phone::read(&state_dir()).is_some_and(|phone| state.me.as_ref().is_some_and(|(_, port)| phone.owner_port == *port)) {
                     ui.colored_label(palette.accent, talk_core::t("host.badge", &[]));
                 }
-                ui.colored_label(color, &state.status);
-                let mode = talk_core::relay_settings::Mode::from_saved(&state.mode);
-                ui.colored_label(palette.muted, relay_form::status_line(mode, &state.relay));
-                if !self.notice.is_empty() {
-                    ui.colored_label(palette.muted, self.notice.as_str());
-                }
-                if ui.button("연결 방식").clicked() {
+                // The top bar shows the same words as the first screen: in Supabase mode the serve line is "Supabase 모드".
+                let supabase_now = talk_core::relay_settings::Mode::from_saved(&state.mode) == talk_core::relay_settings::Mode::Supabase;
+                let shown = if state.status.starts_with(&status_connected()) {
+                    if supabase_now { talk_core::t("gui.top.supabase_connected", &[]) } else { talk_core::t("gui.top.local_connected", &[]) }
+                } else {
+                    state.status.clone()
+                };
+                ui.colored_label(color, shown);
+                if ui.button(talk_core::t("gui.button.connection_mode", &[])).clicked() {
                     open_settings = true;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -536,9 +632,9 @@ impl eframe::App for App {
             ctx.request_repaint();
         }
         egui::SidePanel::right("peers").default_width(220.0).frame(inset(&palette, self.crt)).show(ctx, |ui| {
-            ui.colored_label(palette.accent, egui::RichText::new("피어").heading());
+            ui.colored_label(palette.accent, egui::RichText::new(talk_core::t("gui.peers.title", &[])).heading());
             if let Some((name, port)) = &state.me {
-                ui.colored_label(palette.accent, format!("{name} (나)"));
+                ui.colored_label(palette.accent, talk_core::t("gui.peers.me", &[("name", name.as_str())]));
                 ui.colored_label(palette.accent, format!("{}:{port}", self.local_ip));
                 ui.separator();
             }
@@ -556,7 +652,7 @@ impl eframe::App for App {
                     egui::TextEdit::singleline(&mut self.input).margin(egui::Margin::symmetric(6, 10)),
                 );
                 let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                let clicked = ui.add_sized([68.0, INPUT_HEIGHT], egui::Button::new("보내기")).clicked();
+                let clicked = ui.add_sized([68.0, INPUT_HEIGHT], egui::Button::new(talk_core::t("gui.button.send", &[]))).clicked();
                 if (enter || clicked) && !self.input.trim().is_empty() {
                     let text = std::mem::take(&mut self.input);
                     match text.trim() {
@@ -702,7 +798,17 @@ mod tests {
 
 fn main() -> eframe::Result<()> {
     install_panic_log();
-    let shared = Arc::new(Mutex::new(Shared { status: STATUS_STARTING.into(), ..Default::default() }));
+    // A new session per window unless --session ID names an existing one (or "default").
+    let args: Vec<String> = std::env::args().collect();
+    let requested = args.windows(2).find(|pair| pair[0] == "--session").map(|pair| pair[1].clone());
+    if let Err(error) = talk_core::store::choose_session(requested.as_deref()) {
+        eprintln!("{error}");
+        return Ok(());
+    }
+    for id in talk_core::store::remove_dead_sessions(&talk_core::store::base_dir()) {
+        eprintln!("could not remove dead session {id}");
+    }
+    let shared = Arc::new(Mutex::new(Shared { status: status_starting(), ..Default::default() }));
     let (outgoing, queue) = mpsc::channel();
     let started: Started = Arc::default();
     let reload = Arc::new(AtomicBool::new(false));
@@ -721,10 +827,17 @@ fn main() -> eframe::Result<()> {
             install_korean_font(&cc.egui_ctx);
             let hwnd = window_hwnd(cc);
             cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
-            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None, phone_until: None, phone_checked: false, reload: reload.clone(), relay_form: None, first_run: talk_core::relay_settings::needs_first_run(&state_dir()), notice: String::new(), choice_timer: None }))
+            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None, phone_until: None, phone_checked: false, reload: reload.clone(), relay_form: None, first_run: talk_core::relay_settings::needs_first_run(&state_dir()), notice: String::new(), choice_timer: None, intro_mode: talk_core::relay_settings::Mode::from_saved(talk_core::relay_settings::load_saved(&state_dir()).mode.as_str()), toast_text: String::new(), toast_started: None }))
         }),
     );
     stop_serve(&started);
+    // A normal stop deletes this node's own relay row first (best effort), then its folder.
+    if result.is_ok() && talk_core::store::session_id().is_some() {
+        talk_core::relay_chat::leave(&talk_core::store::state_dir());
+    }
+    if let Some(id) = talk_core::store::remove_own_session() {
+        eprintln!("could not remove session {id}");
+    }
     result
 }
 

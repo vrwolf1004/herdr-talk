@@ -125,6 +125,10 @@ fn run(chat: &Chat, state: &Path, config: &Config, settings: &Settings, rx: &Rec
             }
         };
         let peer_pk = peer.pk.clone();
+        // /trust can verify this peer by its Noise key from the row.
+        if let Some(key) = store::from_hex(&peer.noise_pk) {
+            chat.set_relay_candidate(&peer.name, key);
+        }
         let Some(theirs) = verified_key(chat, &peer) else {
             chat.set_relay_status("relay: peer not verified yet (use /trust)");
             wait(chat, rx, stop, PEER_WAIT);
@@ -160,6 +164,22 @@ fn run(chat: &Chat, state: &Path, config: &Config, settings: &Settings, rx: &Rec
     }
 }
 
+/// Leave the relay when this node stops normally: delete this PC's own row (signed, pk and short id). Best effort and a
+/// few seconds at most. Nothing is sent when the relay is off, the key files are missing, or another live node still uses
+/// this folder. A failure is ignored: the row then stays until the owner removes it.
+pub fn leave(state: &Path) {
+    let settings = relay_settings::effective(state);
+    if settings.mode != Mode::Supabase || store::other_node_running(state) {
+        return;
+    }
+    let Ok(Some(config)) = relay_rest::config(Some(&settings.url), Some(&settings.key)) else { return };
+    if !state.join(relay_key::KEY_FILE).is_file() || !state.join(relay_key::SHORT_FILE).is_file() {
+        return;
+    }
+    let (Ok(seed), Ok(short)) = (relay_key::load_or_create(state), relay_key::short_id(state)) else { return };
+    relay_rest::delete_peer(&config, &seed, &short);
+}
+
 /// The peer's Noise key from its row, when the user verified that key with /trust.
 fn verified_key(chat: &Chat, peer: &Peer) -> Option<Vec<u8>> {
     let key = store::from_hex(&peer.noise_pk)?;
@@ -169,7 +189,7 @@ fn verified_key(chat: &Chat, peer: &Peer) -> Option<Vec<u8>> {
 /// Sleep for `time`, in slices so a stop is seen. Texts typed meanwhile are not sent: a notice says so.
 fn wait(chat: &Chat, rx: &Receiver<String>, stop: &AtomicBool, time: Duration) {
     let until = Instant::now() + time;
-    while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+    while Instant::now() < until && !stop.load(Ordering::Relaxed) && !chat.take_relay_wake() {
         while let Ok(_text) = rx.try_recv() {
             chat.say("relay: not connected, the message was not sent over the relay");
         }
@@ -179,7 +199,14 @@ fn wait(chat: &Chat, rx: &Receiver<String>, stop: &AtomicBool, time: Duration) {
 
 /// Re-check the row right before sending, then seal and send one envelope.
 pub(crate) fn send_text(chat: &Chat, config: &Config, peer_pk: &str, session: &Session, theirs: &[u8], link: &mut Link, text: &str) -> Result<(), String> {
-    let checked = relay_rest::get_peer(config, peer_pk).and_then(|peer| verified_key(chat, &peer));
+    let row = relay_rest::get_peer(config, peer_pk);
+    // The row is read again here, so its current name is kept for the chat too.
+    if let Some(peer) = &row {
+        if let Some(key) = store::from_hex(&peer.noise_pk) {
+            chat.set_relay_candidate(&peer.name, key);
+        }
+    }
+    let checked = row.and_then(|peer| verified_key(chat, &peer));
     if checked.as_deref() != Some(theirs) {
         return Err("relay: peer not verified, not sent".to_string());
     }
@@ -230,7 +257,7 @@ pub(crate) fn receive(chat: &Chat, line: &str, session: &Session, theirs: &[u8],
     if text.trim().is_empty() {
         return false;
     }
-    let sender = chat.trusted_name(theirs).unwrap_or_else(|| "?".to_string());
+    let sender = chat.relay_display_name(theirs).unwrap_or_else(|| "?".to_string());
     chat.add_relay_line(Line { sender: Some(sender), text, mine: false });
     true
 }

@@ -61,6 +61,19 @@ cd gui
 cargo run --release
 ```
 
+## 연결 방식: 로컬/자체 또는 Supabase
+
+- **로컬/자체 (LAN)**: 기본값. 같은 네트워크의 PC끼리 서버 없이 바로 채팅합니다.
+- **Supabase**: 메시지가 Supabase 릴레이로만 갑니다. LAN 으로는 보내지 않습니다.
+- 채팅을 띄울 때마다 새 **노드** (TUI, GUI, Python 실행 하나) 가 된다. 노드마다 키, 짧은 ID, 신뢰 목록이 `sessions\<id>\` 에 따로 있다. 같은 PC의 창 두 개는 노드 두 개다. `--session <id>` 로 같은 노드를 다시 쓴다.
+- Supabase 모드에서는 같은 PC의 노드끼리 대화하지 않는다. 각 노드가 릴레이로 폰과 따로 대화한다. LAN 으로는 아무것도 보내지 않는다.
+ 첫 화면 (GUI) 또는 첫 실행 (TUI) 에서 고르고, `Ctrl+R` (설정) 또는 상단 "연결 방식" 버튼으로 바꿉니다.
+- Supabase 설정은 URL, publishable 키, 상대의 짧은 ID (8자리) 입니다. 표시 이름은 자동으로 배정됩니다.
+- 채팅을 띄울 때마다 새 **노드** (TUI, GUI, Python 실행 하나) 가 된다. 노드마다 키, 짧은 ID, 신뢰 목록이 `sessions\<id>\` 에 따로 있다. 같은 PC의 창 두 개는 노드 두 개다. `--session <id>` 로 같은 노드를 다시 쓴다.
+- Supabase 모드에서는 같은 PC의 노드끼리 대화하지 않는다. 각 노드가 릴레이로 폰과 따로 대화한다.
+ 짧은 ID 는 PC마다 한 번 만들어집니다 (`short-id.txt`).
+- 채팅 전에 양쪽에서 `/trust <코드>` 로 서로 확인합니다.
+
 ## 폰 (Expo Go)
 
 Android 폰이 `mobile-bridge/bridge.js` 와 `mobile/` 의 Expo 앱으로 채팅에 참여할 수 있습니다. 폰은 피어가 아닙니다. 폰은 브리지와 HTTP 로 통신하고, 브리지가 같은 PC 의 herdr-talk 노드와 통신합니다. 이 구간은 평문 HTTP 라서 믿을 수 있는 Wi-Fi 에서만 쓰세요.

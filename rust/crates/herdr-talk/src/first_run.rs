@@ -83,7 +83,7 @@ pub fn render(out: &mut Stdout, chooser: &Chooser, remaining: Option<u64>, width
     if let Some(seconds) = remaining {
         lines.push(t("mode.timeout_hint", &[("n", &seconds.to_string())]));
     }
-    lines.push("1/2 or Up/Down + Enter · Esc quit".to_string());
+    lines.push(t("tui.first_run.keys", &[]));
     queue!(out, cursor::Hide, Clear(ClearType::All))?;
     for (row, text) in lines.iter().take(rows).enumerate() {
         let text: String = text.chars().take(width).collect();

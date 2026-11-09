@@ -2,21 +2,21 @@
 // Settings, the two keys, the peer's confirmation by code, and one chat with one peer.
 
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { bytesToHex, hexToBytes } from '../relay/bytes.ts';
 import { receiveLine, sealText, type Keys } from '../relay/engine.ts';
-import { PUT_TRIES, RelayLink, findRow, getRow, putRow, socketUrl, type PeerRow } from '../relay/client.ts';
+import { PUT_TRIES, RelayLink, channelTopic, findRow, getRow, putRow, socketUrl, type PeerRow } from '../relay/client.ts';
 import { NonceCache, channelName, fingerprint, isKeyHex } from '../relay/protocol.ts';
-import { addTrusted, clearSettings, defaultSettings, loadOrCreateKeys, loadOrCreateShortId, loadSettings, loadTrusted, randomBytes, replaceShortId, saveSettings } from '../relay/store.ts';
+import { addTrusted, clearDisplayName, clearSettings, defaultSettings, loadOrCreateDisplayName, loadOrCreateKeys, loadOrCreateShortId, loadSettings, loadTrusted, randomBytes, replaceShortId, saveSettings } from '../relay/store.ts';
 import { FIELD_IDS, emptySettings, keyLabel, missingFields, type FieldId, type RelaySettings } from '../relay/settings.ts';
 import { palette } from '../theme';
+import { SIZE, TOUCH_MIN } from '../typography.ts';
 
 const LABELS: Record<FieldId, string> = {
   url: 'Project URL',
   key: 'Publishable key',
-  name: 'Display name',
   peer: 'Peer ID (8 characters)',
 };
 
@@ -50,16 +50,18 @@ export default function RelayScreen() {
       const [{ settings: loaded, fromDefaults }, made, trustedKeys, myShortId] = await Promise.all([loadSettings(), loadOrCreateKeys(), loadTrusted(), loadOrCreateShortId()]);
       shortIdRef.current = myShortId;
       setShortId(myShortId);
-      setSettings(loaded);
-      setDraft(loaded);
+      // The saved name is ignored: the phone's own assigned name is used for the row.
+      const current: RelaySettings = { ...loaded, name: await loadOrCreateDisplayName() };
+      setSettings(current);
+      setDraft(current);
       setUsingDefaults(fromDefaults);
       setKeys(made.keys);
       keysRef.current = made.keys;
       setSigningSeed(made.signingSeed);
       setSigningPublic(made.signingPublicHex);
       setTrusted(trustedKeys);
-      if (missingFields(loaded).length === 0) {
-        await connect(loaded, made.keys, made.signingSeed, trustedKeys);
+      if (missingFields(current).length === 0) {
+        await connect(current, made.keys, made.signingSeed, trustedKeys);
       } else {
         setStatus('set the settings');
         setEditing(true);
@@ -94,7 +96,7 @@ export default function RelayScreen() {
     if (outcome !== 'ok') setNotice('could not publish this phone\'s row');
     const channel = channelName(own.noisePublic, hexToBytes(row.noisePk));
     link.current?.close();
-    const next = new RelayLink(socketUrl(current.url, current.key), `realtime:${channel}`, {
+    const next = new RelayLink(socketUrl(current.url, current.key), channelTopic(channel), {
       onStatus: (text) => setStatus(text),
       onEnvelope: (line) => {
         const peerNow = peerRef.current;
@@ -149,9 +151,11 @@ export default function RelayScreen() {
           link.current?.close();
           link.current = null;
           await clearSettings();
+          await clearDisplayName();
           // The app defaults come back after a clear.
-          setSettings(defaultSettings());
-          setDraft(defaultSettings());
+          const name = await loadOrCreateDisplayName();
+          setSettings({ ...defaultSettings(), name });
+          setDraft({ ...defaultSettings(), name });
           setUsingDefaults(true);
           setPeer(null);
           peerRef.current = null;
@@ -196,17 +200,19 @@ export default function RelayScreen() {
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]}>
       <StatusBar style="light" />
+      {/* Android (edge-to-edge): the keyboard shrinks this area, so the input row stays above the keyboard. */}
+      <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={[styles.statusRow, { borderColor: colors.border }]}>
         <Text style={[styles.statusText, { color: colors.accent }]}>mode: Supabase · {status}</Text>
-        <Pressable onPress={() => setEditing((value) => !value)}>
+        <Pressable onPress={() => setEditing((value) => !value)} style={{ minHeight: TOUCH_MIN, justifyContent: 'center' }}>
           <Text style={[styles.link, { color: colors.accent }]}>{editing ? 'close' : 'settings'}</Text>
         </Pressable>
       </View>
       {notice ? <Text style={[styles.notice, { color: colors.muted }]}>{notice}</Text> : null}
-      {usingDefaults ? <Text style={[styles.notice, { color: colors.muted }]}>기본값 사용 중 (URL·키·상대 키는 앱 기본값, 표시 이름만 직접 입력)</Text> : null}
+      {usingDefaults ? <Text style={[styles.notice, { color: colors.muted }]}>기본값 사용 중 (URL·키·상대 ID 는 앱 기본값)</Text> : null}
 
       {editing ? (
-        <ScrollView style={styles.panel}>
+        <ScrollView style={styles.panel} keyboardShouldPersistTaps="handled">
           {FIELD_IDS.map((id) => (
             <View key={id} style={styles.field}>
               <Text style={[styles.label, { color: colors.muted }]}>{LABELS[id]}</Text>
@@ -230,10 +236,10 @@ export default function RelayScreen() {
           <Text selectable style={[styles.mono, { color: colors.text }]}>{ownNoise}</Text>
           <View style={styles.row}>
             <Pressable onPress={save} style={[styles.button, { borderColor: colors.accent }]}>
-              <Text style={{ color: colors.accent }}>save</Text>
+              <Text style={{ fontSize: SIZE.body, color: colors.accent }}>save</Text>
             </Pressable>
             <Pressable onPress={askClear} style={[styles.button, { borderColor: colors.danger }]}>
-              <Text style={{ color: colors.danger }}>clear settings</Text>
+              <Text style={{ fontSize: SIZE.body, color: colors.danger }}>clear settings</Text>
             </Pressable>
           </View>
         </ScrollView>
@@ -241,17 +247,17 @@ export default function RelayScreen() {
         <>
           {peer && !isTrusted ? (
             <View style={[styles.panel, { borderColor: colors.border }]}>
-              <Text style={{ color: colors.text }}>peer {peer.name} is not confirmed yet.</Text>
+              <Text style={{ fontSize: SIZE.body, color: colors.text }}>peer {peer.name} is not confirmed yet.</Text>
               <Text selectable style={[styles.mono, { color: colors.accent }]}>code: {code}</Text>
-              <Text style={{ color: colors.muted }}>Check that the same code is on the peer screen, then confirm.</Text>
+              <Text style={{ fontSize: SIZE.body, color: colors.muted }}>Check that the same code is on the peer screen, then confirm.</Text>
               <Pressable onPress={confirmPeer} style={[styles.button, { borderColor: colors.accent }]}>
-                <Text style={{ color: colors.accent }}>confirm: the codes match</Text>
+                <Text style={{ fontSize: SIZE.body, color: colors.accent }}>confirm: the codes match</Text>
               </Pressable>
             </View>
           ) : null}
           <ScrollView style={styles.messages} contentContainerStyle={{ paddingBottom: 8 }}>
             {messages.map((message) => (
-              <Text key={message.id} style={{ color: message.mine ? colors.mine : colors.text }}>
+              <Text key={message.id} style={{ fontSize: SIZE.body, color: message.mine ? colors.mine : colors.text }}>
                 {message.sender}: {message.text}
               </Text>
             ))}
@@ -266,11 +272,12 @@ export default function RelayScreen() {
               placeholderTextColor={colors.muted}
             />
             <Pressable onPress={send} style={[styles.button, { borderColor: colors.accent }]}>
-              <Text style={{ color: colors.accent }}>send</Text>
+              <Text style={{ fontSize: SIZE.body, color: colors.accent }}>send</Text>
             </Pressable>
           </View>
         </>
       )}
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -278,17 +285,17 @@ export default function RelayScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   statusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 10, borderBottomWidth: 1 },
-  statusText: { fontSize: 13 },
-  link: { fontSize: 13, textDecorationLine: 'underline' },
-  notice: { paddingHorizontal: 10, paddingVertical: 4, fontSize: 12 },
-  panel: { flexGrow: 0, padding: 10 },
+  statusText: { fontSize: SIZE.label },
+  link: { fontSize: SIZE.label, textDecorationLine: 'underline' },
+  notice: { paddingHorizontal: 10, paddingVertical: 4, fontSize: SIZE.label },
+  panel: { flexGrow: 0, flexShrink: 1, padding: 10 },
   field: { marginBottom: 10 },
-  label: { fontSize: 12, marginBottom: 4 },
-  input: { borderWidth: 1, borderRadius: 4, paddingHorizontal: 8, paddingVertical: 6, fontSize: 14 },
+  label: { fontSize: SIZE.label, marginBottom: 4 },
+  input: { minHeight: TOUCH_MIN, borderWidth: 1, borderRadius: 4, paddingHorizontal: 8, paddingVertical: 6, fontSize: SIZE.body },
   inputFlex: { flex: 1 },
-  mono: { fontSize: 12, marginBottom: 8 },
-  short: { fontSize: 28, fontWeight: 'bold', marginBottom: 6 },
-  button: { borderWidth: 1, borderRadius: 4, paddingHorizontal: 12, paddingVertical: 8, alignSelf: 'flex-start', marginTop: 8 },
+  mono: { fontSize: SIZE.label, marginBottom: 8 },
+  short: { fontSize: SIZE.id, fontWeight: 'bold', marginBottom: 6 },
+  button: { minHeight: TOUCH_MIN, borderWidth: 1, borderRadius: 4, paddingHorizontal: 12, paddingVertical: 8, alignSelf: 'flex-start', marginTop: 8 },
   messages: { flex: 1, paddingHorizontal: 10 },
   inputRow: { flexDirection: 'row', gap: 8, padding: 10, alignItems: 'center' },
   row: { flexDirection: 'row', gap: 10, marginTop: 4 },
