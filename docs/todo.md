@@ -122,6 +122,8 @@ Found by reading the relay, node-folder and CLI code after commit `222aee8`. Not
 
 ## Later (phase 2 and beyond)
 
+- [ ] **relay 여러 상대 연결 (3명 이상)**: 계획 `docs/multi-peer-relay-plan.md` (2026-11-11). 방식 A (상대별 채널) 추천, 사용자 결정 4건 대기. 구현 전.
+
 - [x] Chat across the internet through Supabase, with end-to-end encryption. (2026-11-09: 노드마다 새 세션 폴더, 자동 이름, 상대 이름은 행 이름을 따름. 남은 확인은 `supabase-relay.md` "남은 일") (2026-11-09: Rust TUI·GUI·Python·안드로이드 구현. 폰 ↔ PC 실사용 송수신 확인. 남은 확인은 `supabase-relay.md` "남은 일")
 - [ ] Message history for peers that were offline (needs a decision on storage first).
 - [ ] **Android app that sends commands to herdr AI agents.** Pick a target agent on the phone, send it a prompt, and see its state and reply. Needs the relay and encryption first, plus pairing and permission per device: this runs commands on the PC remotely, so an unpaired device must never reach an agent.
