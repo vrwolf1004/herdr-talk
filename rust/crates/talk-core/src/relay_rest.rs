@@ -9,7 +9,7 @@ use std::time::Duration;
 pub const URL_VARIABLE: &str = "HERDR_TALK_RELAY_URL";
 pub const KEY_VARIABLE: &str = "HERDR_TALK_RELAY_KEY";
 pub const PUT_TAG: &str = "herdr-talk-put-v3";
-const TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where the relay is and the publishable key. Never the secret key.
 #[derive(Clone, PartialEq, Eq)]
@@ -173,13 +173,18 @@ pub fn delete_request(config: &Config, seed: &[u8; 32], short_id: &str, ts: u64,
 
 /// Ask the relay to delete this PC's row. True only for a 2xx answer. Every failure is false; no error text is kept.
 pub fn delete_peer(config: &Config, seed: &[u8; 32], short_id: &str) -> bool {
+    delete_peer_within(config, seed, short_id, TIMEOUT)
+}
+
+/// The same delete with its own limit for the whole request.
+pub(crate) fn delete_peer_within(config: &Config, seed: &[u8; 32], short_id: &str, timeout: Duration) -> bool {
     let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else { return false };
     let mut random = [0u8; 16];
     if getrandom::getrandom(&mut random).is_err() {
         return false;
     }
     let Ok(request) = delete_request(config, seed, short_id, now.as_secs(), &to_hex(&random)) else { return false };
-    let mut builder = agent(config).post(&request.url);
+    let mut builder = agent_within(config, timeout).post(&request.url);
     for (key, value) in &request.headers {
         builder = builder.header(key.as_str(), value.as_str());
     }
@@ -302,9 +307,13 @@ pub fn find_peer(config: &Config, short_id: &str) -> Result<Peer, String> {
 
 /// Agent for one relay: 5 seconds for the whole request, no proxy for loopback (a test server), the environment's proxy otherwise.
 fn agent(config: &Config) -> ureq::Agent {
+    agent_within(config, TIMEOUT)
+}
+
+fn agent_within(config: &Config, timeout: Duration) -> ureq::Agent {
     let proxy = if is_loopback(&config.url) { None } else { ureq::Proxy::try_from_env() };
     let settings = ureq::Agent::config_builder()
-        .timeout_global(Some(TIMEOUT))
+        .timeout_global(Some(timeout))
         .http_status_as_error(false)
         .proxy(proxy)
         .build();
@@ -344,7 +353,7 @@ pub fn get_peer(config: &Config, pk: &str) -> Option<Peer> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // Dummy values only. No test here sends anything.
@@ -481,7 +490,7 @@ mod tests {
     }
 
     /// One-shot local HTTP server on 127.0.0.1. Hands back the request it read, then answers with `response`.
-    fn serve_once(response: &'static str) -> (Config, std::sync::mpsc::Receiver<String>) {
+    pub(crate) fn serve_once(response: &'static str) -> (Config, std::sync::mpsc::Receiver<String>) {
         use std::io::{BufRead, BufReader, Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();

@@ -805,9 +805,12 @@ fn main() -> eframe::Result<()> {
         eprintln!("{error}");
         return Ok(());
     }
-    for id in talk_core::store::remove_dead_sessions(&talk_core::store::base_dir()) {
-        eprintln!("could not remove dead session {id}");
-    }
+    // In the background: the window does not wait for the relay.
+    thread::spawn(|| {
+        for id in talk_core::store::remove_dead_sessions(&talk_core::store::base_dir(), &talk_core::relay_chat::leave_folder) {
+            eprintln!("could not remove dead session {id}");
+        }
+    });
     let shared = Arc::new(Mutex::new(Shared { status: status_starting(), ..Default::default() }));
     let (outgoing, queue) = mpsc::channel();
     let started: Started = Arc::default();
@@ -831,8 +834,8 @@ fn main() -> eframe::Result<()> {
         }),
     );
     stop_serve(&started);
-    // A normal stop deletes this node's own relay row first (best effort), then its folder.
-    if result.is_ok() && talk_core::store::session_id().is_some() {
+    // A stop, also one with an error, deletes this node's own relay row first (best effort), then its folder: the keys are in it.
+    if talk_core::store::session_id().is_some() {
         talk_core::relay_chat::leave(&talk_core::store::state_dir());
     }
     if let Some(id) = talk_core::store::remove_own_session() {

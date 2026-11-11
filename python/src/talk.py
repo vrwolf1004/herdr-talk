@@ -1572,9 +1572,17 @@ def list_sessions_command():
 
 
 def _tidy_sessions():
-    """Remove node folders whose node has ended without cleaning up. Quiet: a folder that cannot be removed is only named."""
-    for session_id in sessions.remove_dead_sessions(sessions.base_dir()):
-        print(f"could not remove dead session {session_id}", file=sys.stderr)
+    """Remove node folders whose node has ended without cleaning up, each after its relay row (best effort). In the
+    background: the start does not wait for the relay. Quiet: a folder that cannot be removed is only named, as a chat
+    line (stderr would break the full screen)."""
+    def leave(folder):
+        relay_chat.leave(folder, timeout=relay_chat.DEAD_LEAVE_SECONDS)
+
+    def tidy():
+        for session_id in sessions.remove_dead_sessions(sessions.base_dir(), leave=leave):
+            say(f"could not remove dead session {session_id}")
+
+    threading.Thread(target=tidy, daemon=True).start()
 
 
 def _dispatch(args):

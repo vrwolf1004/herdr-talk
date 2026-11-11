@@ -182,16 +182,30 @@ pub fn process_alive(_pid: u32) -> bool {
 
 /// Remove the node folders under base whose node has ended without cleaning up: each has control files, and every one of
 /// them is for a process that has ended. A folder without a control file is kept, since its node may still be starting.
-/// Returns the ids that could not be removed (they are skipped).
-pub fn remove_dead_sessions(base: &Path) -> Vec<String> {
-    remove_dead_sessions_with(base, &process_alive, &|dir| fs::remove_dir_all(dir))
+/// This process's own session is kept: with --session it may be such a folder, about to be used again.
+/// Before a folder goes, `leave` gets it when its key files are there, to delete that node's relay row (best effort: the
+/// folder is removed whatever `leave` does). Returns the ids that could not be removed (they are skipped).
+pub fn remove_dead_sessions(base: &Path, leave: &dyn Fn(&Path)) -> Vec<String> {
+    remove_dead_sessions_with(base, session_id().as_deref(), &process_alive, leave, &|dir| fs::remove_dir_all(dir))
 }
 
-pub(crate) fn remove_dead_sessions_with(base: &Path, alive: &dyn Fn(u32) -> bool, remove: &dyn Fn(&Path) -> io::Result<()>) -> Vec<String> {
+pub(crate) fn remove_dead_sessions_with(
+    base: &Path,
+    own: Option<&str>,
+    alive: &dyn Fn(u32) -> bool,
+    leave: &dyn Fn(&Path),
+    remove: &dyn Fn(&Path) -> io::Result<()>,
+) -> Vec<String> {
     list_sessions(base)
         .into_iter()
-        .filter(|(_, dir)| ended_without_cleanup(dir) && !has_live_node(dir, alive, None))
-        .filter_map(|(id, dir)| remove(&dir).err().map(|_| id))
+        .filter(|(id, dir)| Some(id.as_str()) != own && ended_without_cleanup(dir) && !has_live_node(dir, alive, None))
+        .filter_map(|(id, dir)| {
+            // The keys are in the folder, so the row goes first.
+            if dir.join(relay_key::KEY_FILE).is_file() && dir.join(relay_key::SHORT_FILE).is_file() {
+                leave(&dir);
+            }
+            remove(&dir).err().map(|_| id)
+        })
         .collect()
 }
 
@@ -430,7 +444,7 @@ mod tests {
         let dead = node(&base, "abcd2345", Some(4000001));
         let live = node(&base, "abcd2346", Some(4242));
         let unknown = node(&base, "abcd2347", None);
-        let failed = remove_dead_sessions_with(&base, &|pid| pid == 4242, &|dir| fs::remove_dir_all(dir));
+        let failed = remove_dead_sessions_with(&base, None, &|pid| pid == 4242, &|_| {}, &|dir| fs::remove_dir_all(dir));
         assert!(failed.is_empty());
         assert!(!dead.exists());
         assert!(live.exists(), "a live node keeps its folder");
@@ -439,10 +453,45 @@ mod tests {
     }
 
     #[test]
+    fn a_dead_node_with_keys_leaves_once_before_its_folder_goes() {
+        let base = scratch("cleanup-leave");
+        let (keyed_id, keyed) = new_session(&base).unwrap();
+        relay_key::load_or_create(&keyed).unwrap();
+        relay_key::short_id(&keyed).unwrap();
+        fs::write(keyed.join("control-4000001.json"), b"{}").unwrap();
+        let keyless = node(&base, "abcd2345", Some(4000001));
+        let (live_id, live) = new_session(&base).unwrap();
+        relay_key::load_or_create(&live).unwrap();
+        relay_key::short_id(&live).unwrap();
+        fs::write(live.join("control-4242.json"), b"{}").unwrap();
+        assert_ne!(keyed_id, live_id);
+        let left = std::cell::RefCell::new(Vec::new());
+        let leave = |dir: &Path| {
+            assert!(dir.join(relay_key::KEY_FILE).is_file(), "the folder is still there when the row goes");
+            left.borrow_mut().push(dir.to_path_buf());
+        };
+        let failed = remove_dead_sessions_with(&base, None, &|pid| pid == 4242, &leave, &|dir| fs::remove_dir_all(dir));
+        assert!(failed.is_empty());
+        assert_eq!(*left.borrow(), vec![keyed.clone()], "once for the dead node with keys, never for a keyless or live one");
+        assert!(!keyed.exists() && !keyless.exists() && live.exists());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_own_session_is_kept_even_when_its_old_node_is_dead() {
+        let base = scratch("cleanup-own");
+        let mine = node(&base, "abcd2345", Some(4000001));
+        let other = node(&base, "abcd2346", Some(4000001));
+        assert!(remove_dead_sessions_with(&base, Some("abcd2345"), &|_| false, &|_| {}, &|dir| fs::remove_dir_all(dir)).is_empty());
+        assert!(mine.exists() && !other.exists());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn a_folder_that_cannot_be_removed_is_skipped_and_named() {
         let base = scratch("cleanup-fail");
         let dead = node(&base, "abcd2345", Some(4000001));
-        let failed = remove_dead_sessions_with(&base, &|_| false, &|_| Err(io::Error::other("locked")));
+        let failed = remove_dead_sessions_with(&base, None, &|_| false, &|_| {}, &|_| Err(io::Error::other("locked")));
         assert_eq!(failed, vec!["abcd2345".to_string()]);
         assert!(dead.exists());
         fs::remove_dir_all(&base).unwrap();
@@ -454,7 +503,7 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
         let control = base.join("control-4000001.json");
         fs::write(&control, b"{}").unwrap();
-        assert!(remove_dead_sessions_with(&base, &|_| false, &|dir| fs::remove_dir_all(dir)).is_empty());
+        assert!(remove_dead_sessions_with(&base, None, &|_| false, &|_| {}, &|dir| fs::remove_dir_all(dir)).is_empty());
         assert!(control.exists());
         fs::remove_dir_all(&base).unwrap();
     }

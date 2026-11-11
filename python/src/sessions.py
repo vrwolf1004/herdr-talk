@@ -87,15 +87,23 @@ def process_alive(pid):
     return True
 
 
-def remove_dead_sessions(base, alive=None, remove=None):
+def remove_dead_sessions(base, alive=None, remove=None, leave=None):
     """Remove the node folders under base whose node has ended without cleaning up: each has control files, and every one
     of them is for a process that has ended. A folder without a control file is kept (its node may be starting).
-    Returns the ids that could not be removed (they are skipped)."""
+    This process's own session is kept: with --session it may be such a folder, about to be used again.
+    Before a folder goes, leave(folder) is called when its key files are there, to delete that node's relay row (best
+    effort: the folder is removed whatever leave does). Returns the ids that could not be removed (they are skipped)."""
     alive = process_alive if alive is None else alive
     remove = shutil.rmtree if remove is None else remove
+    own = _chosen[0] if _chosen else None
     failed = []
     for session_id, folder in list_sessions(base):
-        if _control_pids(folder) and not _has_live_node(folder, alive, None):
+        if session_id != own and _control_pids(folder) and not _has_live_node(folder, alive, None):
+            if leave is not None and all(os.path.isfile(os.path.join(folder, name)) for name in (relay_key.KEY_FILE, relay_key.SHORT_FILE)):
+                try:  # the keys are in the folder, so the row goes first
+                    leave(folder)
+                except Exception:  # noqa: BLE001 - a failed delete never keeps the folder
+                    pass
             try:
                 remove(folder)
             except OSError:

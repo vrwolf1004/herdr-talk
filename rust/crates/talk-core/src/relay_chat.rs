@@ -168,16 +168,31 @@ fn run(chat: &Chat, state: &Path, config: &Config, settings: &Settings, rx: &Rec
 /// few seconds at most. Nothing is sent when the relay is off, the key files are missing, or another live node still uses
 /// this folder. A failure is ignored: the row then stays until the owner removes it.
 pub fn leave(state: &Path) {
-    let settings = relay_settings::effective(state);
-    if settings.mode != Mode::Supabase || store::other_node_running(state) {
-        return;
+    if !store::other_node_running(state) {
+        leave_with(state, &relay_settings::effective(state), relay_rest::TIMEOUT);
     }
-    let Ok(Some(config)) = relay_rest::config(Some(&settings.url), Some(&settings.key)) else { return };
+}
+
+/// Limit for the delete of a dead node's row. Shorter than a normal request: several folders may wait in line.
+const DEAD_LEAVE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The same delete for any node folder, with that folder's settings and keys. The caller makes sure no live node uses
+/// the folder (a node that ended without cleaning up, see store::remove_dead_sessions).
+pub fn leave_folder(state: &Path) {
+    leave_with(state, &relay_settings::effective(state), DEAD_LEAVE_TIMEOUT);
+}
+
+/// True when the relay accepted the delete. False without a request when the relay is off or a key file is missing.
+fn leave_with(state: &Path, settings: &Settings, timeout: Duration) -> bool {
+    if settings.mode != Mode::Supabase {
+        return false;
+    }
+    let Ok(Some(config)) = relay_rest::config(Some(&settings.url), Some(&settings.key)) else { return false };
     if !state.join(relay_key::KEY_FILE).is_file() || !state.join(relay_key::SHORT_FILE).is_file() {
-        return;
+        return false;
     }
-    let (Ok(seed), Ok(short)) = (relay_key::load_or_create(state), relay_key::short_id(state)) else { return };
-    relay_rest::delete_peer(&config, &seed, &short);
+    let (Ok(seed), Ok(short)) = (relay_key::load_or_create(state), relay_key::short_id(state)) else { return false };
+    relay_rest::delete_peer_within(&config, &seed, &short, timeout)
 }
 
 /// The peer's Noise key from its row, when the user verified that key with /trust.
@@ -289,6 +304,41 @@ fn open_payload(secret: &[u8], expected: &[u8], ciphertext: &[u8]) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A node folder (keys made when asked) and the settings that point at a one-shot local relay.
+    fn leaving(name: &str, mode: Mode, keys: bool) -> (std::path::PathBuf, Settings, std::sync::mpsc::Receiver<String>) {
+        let state = std::env::temp_dir().join(format!("herdr-talk-relay-leave-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        std::fs::create_dir_all(&state).unwrap();
+        if keys {
+            relay_key::load_or_create(&state).unwrap();
+            relay_key::short_id(&state).unwrap();
+        }
+        let (config, received) = relay_rest::tests::serve_once("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let settings = Settings { mode, url: config.url().to_string(), key: "dummy-test-key".to_string(), ..Default::default() };
+        (state, settings, received)
+    }
+
+    #[test]
+    fn leaving_a_folder_with_keys_sends_one_signed_delete() {
+        let (state, settings, received) = leaving("keys", Mode::Supabase, true);
+        assert!(leave_with(&state, &settings, DEAD_LEAVE_TIMEOUT));
+        let raw = received.recv().unwrap();
+        assert!(raw.starts_with("POST /functions/v1/delete-peer HTTP/1.1\r\n"), "{raw}");
+        assert!(raw.contains(&format!(r#""short_id":"{}""#, relay_key::short_id(&state).unwrap())), "{raw}");
+        std::fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn leaving_sends_nothing_when_the_relay_is_off_or_the_keys_are_missing() {
+        for (name, mode, keys) in [("local", Mode::Local, true), ("keyless", Mode::Supabase, false)] {
+            let (state, settings, received) = leaving(name, mode, keys);
+            assert!(!leave_with(&state, &settings, DEAD_LEAVE_TIMEOUT));
+            assert!(received.try_recv().is_err(), "{name}: no request");
+            assert_eq!(state.join(relay_key::KEY_FILE).exists(), keys, "{name}: no key is made on the way out");
+            std::fs::remove_dir_all(&state).unwrap();
+        }
+    }
 
     #[test]
     fn payload_round_trips_between_two_keys_and_a_third_key_cannot_open_it() {

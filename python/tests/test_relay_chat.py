@@ -223,5 +223,39 @@ class RelayThreadTests(unittest.TestCase):
         self.assertFalse(relay_thread.thread.is_alive())
 
 
+class LeaveTest(unittest.TestCase):
+    """leave(): one signed delete for a folder with keys and the relay on, nothing otherwise."""
+
+    def setUp(self):
+        self.state = __import__('tempfile').mkdtemp(prefix='herdr-talk-leave-test-')
+        self.addCleanup(__import__('shutil').rmtree, self.state, True)
+
+    def _leave(self, mode, keys):
+        if keys:
+            rc.relay_key.load_or_create(self.state)
+            rc.relay_key.load_or_create_short_id(self.state)
+        settings = {**rc.relay_settings.empty(), "mode": mode, "url": "https://relay.example", "key": "dummy-test-key"}
+        with mock.patch.object(rc.relay_settings, "load_saved", return_value=settings), \
+                mock.patch.object(relay_rest, "delete_peer", return_value=True) as delete:
+            return rc.leave(self.state, timeout=rc.DEAD_LEAVE_SECONDS), delete
+
+    def test_a_folder_with_keys_sends_one_delete_with_its_own_keys(self):
+        left, delete = self._leave(rc.relay_settings.SUPABASE, keys=True)
+        self.assertTrue(left)
+        seed, short = rc.relay_key.load_or_create(self.state), rc.relay_key.load_or_create_short_id(self.state)
+        delete.assert_called_once_with(mock.ANY, seed, short, rc.DEAD_LEAVE_SECONDS)
+
+    def test_nothing_is_sent_when_the_relay_is_off(self):
+        left, delete = self._leave(rc.relay_settings.LOCAL, keys=True)
+        self.assertFalse(left)
+        delete.assert_not_called()
+
+    def test_nothing_is_sent_and_no_key_is_made_when_the_keys_are_missing(self):
+        left, delete = self._leave(rc.relay_settings.SUPABASE, keys=False)
+        self.assertFalse(left)
+        delete.assert_not_called()
+        self.assertEqual(os.listdir(self.state), [])
+
+
 if __name__ == "__main__":
     unittest.main()

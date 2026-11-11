@@ -85,3 +85,22 @@ export function statusFor(verdict: Verdict): number {
       return 401;
   }
 }
+
+// The network steps after the checks. They are given by index.ts, so the order below can be tested alone.
+export interface DeleteSteps {
+  takeNonce(): Promise<"fresh" | "used" | "failed">;
+  deletePeer(): Promise<boolean>;
+  releaseNonce(): Promise<void>;
+}
+
+// Record the nonce, then delete the row. A used nonce is 401. When the delete fails (500) the nonce is given back, so the
+// node can send the same signed request again. Giving it back is best effort: if that fails too, the retry is 401.
+export async function deleteWithNonce(steps: DeleteSteps): Promise<number> {
+  const nonce = await steps.takeNonce();
+  if (nonce === "used") return statusFor("nonce");
+  if (nonce === "failed") return 500;
+  const deleted = await steps.deletePeer().catch(() => false);
+  if (deleted) return statusFor("ok");
+  await steps.releaseNonce().catch(() => {});
+  return 500;
+}

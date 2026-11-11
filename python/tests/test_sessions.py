@@ -60,6 +60,39 @@ class SessionsTest(unittest.TestCase):
         self.assertTrue(os.path.exists(live))
         self.assertTrue(os.path.exists(unknown))
 
+    def test_a_dead_node_with_keys_leaves_once_before_its_folder_goes(self):
+        def keys(folder):
+            relay_key.load_or_create(folder)
+            relay_key.load_or_create_short_id(folder)
+            return folder
+
+        keyed = keys(self._node("abcd2345", pid=4000001))
+        keyless = self._node("abcd2346", pid=4000001)
+        live = keys(self._node("abcd2347", pid=4242))
+        left = []
+
+        def leave(folder):
+            self.assertTrue(os.path.isfile(os.path.join(folder, relay_key.KEY_FILE)), "the folder is still there when the row goes")
+            left.append(folder)
+            raise OSError("relay down")  # a failed delete never keeps the folder
+
+        self.assertEqual(sessions.remove_dead_sessions(self.base, alive=lambda pid: pid == 4242, leave=leave), [])
+        self.assertEqual(left, [keyed])
+        self.assertFalse(os.path.exists(keyed))
+        self.assertFalse(os.path.exists(keyless))
+        self.assertTrue(os.path.exists(live))
+
+    def test_the_own_session_is_kept_even_when_its_old_node_is_dead(self):
+        mine = self._node("abcd2345", pid=4000001)
+        other = self._node("abcd2346", pid=4000001)
+        sessions._chosen = ("abcd2345", mine)
+        try:
+            self.assertEqual(sessions.remove_dead_sessions(self.base, alive=lambda pid: False), [])
+        finally:
+            sessions._chosen = None
+        self.assertTrue(os.path.exists(mine))
+        self.assertFalse(os.path.exists(other))
+
     def test_the_default_folder_is_never_removed(self):
         control = os.path.join(self.base, "control-4000001.json")
         open(control, "w").close()

@@ -290,9 +290,13 @@ def start(hooks, state, settings, noise_secret, noise_public, connect=None):
     return relay_thread, ""
 
 
-def leave(state):
+DEAD_LEAVE_SECONDS = 3  # shorter than a normal request: several dead folders may wait in line
+
+
+def leave(state, timeout=relay_rest.TIMEOUT_SECONDS):
     """On exit: delete this node's own relay row. Quiet and best effort: no relay, no keys or no short id yet means nothing
-    to do; a failed request is ignored (the row then stays for the owner to clear). Returns True when the row was deleted."""
+    to do; a failed request is ignored (the row then stays for the owner to clear). Returns True when the row was deleted.
+    Also for the folder of a node that ended without cleaning up, then with the shorter DEAD_LEAVE_SECONDS."""
     import os
     settings = relay_settings.load_saved(state)
     if settings["mode"] != relay_settings.SUPABASE:
@@ -307,4 +311,4 @@ def leave(state):
         return False
     seed = relay_key.load_or_create(state)
     short = relay_key.load_or_create_short_id(state)
-    return relay_rest.delete_peer(config, seed, short)
+    return relay_rest.delete_peer(config, seed, short, timeout)

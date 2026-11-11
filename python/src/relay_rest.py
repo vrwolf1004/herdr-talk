@@ -149,12 +149,12 @@ def read_get_response(status, body, short_id):
     return {"pk": row["pk"], "name": row["name"], "noise_pk": row["noise_pk"], "short_id": short_id}
 
 
-def _send(request):
+def _send(request, timeout=TIMEOUT_SECONDS):
     """Send one request. Returns (status, body). A network error raises OSError."""
     data = request["body"].encode("utf-8") if request["body"] is not None else None
     req = urllib.request.Request(request["url"], data=data, headers=request["headers"], method=request["method"])
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             return response.status, response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as error:
         return error.code, ""
@@ -211,10 +211,10 @@ def delete_request(config, seed, short_id, ts=None, nonce=None):
     }
 
 
-def delete_peer(config, seed, short_id):
+def delete_peer(config, seed, short_id, timeout=TIMEOUT_SECONDS):
     """True when the relay accepted the signed delete (or the row was already gone)."""
     try:
-        status, _ = _send(delete_request(config, seed, short_id))
+        status, _ = _send(delete_request(config, seed, short_id), timeout)
         return put_succeeded(status)
     except (OSError, ValueError):
         return False

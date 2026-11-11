@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { checkBeforeNonce, checkFormat, signatureOk, signedMessage, statusFor, withinWindow, type DeleteBody } from "./checks.ts";
+import { checkBeforeNonce, checkFormat, deleteWithNonce, signatureOk, signedMessage, statusFor, withinWindow, type DeleteBody } from "./checks.ts";
 
 const SHORT_ID = "abcd2345";
 const NONCE = "00112233445566778899aabbccddeeff";
@@ -109,4 +109,53 @@ test("delete vector: the signature matches the external vector", async () => {
   assert.equal(signedMessage(body.pk, body.short_id, body.ts, body.nonce).length, 135);
   assert.equal(await signatureOk(body), true);
   assert.equal(await signatureOk({ ...body, short_id: "ab12cd35" }), false);
+});
+
+// A put_nonces table and a peers DELETE that can fail, in memory.
+function relay(deleteResults: Array<boolean | Error>) {
+  const nonces = new Set<string>();
+  const calls: string[] = [];
+  const send = (nonce: string) =>
+    deleteWithNonce({
+      takeNonce: async () => {
+        calls.push("take");
+        if (nonces.has(nonce)) return "used";
+        nonces.add(nonce);
+        return "fresh";
+      },
+      deletePeer: async () => {
+        calls.push("delete");
+        const result = deleteResults.shift() ?? true;
+        if (result instanceof Error) throw result;
+        return result;
+      },
+      releaseNonce: async () => {
+        calls.push("release");
+        nonces.delete(nonce);
+      },
+    });
+  return { send, calls };
+}
+
+test("a failed delete gives the nonce back, so the same request works on the retry", async () => {
+  for (const failure of [false, new Error("network")]) {
+    const { send, calls } = relay([failure]);
+    assert.equal(await send(NONCE), 500);
+    assert.equal(await send(NONCE), 204);
+    assert.deepEqual(calls, ["take", "delete", "release", "take", "delete"]);
+  }
+});
+
+test("a nonce that was used for a delete is still refused, and nothing is deleted again", async () => {
+  const { send, calls } = relay([]);
+  assert.equal(await send(NONCE), 204);
+  assert.equal(await send(NONCE), 401);
+  assert.deepEqual(calls, ["take", "delete", "take"]);
+});
+
+test("a nonce that cannot be recorded is a 500 without a delete; a failed give-back is still a 500", async () => {
+  const steps = { takeNonce: async () => "failed" as const, deletePeer: async () => assert.fail("no delete"), releaseNonce: async () => {} };
+  assert.equal(await deleteWithNonce(steps), 500);
+  const stuck = { takeNonce: async () => "fresh" as const, deletePeer: async () => false, releaseNonce: async () => { throw new Error("down"); } };
+  assert.equal(await deleteWithNonce(stuck), 500);
 });

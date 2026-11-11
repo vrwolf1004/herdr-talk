@@ -84,21 +84,25 @@ fn keep_dock_block(pane: String, chat: Arc<Chat>) {
     }
 }
 
-/// Remove node folders whose node has ended without cleaning up. Quiet: a folder that cannot be removed is only named.
-fn tidy_sessions() {
-    for id in talk_core::store::remove_dead_sessions(&talk_core::store::base_dir()) {
-        eprintln!("could not remove dead session {id}");
-    }
+/// Remove node folders whose node has ended without cleaning up, each after its relay row (best effort). In the
+/// background: the start does not wait for the relay. Quiet: a folder that cannot be removed is only named, through `report`.
+fn tidy_sessions(report: impl Fn(String) + Send + 'static) {
+    thread::spawn(move || {
+        for id in talk_core::store::remove_dead_sessions(&talk_core::store::base_dir(), &talk_core::relay_chat::leave_folder) {
+            report(format!("could not remove dead session {id}"));
+        }
+    });
 }
 
 fn run(args: RunArgs) -> Result<(), String> {
     talk_core::store::choose_session(args.session.as_deref())?;
-    tidy_sessions();
     let udp = match args.udp_port {
         Some(port) => port,
         None => udp_port()?,
     };
     let chat = start(args.name, args.tcp_port.unwrap_or(0), udp).map_err(|error| error.to_string())?;
+    let tidy_chat = chat.clone();
+    tidy_sessions(move |line| tidy_chat.say(line)); // into the chat: stderr would break the full screen
     let dock_pane = args.pane.filter(|_| args.dock);
     if let Some(pane) = &dock_pane {
         herdr_api::try_request("pane.report_agent", json!({"pane_id": pane, "source": SOURCE, "agent": AGENT_ID, "state": "idle"}));
@@ -138,7 +142,7 @@ fn run(args: RunArgs) -> Result<(), String> {
 /// signal, or a `shutdown` request, and removes the control file on the way out.
 fn serve(args: RunArgs) -> Result<(), String> {
     talk_core::store::choose_session(args.session.as_deref())?;
-    tidy_sessions();
+    tidy_sessions(|line| eprintln!("{line}"));
     if args.dock || args.pane.is_some() {
         return Err("serve has no dock: --dock and --pane belong to run".to_string());
     }
@@ -219,8 +223,8 @@ fn main() -> ExitCode {
         Some("dock-stop") => dock_stop(),
         _ => Err(USAGE.to_string()),
     };
-    // A normal stop deletes this node's own relay row first (best effort), then its folder.
-    if result.is_ok() && talk_core::store::session_id().is_some() {
+    // A stop, also one with an error, deletes this node's own relay row first (best effort), then its folder: the keys are in it.
+    if talk_core::store::session_id().is_some() {
         talk_core::relay_chat::leave(&talk_core::store::state_dir());
     }
     if let Some(id) = talk_core::store::remove_own_session() {
