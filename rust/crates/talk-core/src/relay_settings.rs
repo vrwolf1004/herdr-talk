@@ -40,8 +40,8 @@ pub struct Settings {
     pub url: String,
     pub key: String,
     pub name: String,
-    /// The peer's short ID (8 lowercase letters or digits). Used to look up the peer's row.
-    pub peer: String,
+    /// Room code (8 uppercase letters or digits). All peers in the room share messages.
+    pub room_code: String,
 }
 
 /// True before the connection mode has been chosen: no relay.json, a damaged one, or one without a `mode` key.
@@ -61,10 +61,8 @@ pub fn load_saved(state: &Path) -> Settings {
     let text = text.trim_start_matches('\u{feff}');
     let Ok(value) = serde_json::from_str::<Value>(text) else { return Settings::default() };
     let field = |name: &str| value[name].as_str().unwrap_or("").to_string();
-    // A peer value that is not a short ID (an old 64-character key) is dropped: the user enters the short ID again.
-    let peer = field("peer");
-    let peer = if relay_rest::valid_short_id(&peer) { peer } else { String::new() };
-    Settings { mode: Mode::from_saved(&field("mode")), url: field("url"), key: field("key"), name: field("name"), peer }
+    let room_code = field("room_code");
+    Settings { mode: Mode::from_saved(&field("mode")), url: field("url"), key: field("key"), name: field("name"), room_code }
 }
 
 /// The settings the relay uses: the environment wins for URL and key when it is set and not empty.
@@ -95,14 +93,14 @@ pub fn from_environment() -> (bool, bool) {
 
 /// Checks before saving. Empty fields are allowed (they turn the relay off); a filled field must be valid.
 pub fn validate(settings: &Settings) -> Result<(), String> {
-    if settings.mode == Mode::Supabase && [&settings.url, &settings.key, &settings.name, &settings.peer].iter().any(|field| field.is_empty()) {
-        return Err("Supabase mode needs the URL, the key, the display name and the peer key".to_string());
+    if settings.mode == Mode::Supabase && [&settings.url, &settings.key, &settings.name, &settings.room_code].iter().any(|field| field.is_empty()) {
+        return Err("Supabase mode needs the URL, the key, the display name and the room code".to_string());
     }
     if !settings.name.is_empty() && !relay_rest::valid_name(&settings.name) {
         return Err("name must be 1 to 32 characters without control characters".to_string());
     }
-    if !settings.peer.is_empty() && !relay_rest::valid_short_id(&settings.peer) {
-        return Err("peer ID must be 8 lowercase letters or digits".to_string());
+    if !settings.room_code.is_empty() && !relay_rest::valid_room_code(&settings.room_code) {
+        return Err("room code must be 8 uppercase letters or digits".to_string());
     }
     // Local mode keeps whatever was typed; the URL and key are checked when Supabase is in use.
     if settings.mode == Mode::Supabase {
@@ -115,7 +113,7 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
 pub fn save(state: &Path, settings: &Settings) -> Result<(), String> {
     validate(settings)?;
     fs::create_dir_all(state).map_err(|error| error.to_string())?;
-    let text = json!({"mode": settings.mode.as_str(), "url": settings.url, "key": settings.key, "name": settings.name, "peer": settings.peer}).to_string();
+    let text = json!({"mode": settings.mode.as_str(), "url": settings.url, "key": settings.key, "name": settings.name, "room_code": settings.room_code}).to_string();
     let temp = state.join(format!("{FILE}.{}.tmp", std::process::id()));
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -163,7 +161,7 @@ mod tests {
             url: "https://example.supabase.co".into(),
             key: "dummy-test-key".into(),
             name: "Alice".into(),
-            peer: "abcd2345".into(),
+            room_code: "ABCD2345".into(),
         }
     }
 
@@ -189,7 +187,7 @@ mod tests {
     fn empty_fields_are_allowed_and_bad_ones_are_refused() {
         assert!(validate(&Settings::default()).is_ok());
         assert!(validate(&Settings { name: "x".repeat(33), ..sample() }).is_err());
-        assert!(validate(&Settings { peer: "AB".repeat(32), ..sample() }).is_err());
+        assert!(validate(&Settings { room_code: "AB".repeat(32), ..sample() }).is_err());
         assert!(validate(&Settings { url: "http://example.com".into(), ..sample() }).is_err());
         assert!(validate(&Settings { key: String::new(), ..sample() }).is_err());
     }
@@ -206,10 +204,10 @@ mod tests {
 
     #[test]
     fn the_peer_id_is_eight_lowercase_characters_only() {
-        let base = Settings { mode: Mode::Supabase, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), peer: String::new() };
-        assert!(validate(&Settings { peer: "abcd2345".into(), ..base.clone() }).is_ok());
-        for bad in ["abcdefa", "abcdefghi", "ABCD2345", "ab".repeat(32).as_str()] {
-            assert!(validate(&Settings { peer: bad.into(), ..base.clone() }).is_err(), "{bad}");
+        let base = Settings { mode: Mode::Supabase, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), room_code: String::new() };
+        assert!(validate(&Settings { room_code: "ABCD2345".into(), ..base.clone() }).is_ok());
+        for bad in ["abcdefgh", "ABCDEFGHI", "abcd2345", "AB".repeat(32).as_str()] {
+            assert!(validate(&Settings { room_code: bad.into(), ..base.clone() }).is_err(), "{bad}");
         }
     }
 
@@ -218,7 +216,7 @@ mod tests {
         let dir = folder("old-peer");
         fs::create_dir_all(&dir).unwrap();
         fs::write(file_path(&dir), format!(r#"{{"mode":"supabase","url":"https://example.supabase.co","key":"k","name":"A","peer":"{}"}}"#, "ab".repeat(32))).unwrap();
-        assert_eq!(load_saved(&dir).peer, "");
+        assert_eq!(load_saved(&dir).room_code, "");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -277,10 +275,10 @@ mod tests {
 
     #[test]
     fn supabase_mode_needs_every_field() {
-        let full = Settings { mode: Mode::Supabase, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), peer: "abcd2345".into() };
+        let full = Settings { mode: Mode::Supabase, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), room_code: "ABCD2345".into() };
         assert!(validate(&full).is_ok());
         assert!(validate(&Settings { name: String::new(), ..full.clone() }).is_err());
-        assert!(validate(&Settings { peer: String::new(), ..full.clone() }).is_err());
+        assert!(validate(&Settings { room_code: String::new(), ..full.clone() }).is_err());
         assert!(validate(&Settings { url: String::new(), ..full.clone() }).is_err());
         assert!(validate(&Settings { key: String::new(), ..full.clone() }).is_err());
         assert!(validate(&Settings { mode: Mode::Local, name: String::new(), ..full }).is_ok(), "local mode keeps partial values");

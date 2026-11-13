@@ -39,6 +39,21 @@ herdr plugin install vrwolf1004/herdr-talk/python
 
 The Python edition encrypts the same way as the Rust edition (pure Python, no packages), so the two talk to each other after you compare codes and `/trust`. Only an older Python edition without keys needs `"plaintext": true` on the Rust side. See [docs/encryption-protocol.md](docs/encryption-protocol.md).
 
+### Windows GUI (standalone)
+
+A standalone Windows window (not in herdr) is also available:
+
+```sh
+# Build from source
+cd rust
+cargo build --release
+cd ../gui
+cargo build --release
+# Run: gui/target/release/herdr-talk-gui.exe
+```
+
+The GUI connects to a running `herdr-talk serve` through its control channel, or starts one automatically. Use Supabase for remote chat, or Local mode for LAN discovery.
+
 ## Actions
 
 | Action | What it does |

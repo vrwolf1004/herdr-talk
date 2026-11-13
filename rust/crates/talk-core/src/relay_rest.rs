@@ -106,6 +106,11 @@ pub fn valid_short_id(text: &str) -> bool {
     text.len() == 8 && text.bytes().all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
 }
 
+/// 8 uppercase characters, letters and digits: the room code shared by all peers in a room.
+pub fn valid_room_code(text: &str) -> bool {
+    text.len() == 8 && text.bytes().all(|byte| byte.is_ascii_digit() || byte.is_ascii_uppercase())
+}
+
 /// The bytes that are signed (v3): PUT_TAG, pk, noise_pk, short_id, name, ts, nonce, one per line, no newline at the end.
 pub fn put_message(pk: &str, noise_pk: &str, short_id: &str, name: &str, ts: u64, nonce: &str) -> String {
     format!("{PUT_TAG}\n{pk}\n{noise_pk}\n{short_id}\n{name}\n{ts}\n{nonce}")
@@ -253,6 +258,73 @@ pub fn read_get_response(status: u16, body: &str, pk: &str) -> Result<Option<Pee
     Ok(Some(Peer { pk: answered_pk.to_string(), name: name.to_string(), noise_pk: noise_pk.to_string() }))
 }
 
+/// Request to join a room by code.
+pub fn join_room_request(config: &Config, room_code: &str, peer_pk: &str, display_name: &str) -> Result<Request, String> {
+    if !valid_room_code(room_code) {
+        return Err("room_code must be 8 uppercase letters or digits".to_string());
+    }
+    if !valid_pk(peer_pk) {
+        return Err("peer_pk must be 64 lowercase hex characters".to_string());
+    }
+    if !valid_name(display_name) {
+        return Err("display_name must be 1 to 32 characters without control characters".to_string());
+    }
+    let mut headers = common_headers(config);
+    headers.push(("Content-Type".to_string(), "application/json".to_string()));
+    let name_json = serde_json::to_string(display_name).map_err(|error| error.to_string())?;
+    Ok(Request {
+        method: "POST",
+        url: format!("{}/functions/v1/join-room", config.url),
+        headers,
+        body: Some(format!(
+            r#"{{"room_code":"{room_code}","peer_pk":"{peer_pk}","display_name":{name_json}}}"#
+        )),
+    })
+}
+
+/// Response from join-room: room code, owner pk, and list of member pks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomInfo {
+    pub room_code: String,
+    pub owner_pk: String,
+    pub members: Vec<String>,
+}
+
+/// Parse the response from join-room Edge Function.
+pub fn read_join_room_response(status: u16, body: &str) -> Result<RoomInfo, String> {
+    if status != 200 {
+        return Err(format!("status {status}: {body}"));
+    }
+    let value: Value = serde_json::from_str(body).map_err(|_| "answer is not JSON".to_string())?;
+    let room_code = value["room_code"].as_str().ok_or("response has no room_code")?;
+    let owner_pk = value["owner_pk"].as_str().ok_or("response has no owner_pk")?;
+    let members = value["members"].as_array().ok_or("response has no members array")?;
+    
+    if !valid_room_code(room_code) {
+        return Err("room_code is not valid".to_string());
+    }
+    if !valid_pk(owner_pk) {
+        return Err("owner_pk is not valid".to_string());
+    }
+    
+    let members: Result<Vec<String>, String> = members
+        .iter()
+        .map(|m| {
+            let pk = m.as_str().ok_or("member is not a string".to_string())?;
+            if !valid_pk(pk) {
+                return Err("member pk is not valid".to_string());
+            }
+            Ok(pk.to_string())
+        })
+        .collect();
+    
+    Ok(RoomInfo {
+        room_code: room_code.to_string(),
+        owner_pk: owner_pk.to_string(),
+        members: members?,
+    })
+}
+
 /// Lookup by short ID: `short_id = eq.<id>`, at most one row (the column is unique).
 pub fn short_id_request(config: &Config, short_id: &str) -> Result<Request, String> {
     if !valid_short_id(short_id) {
@@ -350,6 +422,21 @@ pub fn get_peer(config: &Config, pk: &str) -> Option<Peer> {
     let status = response.status().as_u16();
     let body = response.body_mut().read_to_string().ok()?;
     read_get_response(status, &body, pk).ok().flatten()
+}
+
+/// Execute an HTTP POST request and return (status, body).
+pub fn http_post(request: &Request) -> Result<(u16, String), String> {
+    // Create a dummy config for the agent (we only need a timeout, URL will be from request)
+    let dummy_config = Config { url: "http://127.0.0.1".to_string(), key: String::new() };
+    let mut builder = agent_within(&dummy_config, TIMEOUT).post(&request.url);
+    for (key, value) in &request.headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+    let body = request.body.clone().unwrap_or_default();
+    let mut response = builder.send(body.as_str()).map_err(|e| format!("HTTP error: {e}"))?;
+    let status = response.status().as_u16();
+    let response_body = response.body_mut().read_to_string().map_err(|e| format!("Failed to read response: {e}"))?;
+    Ok((status, response_body))
 }
 
 #[cfg(test)]

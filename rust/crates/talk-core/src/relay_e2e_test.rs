@@ -6,7 +6,7 @@
 
 use crate::chat::{Chat, Me};
 use crate::relay::channel_name;
-use crate::relay_chat::{self, Session};
+use crate::relay_chat::{self, peer_relay::Session};
 use crate::relay_realtime::{self, Frame, Link};
 use crate::relay_rest;
 use crate::store::{self, Trusted};
@@ -136,7 +136,7 @@ fn a_message_goes_from_one_chat_to_the_other_through_the_relay() {
     let mut alice_link = Link::connect(&config, &channel).unwrap();
     let mut bob_link = Link::connect(&config, &channel).unwrap();
 
-    relay_chat::send_text(&alice_chat, &config, &bob_pk, &alice_session, &bob_noise.public, &mut alice_link, "hello over relay").unwrap();
+    relay_chat::peer_relay::send_text(&alice_chat, &config, &bob_pk, &alice_session, &bob_noise.public, &mut alice_link, "hello over relay").unwrap();
 
     let mut received = None;
     for _ in 0..200 {
@@ -148,8 +148,8 @@ fn a_message_goes_from_one_chat_to_the_other_through_the_relay() {
     let line = received.expect("Bob receives the envelope");
     let mut cache = crate::relay_replay::NonceCache::default();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    assert!(relay_chat::receive(&bob_chat, &line, &bob_session, &alice_noise.public, &mut cache, now));
-    assert!(!relay_chat::receive(&bob_chat, &line, &bob_session, &alice_noise.public, &mut cache, now), "the same envelope twice is refused");
+    assert!(relay_chat::peer_relay::receive(&bob_chat, &line, &bob_session, &alice_noise.public, &mut cache, now));
+    assert!(!relay_chat::peer_relay::receive(&bob_chat, &line, &bob_session, &alice_noise.public, &mut cache, now), "the same envelope twice is refused");
 
     let lines = bob_chat.lines();
     let last = lines.last().unwrap();
@@ -174,6 +174,6 @@ fn a_peer_that_is_not_verified_gets_nothing() {
     let alice_chat = chat_for("Alice", ("Bob", bob_noise.public.clone()));
     let channel = channel_name(&alice_noise.public, &bob_noise.public);
     let mut alice_link = Link::connect(&config, &channel).unwrap();
-    let result = relay_chat::send_text(&alice_chat, &config, &bob_pk, &alice_session, &bob_noise.public, &mut alice_link, "secret");
+    let result = relay_chat::peer_relay::send_text(&alice_chat, &config, &bob_pk, &alice_session, &bob_noise.public, &mut alice_link, "secret");
     assert!(result.is_err(), "not sent to an unverified row");
 }

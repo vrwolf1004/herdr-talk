@@ -1,76 +1,26 @@
-//! Relay path of the chat (stage 1, Rust TUI). Runs beside the LAN path, never instead of it.
+//! Peer-to-peer relay logic: direct connection to one peer via Supabase relay channels.
 //!
-//! Sending: the peer's row is read with get_peer; its noise_pk must be a key the user verified with /trust. Then the
-//! text is sealed into one Noise IK message (the first message of IK carries the payload, so the receiver learns and
-//! checks the sender's static key) and sent as an envelope on the channel channel_name(my noise key, peer noise key).
-//! Receiving: relay::open and the verified-sender check (relay_realtime::accept), then Noise decryption, then one line.
-//! Nothing is stored. Failures are silent on receive; on send a short notice says why nothing went out.
+//! Messages are sent/received through Noise-encrypted envelopes on a channel named after both noise keys.
 
 use crate::chat::{Chat, Line, MAX_TEXT_CHARS};
-use crate::net::noise_builder;
 use crate::relay;
 use crate::relay_key;
-use crate::relay_realtime::{self, Link};
+use crate::relay_realtime::Link;
 use crate::relay_replay::NonceCache;
-use crate::relay_rest::{self, Config, Peer, PutOutcome};
-use crate::relay_settings::{self, Mode, Settings};
+use crate::relay_rest::{self, Config, Peer};
+use crate::relay_settings::{Mode, Settings};
 use crate::store;
 use crate::text::clean_text;
-use ed25519_dalek::SigningKey;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const RETRY: Duration = Duration::from_secs(5);
-const PEER_WAIT: Duration = Duration::from_secs(30);
 const SLICE: Duration = Duration::from_millis(200);
+pub(crate) const RETRY: Duration = Duration::from_secs(10);
+pub(crate) const PEER_WAIT: Duration = Duration::from_secs(30);
 const NOISE_MAX: usize = 65535;
-const PUT_TRIES: usize = 5;
-
-/// This PC's relay identity: the Ed25519 public key (the row key) and the X25519 Noise public key (the envelope key).
-pub fn my_keys(state: &Path) -> Result<(String, String), String> {
-    let seed = relay_key::load_or_create(state)?;
-    let public = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
-    let noise = store::read_identity(state).map_err(|error| error.to_string())?.ok_or("no identity yet: start a chat first")?;
-    Ok((store::to_hex(&public), store::to_hex(&noise.public)))
-}
-
-/// Start the relay for the saved or environment settings, replacing any relay that runs. Ok(false): relay is off.
-pub fn start(chat: &Arc<Chat>, state: &Path) -> Result<bool, String> {
-    start_with(chat, state, relay_settings::effective(state))
-}
-
-/// The same start with the settings given (tests use this; the environment is not read).
-pub fn start_with(chat: &Arc<Chat>, state: &Path, settings: Settings) -> Result<bool, String> {
-    chat.stop_relay();
-    // The mode decides the path: in Local mode the LAN carries messages and no relay runs.
-    chat.set_supabase_mode(settings.mode == Mode::Supabase);
-    if settings.mode != Mode::Supabase {
-        chat.set_relay_status("");
-        return Ok(false);
-    }
-    if settings.url.is_empty() && settings.key.is_empty() && settings.peer.is_empty() {
-        chat.set_relay_status("");
-        return Ok(false);
-    }
-    let Some(config) = relay_rest::config(Some(&settings.url), Some(&settings.key))? else {
-        chat.set_relay_status("relay: settings incomplete");
-        return Ok(false);
-    };
-    if !relay_rest::valid_short_id(&settings.peer) {
-        chat.set_relay_status("relay: peer ID missing or old (enter the 8-character ID)");
-        return Ok(false);
-    }
-    let (tx, rx) = mpsc::channel();
-    let stop = Arc::new(AtomicBool::new(false));
-    chat.attach_relay(tx, stop.clone());
-    let (chat, state) = (chat.clone(), state.to_path_buf());
-    thread::spawn(move || run(&chat, &state, &config, &settings, &rx, &stop));
-    Ok(true)
-}
 
 /// Keys and names the relay thread needs, all read once at start.
 pub(crate) struct Session {
@@ -80,110 +30,16 @@ pub(crate) struct Session {
     pub(crate) noise_public: Vec<u8>,
 }
 
-fn session(state: &Path) -> Result<Session, String> {
+/// Create a Session from the state folder.
+pub(crate) fn session(state: &Path) -> Result<Session, String> {
     let seed = relay_key::load_or_create(state)?;
     let identity = store::read_identity(state).map_err(|error| error.to_string())?.ok_or("no identity yet: start a chat first")?;
     let short_id = relay_key::short_id(state)?;
     Ok(Session { seed, short_id, noise_secret: identity.secret, noise_public: identity.public })
 }
 
-fn run(chat: &Chat, state: &Path, config: &Config, settings: &Settings, rx: &Receiver<String>, stop: &AtomicBool) {
-    // Nonces seen in this run. A restart empties it (see relay_replay).
-    let mut cache = NonceCache::default();
-    let session = match session(state) {
-        Ok(session) => session,
-        Err(error) => return chat.set_relay_status(&format!("relay: {error}")),
-    };
-    // Publish this PC's row (name and Noise key, signed). A failure is shown, and the chat continues.
-    if relay_rest::valid_name(&settings.name) {
-        let noise = store::to_hex(&session.noise_public);
-        let mut short_id = session.short_id.clone();
-        let mut outcome = PutOutcome::Failed;
-        // A 409 means another key has this short ID: take a new one and try again, up to PUT_TRIES times.
-        for _ in 0..PUT_TRIES {
-            outcome = relay_rest::put_peer(config, &session.seed, &noise, &short_id, &settings.name);
-            if outcome != PutOutcome::Taken {
-                break;
-            }
-            match relay_key::replace_short_id(state) {
-                Ok(next) => short_id = next,
-                Err(error) => return chat.set_relay_status(&format!("relay: {error}")),
-            }
-        }
-        if outcome != PutOutcome::Written {
-            chat.set_relay_status("relay: could not publish this PC's row");
-        }
-    }
-    while !stop.load(Ordering::Relaxed) {
-        // The peer is looked up again on every round; from then on its full key is used.
-        let peer = match relay_rest::find_peer(config, &settings.peer) {
-            Ok(peer) => peer,
-            Err(error) => {
-                chat.set_relay_status(&format!("relay: {error}"));
-                wait(chat, rx, stop, PEER_WAIT);
-                continue;
-            }
-        };
-        let peer_pk = peer.pk.clone();
-        // /trust can verify this peer by its Noise key from the row.
-        if let Some(key) = store::from_hex(&peer.noise_pk) {
-            chat.set_relay_candidate(&peer.name, key);
-        }
-        let Some(theirs) = verified_key(chat, &peer) else {
-            chat.set_relay_status("relay: peer not verified yet (use /trust)");
-            wait(chat, rx, stop, PEER_WAIT);
-            continue;
-        };
-        let channel = relay::channel_name(&session.noise_public, &theirs);
-        let mut link = match Link::connect(config, &channel) {
-            Ok(link) => link,
-            Err(error) => {
-                chat.set_relay_status(&format!("relay: {error}, retrying"));
-                wait(chat, rx, stop, RETRY);
-                continue;
-            }
-        };
-        chat.set_relay_status("relay: connected");
-        while !stop.load(Ordering::Relaxed) {
-            while let Ok(text) = rx.try_recv() {
-                if let Err(error) = send_text(chat, config, &peer_pk, &session, &theirs, &mut link, &text) {
-                    chat.say(error);
-                }
-            }
-            match link.poll_envelope() {
-                Ok(Some(line)) => {
-                    receive(chat, &line, &session, &theirs, &mut cache, now_secs());
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    chat.set_relay_status(&format!("relay: {error}, retrying"));
-                    break;
-                }
-            }
-        }
-    }
-}
-
-/// Leave the relay when this node stops normally: delete this PC's own row (signed, pk and short id). Best effort and a
-/// few seconds at most. Nothing is sent when the relay is off, the key files are missing, or another live node still uses
-/// this folder. A failure is ignored: the row then stays until the owner removes it.
-pub fn leave(state: &Path) {
-    if !store::other_node_running(state) {
-        leave_with(state, &relay_settings::effective(state), relay_rest::TIMEOUT);
-    }
-}
-
-/// Limit for the delete of a dead node's row. Shorter than a normal request: several folders may wait in line.
-const DEAD_LEAVE_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// The same delete for any node folder, with that folder's settings and keys. The caller makes sure no live node uses
-/// the folder (a node that ended without cleaning up, see store::remove_dead_sessions).
-pub fn leave_folder(state: &Path) {
-    leave_with(state, &relay_settings::effective(state), DEAD_LEAVE_TIMEOUT);
-}
-
-/// True when the relay accepted the delete. False without a request when the relay is off or a key file is missing.
-fn leave_with(state: &Path, settings: &Settings, timeout: Duration) -> bool {
+/// Delete this PC's own row (signed, pk and short id). Best effort and a few seconds at most.
+pub(crate) fn leave_with(state: &Path, settings: &Settings, timeout: Duration) -> bool {
     if settings.mode != Mode::Supabase {
         return false;
     }
@@ -202,7 +58,7 @@ fn verified_key(chat: &Chat, peer: &Peer) -> Option<Vec<u8>> {
 }
 
 /// Sleep for `time`, in slices so a stop is seen. Texts typed meanwhile are not sent: a notice says so.
-fn wait(chat: &Chat, rx: &Receiver<String>, stop: &AtomicBool, time: Duration) {
+pub(crate) fn wait(chat: &Chat, rx: &Receiver<String>, stop: &AtomicBool, time: Duration) {
     let until = Instant::now() + time;
     while Instant::now() < until && !stop.load(Ordering::Relaxed) && !chat.take_relay_wake() {
         while let Ok(_text) = rx.try_recv() {
@@ -262,7 +118,7 @@ fn now_secs() -> u64 {
 /// Receive one envelope line. Order: envelope check, decryption, format (v1), time window, nonce not used before,
 /// then the line. Every failure is silent. Returns true when a line was shown.
 pub(crate) fn receive(chat: &Chat, line: &str, session: &Session, theirs: &[u8], cache: &mut NonceCache, now: u64) -> bool {
-    let Ok(envelope) = relay_realtime::accept(line, &session.noise_public, theirs) else { return false };
+    let Ok(envelope) = crate::relay_realtime::accept(line, &session.noise_public, theirs) else { return false };
     let Some(payload) = open_payload(&session.noise_secret, theirs, &envelope.ct) else { return false };
     let Some((ts, nonce, text)) = parse_payload(&payload) else { return false };
     if !cache.accept(&nonce, ts, now) {
@@ -279,7 +135,7 @@ pub(crate) fn receive(chat: &Chat, line: &str, session: &Session, theirs: &[u8],
 
 /// One Noise IK message carrying the text as its payload (initiator side).
 fn seal_payload(secret: &[u8], peer_key: &[u8], text: &str) -> Result<Vec<u8>, String> {
-    let mut handshake = noise_builder()
+    let mut handshake = crate::net::noise_builder()
         .local_private_key(secret)
         .and_then(|builder| builder.remote_public_key(peer_key))
         .and_then(|builder| builder.build_initiator())
@@ -292,7 +148,7 @@ fn seal_payload(secret: &[u8], peer_key: &[u8], text: &str) -> Result<Vec<u8>, S
 
 /// The text of one IK message from `expected` (responder side). None when it does not verify.
 fn open_payload(secret: &[u8], expected: &[u8], ciphertext: &[u8]) -> Option<String> {
-    let mut handshake = noise_builder().local_private_key(secret).ok()?.build_responder().ok()?;
+    let mut handshake = crate::net::noise_builder().local_private_key(secret).ok()?.build_responder().ok()?;
     let mut buffer = vec![0u8; NOISE_MAX];
     let length = handshake.read_message(ciphertext, &mut buffer).ok()?;
     if handshake.get_remote_static()? != expected {
@@ -306,7 +162,7 @@ mod tests {
     use super::*;
 
     /// A node folder (keys made when asked) and the settings that point at a one-shot local relay.
-    fn leaving(name: &str, mode: Mode, keys: bool) -> (std::path::PathBuf, Settings, std::sync::mpsc::Receiver<String>) {
+    fn leaving(name: &str, mode: crate::relay_settings::Mode, keys: bool) -> (std::path::PathBuf, Settings, std::sync::mpsc::Receiver<String>) {
         let state = std::env::temp_dir().join(format!("herdr-talk-relay-leave-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&state);
         std::fs::create_dir_all(&state).unwrap();
@@ -322,7 +178,7 @@ mod tests {
     #[test]
     fn leaving_a_folder_with_keys_sends_one_signed_delete() {
         let (state, settings, received) = leaving("keys", Mode::Supabase, true);
-        assert!(leave_with(&state, &settings, DEAD_LEAVE_TIMEOUT));
+        assert!(leave_with(&state, &settings, Duration::from_secs(3)));
         let raw = received.recv().unwrap();
         assert!(raw.starts_with("POST /functions/v1/delete-peer HTTP/1.1\r\n"), "{raw}");
         assert!(raw.contains(&format!(r#""short_id":"{}""#, relay_key::short_id(&state).unwrap())), "{raw}");
@@ -333,7 +189,7 @@ mod tests {
     fn leaving_sends_nothing_when_the_relay_is_off_or_the_keys_are_missing() {
         for (name, mode, keys) in [("local", Mode::Local, true), ("keyless", Mode::Supabase, false)] {
             let (state, settings, received) = leaving(name, mode, keys);
-            assert!(!leave_with(&state, &settings, DEAD_LEAVE_TIMEOUT));
+            assert!(!leave_with(&state, &settings, Duration::from_secs(3)));
             assert!(received.try_recv().is_err(), "{name}: no request");
             assert_eq!(state.join(relay_key::KEY_FILE).exists(), keys, "{name}: no key is made on the way out");
             std::fs::remove_dir_all(&state).unwrap();
@@ -352,28 +208,6 @@ mod tests {
     }
 
     #[test]
-    fn start_is_off_without_settings_and_refuses_a_bad_url() {
-        let chat = Arc::new(Chat::new(crate::chat::Me { id: "a".into(), name: "A".into(), port: 1, key: vec![], secret: vec![] }));
-        let state = std::env::temp_dir().join(format!("herdr-talk-relay-start-{}", std::process::id()));
-        assert_eq!(start_with(&chat, &state, Settings::default()), Ok(false));
-        assert_eq!(chat.relay_status(), "");
-        let bad = Settings { mode: Mode::Supabase, url: "http://example.com".into(), key: "k".into(), ..Settings::default() };
-        assert!(start_with(&chat, &state, bad).is_err());
-        // The chat itself still works: a command is echoed.
-        assert!(chat.handle("/help"));
-        assert!(chat.lines().iter().any(|line| line.text == "> /help"));
-    }
-
-    #[test]
-    fn start_with_valid_settings_runs_until_stopped() {
-        let chat = Arc::new(Chat::new(crate::chat::Me { id: "a".into(), name: "A".into(), port: 1, key: vec![], secret: vec![] }));
-        let state = std::env::temp_dir().join(format!("herdr-talk-relay-run-{}", std::process::id()));
-        let settings = Settings { mode: Mode::Supabase, url: "http://127.0.0.1:9".into(), key: "dummy-test-key".into(), name: String::new(), peer: "abcd2345".into() };
-        assert_eq!(start_with(&chat, &state, settings), Ok(true));
-        chat.stop_relay();
-    }
-
-    #[test]
     fn verified_key_needs_a_trusted_noise_key() {
         let chat = Chat::new(crate::chat::Me { id: "me".into(), name: "Me".into(), port: 1, key: vec![1; 32], secret: vec![2; 32] });
         let peer = Peer { pk: "11".repeat(32), name: "Bob".into(), noise_pk: "22".repeat(32) };
@@ -381,7 +215,6 @@ mod tests {
         chat.trusted.lock().unwrap().push(crate::store::Trusted { name: "Bob".into(), key: vec![0x22; 32], ip: "10.0.0.2".into() });
         assert_eq!(verified_key(&chat, &peer), Some(vec![0x22; 32]));
     }
-
 
     fn now() -> u64 {
         now_secs()
@@ -439,26 +272,5 @@ mod tests {
         assert!(receive(&chat, &again, &bob_session, &alice.public, &mut cache, now));
         assert_eq!(chat.lines().iter().filter(|line| line.text == "ok 299").count(), 2);
         assert!(chat.lines().iter().all(|line| line.text != "v2" && line.text != "late"));
-    }
-
-    #[test]
-    fn local_mode_never_starts_the_relay_even_with_relay_values() {
-        let chat = Arc::new(Chat::new(crate::chat::Me { id: "a".into(), name: "A".into(), port: 1, key: vec![], secret: vec![] }));
-        let state = std::env::temp_dir().join(format!("herdr-talk-relay-local-{}", std::process::id()));
-        let settings = Settings { mode: Mode::Local, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), peer: "abcd2345".into() };
-        assert_eq!(start_with(&chat, &state, settings), Ok(false));
-        assert!(!chat.is_supabase());
-        assert_eq!(chat.relay_status(), "");
-    }
-
-    #[test]
-    fn supabase_mode_turns_the_lan_path_off() {
-        let chat = Arc::new(Chat::new(crate::chat::Me { id: "a".into(), name: "A".into(), port: 1, key: vec![], secret: vec![] }));
-        let state = std::env::temp_dir().join(format!("herdr-talk-relay-mode-{}", std::process::id()));
-        let settings = Settings { mode: Mode::Supabase, url: "http://127.0.0.1:9".into(), key: "k".into(), name: "A".into(), peer: "abcd2345".into() };
-        assert_eq!(start_with(&chat, &state, settings), Ok(true));
-        assert!(chat.is_supabase());
-        assert_eq!(chat.mode_name(), "supabase");
-        chat.stop_relay();
     }
 }

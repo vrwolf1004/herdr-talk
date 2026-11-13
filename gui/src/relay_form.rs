@@ -16,7 +16,7 @@ fn labels() -> [String; 4] {
         t("gui.relay.label.url", &[]),
         t("gui.relay.label.key", &[]),
         t("gui.relay.label.name", &[]),
-        t("gui.relay.label.peer", &[]),
+        t("gui.relay.label.room_code", &[]),
     ]
 }
 const KEY_FIELD: usize = 1;
@@ -56,7 +56,7 @@ impl Form {
         let message = if mine.is_none() { t("gui.relay.no_keys", &[]) } else { String::new() };
         Form {
             mode: saved.mode,
-            fields: [saved.url, saved.key, saved.name, saved.peer],
+            fields: [saved.url, saved.key, saved.name, saved.room_code],
             message,
             from_env: relay_settings::from_environment(),
             mine,
@@ -78,7 +78,7 @@ impl Form {
             url: self.fields[0].trim().to_string(),
             key: self.fields[1].trim().to_string(),
             name: self.fields[2].trim().to_string(),
-            peer: self.fields[3].trim().to_string(),
+            room_code: self.fields[3].trim().to_string(),
         }
     }
 

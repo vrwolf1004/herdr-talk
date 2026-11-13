@@ -54,9 +54,16 @@ cargo run -p herdr-talk -- serve --name test
 The GUI is a separate crate. Build `herdr-talk` first so the GUI finds `rust/target/release/herdr-talk.exe`, then:
 
 ```sh
-cd gui
-cargo run --release
+# Build herdr-talk Rust binary
+cd rust
+cargo build --release
+
+# Build GUI
+cd ../gui
+cargo build --release
 ```
+
+The GUI binary is at `gui/target/release/herdr-talk-gui.exe`. Run it directly; it will start `herdr-talk serve` in the background if needed.
 
 Cargo cannot overwrite a running exe on Windows. Close the GUI and any `serve` before rebuilding, or use another `CARGO_TARGET_DIR`. The GUI does not build with the `rust/` workspace, so run its checks inside `gui/` too.
 
