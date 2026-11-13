@@ -6,6 +6,11 @@ UI languages: English · Korean · Russian · French · Spanish · German · Jap
 
 Chat with people on other PCs from inside herdr. Nearby peers connect directly over the same network without a chat server.
 
+> **⚠ Urgent fix in progress (2026-11-13)**
+> - **Supabase room mode:** room tables were readable by anyone before migration 0006. Migration 0006 is applied on the production project. Request signing and end-to-end checks of the room functions are not fully verified yet.
+> - **LAN pairing (SAS code):** implemented, not yet tested on two PCs. Rust and Python nodes are not yet confirmed to connect to each other.
+> - Do not use this build for sensitive chats until these are verified.
+
 ## Dashboard design
 
 Chat pane:
