@@ -3,15 +3,23 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 os.environ.setdefault("HERDR_TALK_LANG", "en")
 
 import relay_form  # noqa: E402
+import relay_key  # noqa: E402
+import relay_rest  # noqa: E402
 import relay_settings  # noqa: E402
+
+
+CTRL_N = ""
 
 
 class Clock:
@@ -84,6 +92,13 @@ class SettingsFormTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="herdr-talk-form-")
         self.old_env = {name: os.environ.pop(name, None) for name in ("HERDR_TALK_RELAY_URL", "HERDR_TALK_RELAY_KEY")}
+        # The owner row is written before a create: no network and no identity files in these tests.
+        patches = [mock.patch.object(relay_key, "noise_public_hex", return_value="bb" * 32),
+                   mock.patch.object(relay_key, "load_or_create_short_id", return_value="ABCD2345"),
+                   mock.patch.object(relay_rest, "put_status", return_value=201)]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -115,28 +130,98 @@ class SettingsFormTests(unittest.TestCase):
         form.focus = 4
         self.assertIsNone(form.on_key("\r"))
         self.assertIn("Not saved. Missing: Project URL", form.message)
-        self.assertIn("Peer id (8 characters)", form.message)
+        self.assertIn("Room id (8 characters)", form.message)
         self.assertFalse(os.path.exists(os.path.join(self.dir, relay_settings.FILE)))
 
     def test_a_complete_supabase_save(self):
         form = self._form()
         form.open_supabase()
         self.assertEqual(form.focus, 1)
-        for value in ("https://x.supabase.co", "dummy-test-key", "Alice", "ab12cd34"):
+        for value in ("https://x.supabase.co", "dummy-test-key", "Alice"):
             self._type(form, value)
             form.on_key("\r")
+        self._type(form, "ABCD1234")
+        self.assertEqual(form.on_key("\r"), "saved")
         self.assertEqual(relay_settings.load_saved(self.dir)["mode"], "supabase")
         self.assertIn("Supabase mode", form.message)
 
-    def test_a_bad_peer_key_is_refused(self):
+    def test_a_bad_room_code_is_refused(self):
         form = self._form()
         form.open_supabase()
-        for value in ("https://x.supabase.co", "dummy-test-key", "Alice", "XY"):
+        for value in ("https://x.supabase.co", "dummy-test-key", "Alice"):
             self._type(form, value)
-            if value != "XY":
-                form.on_key("\r")
+            form.on_key("\r")
+        self._type(form, "XY")
         self.assertIsNone(form.on_key("\r"))
         self.assertIn("not saved", form.message)
+
+    def _finish(self, form):
+        """Wait for the background create-room request and apply its answer."""
+        for _ in range(200):
+            if form.poll():
+                return
+            time.sleep(0.01)
+        self.fail("create room did not come back")
+
+    def test_ctrl_n_needs_supabase_keys_and_fills_the_room_field(self):
+        form = self._form()
+        form.on_key(CTRL_N)
+        self.assertIn("Supabase mode first", form.message)
+        form.open_supabase()
+        form.on_key(CTRL_N)
+        self.assertIn("fill in", form.message)
+        form.fields[:3] = ["https://x.supabase.co", "dummy-test-key", "Alice"]
+        with mock.patch.object(relay_rest, "create_room", return_value="ABCD1234") as create:
+            form.on_key(CTRL_N)
+            self._finish(form)
+        self.assertEqual(form.fields[3], "ABCD1234")
+        self.assertIn("room created: ABCD1234", form.message)
+        self.assertEqual(create.call_args.args[2], "Alice")  # the signing seed is the second argument; it is not shown
+        with mock.patch.object(relay_rest, "create_room", side_effect=OSError("offline")):
+            form.on_key(CTRL_N)
+            self._finish(form)
+        self.assertIn("create room failed: offline", form.message)
+
+    def test_a_failed_row_write_stops_the_create(self):
+        form = self._form()
+        form.open_supabase()
+        form.fields[:3] = ["https://x.supabase.co", "dummy-test-key", "Alice"]
+        with mock.patch.object(relay_rest, "put_status", return_value=409),                 mock.patch.object(relay_rest, "create_room") as create:
+            form.on_key(CTRL_N)
+            self._finish(form)
+        create.assert_not_called()
+        self.assertIn("409", form.message)
+        self.assertEqual(form.fields[3], "")
+
+    def test_the_row_is_written_before_the_create(self):
+        form = self._form()
+        form.open_supabase()
+        form.fields[:3] = ["https://x.supabase.co", "dummy-test-key", "Alice"]
+        order = []
+        with mock.patch.object(relay_rest, "put_status", side_effect=lambda *a: order.append("row") or 204),                 mock.patch.object(relay_rest, "create_room", side_effect=lambda *a: order.append("create") or "ABCD1234"):
+            form.on_key(CTRL_N)
+            self._finish(form)
+        self.assertEqual(order, ["row", "create"])
+
+    def test_ctrl_n_does_not_wait_for_the_relay(self):
+        form = self._form()
+        form.open_supabase()
+        form.fields[:3] = ["https://x.supabase.co", "dummy-test-key", "Alice"]
+        release = threading.Event()
+
+        def slow(config, peer_pk, name):
+            release.wait(5)
+            return "ABCD1234"
+
+        with mock.patch.object(relay_rest, "create_room", side_effect=slow):
+            started = time.monotonic()
+            form.on_key(CTRL_N)
+            self.assertLess(time.monotonic() - started, 1.0, "the key returns at once")
+            self.assertEqual(form.message, "create room: working...")
+            self.assertFalse(form.poll(), "no answer yet")
+            release.set()
+            self._finish(form)
+        self.assertEqual(form.fields[3], "ABCD1234")
 
     def test_escape_leaves_without_saving(self):
         form = self._form()
@@ -163,7 +248,7 @@ class SettingsFormTests(unittest.TestCase):
         self.assertIn("aa" * 32, text)
 
     def test_saved_values_are_loaded_and_the_mode_row_shows_the_mode(self):
-        relay_settings.save(self.dir, {"mode": "supabase", "url": "https://x.supabase.co", "key": "k", "name": "Alice", "peer": "ab12cd34"})
+        relay_settings.save(self.dir, {"mode": "supabase", "url": "https://x.supabase.co", "key": "k", "name": "Alice", "room_code": "ABCD1234"})
         form = self._form()
         self.assertEqual(form.mode, "supabase")
         self.assertIn("[Supabase]", _plain(form.render(100, 30)))

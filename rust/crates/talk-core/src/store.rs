@@ -39,21 +39,62 @@ pub fn key_label(key: &[u8]) -> String {
     peer_id(key)[..8].to_string()
 }
 
-/// Code both users compare on their screens: 128 bits of SHA-256 over the two public keys, sorted,
-/// so both PCs compute the same value. Each side has its own key in the hash, so one attacker cannot
-/// make the two screens show the same code for two different keys (a short code could be collided).
+/// The characters of a code: digits and capital letters (36 of them).
+const CODE_ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/// Code both users compare on their screens: the first 8 bytes of SHA-256 over the two public keys, sorted (so both PCs
+/// compute the same value), each byte mod 36 into CODE_ALPHABET, shown as XXXX-XXXX. Each side has its own key in the
+/// hash, so one attacker cannot make the two screens show the same code for two different keys.
 pub fn fingerprint(own: &[u8], peer: &[u8]) -> String {
     let (first, second) = if own <= peer { (own, peer) } else { (peer, own) };
     let mut hasher = Sha256::new();
     hasher.update(first);
     hasher.update(second);
-    let hex = to_hex(&hasher.finalize()[..16]);
-    (0..32).step_by(4).map(|index| &hex[index..index + 4]).collect::<Vec<_>>().join("-")
+    let code: String = hasher.finalize()[..8].iter().map(|byte| CODE_ALPHABET[usize::from(*byte) % 36] as char).collect();
+    format!("{}-{}", &code[..4], &code[4..])
 }
 
-/// What the user types for a code: no dashes, spaces or capitals.
+const COMMIT_TAG: &[u8] = b"herdr-talk-commit-v1";
+const SAS_TAG: &[u8] = b"herdr-talk-sas-v1";
+
+/// The commitment a peer announces before any reveal: SHA-256 over the tag, its public key and its 32-byte nonce.
+pub fn commit(public_key: &[u8], nonce: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(COMMIT_TAG);
+    hasher.update(public_key);
+    hasher.update(nonce);
+    hasher.finalize().into()
+}
+
+/// The short code both users compare: SHA-256 over the tag and the two (key, nonce) pairs sorted by key. The first 8
+/// bytes, read as a big-endian integer, mod 36^8, in the 36 characters 0-9 A-Z, shown as XXXX-XXXX. Same rule as
+/// python/src/store.py sas_code.
+pub fn sas_code(own_key: &[u8], own_nonce: &[u8], peer_key: &[u8], peer_nonce: &[u8]) -> String {
+    let ((first_key, first_nonce), (second_key, second_nonce)) = if own_key <= peer_key {
+        ((own_key, own_nonce), (peer_key, peer_nonce))
+    } else {
+        ((peer_key, peer_nonce), (own_key, own_nonce))
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(SAS_TAG);
+    hasher.update(first_key);
+    hasher.update(first_nonce);
+    hasher.update(second_key);
+    hasher.update(second_nonce);
+    let digest = hasher.finalize();
+    let mut value = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes")) % 36u64.pow(8);
+    let mut chars = [0u8; 8];
+    for slot in chars.iter_mut().rev() {
+        *slot = CODE_ALPHABET[(value % 36) as usize];
+        value /= 36;
+    }
+    let code: String = chars.iter().map(|byte| *byte as char).collect();
+    format!("{}-{}", &code[..4], &code[4..])
+}
+
+/// What the user types for a code: no dashes, spaces; capitals are accepted and made uppercase.
 pub fn normalize_code(text: &str) -> String {
-    text.chars().filter(|ch| !ch.is_whitespace() && *ch != '-').collect::<String>().to_lowercase()
+    text.chars().filter(|ch| !ch.is_whitespace() && *ch != '-').collect::<String>().to_uppercase()
 }
 
 pub fn to_hex(bytes: &[u8]) -> String {
@@ -387,15 +428,34 @@ mod tests {
     fn codes_ignore_dashes_spaces_and_case() {
         let (own, peer) = ([3u8; 32], [4u8; 32]);
         let code = fingerprint(&own, &peer);
-        assert_eq!(normalize_code(&format!(" {} ", code.to_uppercase())), normalize_code(&code));
-        assert_eq!(normalize_code("A B-C"), "abc");
+        assert_eq!(normalize_code(&format!(" {} ", code.to_lowercase())), normalize_code(&code));
+        assert_eq!(normalize_code(&code), code.replace('-', ""));
+        assert_eq!(normalize_code("a b-c"), "ABC");
+    }
+
+    #[test]
+    fn sas_and_commit_match_the_python_reference() {
+        // Vectors from python/src/store.py (same values in the Python tests).
+        assert_eq!(commit(&[1; 32], &[2; 32]).iter().map(|b| format!("{b:02x}")).collect::<String>(), "8d02d5ba2bcdc8c3392ffda99d1a66c4eede8c57cc4443c7d0fc00d5f39d7b59");
+        assert_eq!(sas_code(&[1; 32], &[2; 32], &[3; 32], &[4; 32]), "HWCF-KZ1W");
+        assert_eq!(sas_code(&[3; 32], &[4; 32], &[1; 32], &[2; 32]), "HWCF-KZ1W", "order does not matter");
+        let initiator = store_vector("initiatorPublic");
+        let responder = store_vector("responderPublic");
+        assert_eq!(sas_code(&initiator, &[0x11; 32], &responder, &[0x22; 32]), "I81X-P7D6");
+        assert_ne!(sas_code(&initiator, &[0x11; 32], &responder, &[0x23; 32]), "I81X-P7D6", "a changed nonce changes the code");
+    }
+
+    fn store_vector(key: &str) -> Vec<u8> {
+        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mobile/test-vectors/relay.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        from_hex(value["outputs"][key].as_str().unwrap()).unwrap()
     }
 
     #[test]
     fn both_sides_compute_the_same_code() {
         let (a, b) = ([3u8; 32], [4u8; 32]);
         assert_eq!(fingerprint(&a, &b), fingerprint(&b, &a));
-        assert_eq!(fingerprint(&a, &b).len(), 32 + 7);
+        assert_eq!(fingerprint(&a, &b).len(), 8 + 1);
         assert_ne!(fingerprint(&a, &b), fingerprint(&a, &[5u8; 32]));
     }
 
@@ -423,7 +483,7 @@ mod tests {
         let (id, dir) = new_session(&base).unwrap();
         assert_eq!(existing_session(&base, &id).unwrap(), (id.clone(), dir));
         assert_eq!(existing_session(&base, DEFAULT_SESSION).unwrap(), (DEFAULT_SESSION.to_string(), base.clone()));
-        assert!(existing_session(&base, "abcd2345").is_err());
+        assert!(existing_session(&base, "ABCD2345").is_err());
         assert!(existing_session(&base, "../x").is_err());
         fs::remove_dir_all(&base).unwrap();
     }
@@ -441,9 +501,9 @@ mod tests {
     #[test]
     fn dead_nodes_go_and_live_or_unknown_ones_stay() {
         let base = scratch("cleanup-dead");
-        let dead = node(&base, "abcd2345", Some(4000001));
-        let live = node(&base, "abcd2346", Some(4242));
-        let unknown = node(&base, "abcd2347", None);
+        let dead = node(&base, "ABCD2345", Some(4000001));
+        let live = node(&base, "ABCD2346", Some(4242));
+        let unknown = node(&base, "ABCD2347", None);
         let failed = remove_dead_sessions_with(&base, None, &|pid| pid == 4242, &|_| {}, &|dir| fs::remove_dir_all(dir));
         assert!(failed.is_empty());
         assert!(!dead.exists());
@@ -459,7 +519,7 @@ mod tests {
         relay_key::load_or_create(&keyed).unwrap();
         relay_key::short_id(&keyed).unwrap();
         fs::write(keyed.join("control-4000001.json"), b"{}").unwrap();
-        let keyless = node(&base, "abcd2345", Some(4000001));
+        let keyless = node(&base, "ABCD2345", Some(4000001));
         let (live_id, live) = new_session(&base).unwrap();
         relay_key::load_or_create(&live).unwrap();
         relay_key::short_id(&live).unwrap();
@@ -480,9 +540,9 @@ mod tests {
     #[test]
     fn the_own_session_is_kept_even_when_its_old_node_is_dead() {
         let base = scratch("cleanup-own");
-        let mine = node(&base, "abcd2345", Some(4000001));
-        let other = node(&base, "abcd2346", Some(4000001));
-        assert!(remove_dead_sessions_with(&base, Some("abcd2345"), &|_| false, &|_| {}, &|dir| fs::remove_dir_all(dir)).is_empty());
+        let mine = node(&base, "ABCD2345", Some(4000001));
+        let other = node(&base, "ABCD2346", Some(4000001));
+        assert!(remove_dead_sessions_with(&base, Some("ABCD2345"), &|_| false, &|_| {}, &|dir| fs::remove_dir_all(dir)).is_empty());
         assert!(mine.exists() && !other.exists());
         fs::remove_dir_all(&base).unwrap();
     }
@@ -490,9 +550,9 @@ mod tests {
     #[test]
     fn a_folder_that_cannot_be_removed_is_skipped_and_named() {
         let base = scratch("cleanup-fail");
-        let dead = node(&base, "abcd2345", Some(4000001));
+        let dead = node(&base, "ABCD2345", Some(4000001));
         let failed = remove_dead_sessions_with(&base, None, &|_| false, &|_| {}, &|_| Err(io::Error::other("locked")));
-        assert_eq!(failed, vec!["abcd2345".to_string()]);
+        assert_eq!(failed, vec!["ABCD2345".to_string()]);
         assert!(dead.exists());
         fs::remove_dir_all(&base).unwrap();
     }
@@ -511,14 +571,14 @@ mod tests {
     #[test]
     fn an_own_folder_goes_when_no_other_live_node_is_in_it() {
         let base = scratch("own");
-        let mine = node(&base, "abcd2345", Some(1));
-        assert_eq!(remove_session_dir("abcd2345", &mine, 1, &|_| false, &|dir| fs::remove_dir_all(dir)), None);
+        let mine = node(&base, "ABCD2345", Some(1));
+        assert_eq!(remove_session_dir("ABCD2345", &mine, 1, &|_| false, &|dir| fs::remove_dir_all(dir)), None);
         assert!(!mine.exists());
-        let shared = node(&base, "abcd2346", Some(4242));
-        assert_eq!(remove_session_dir("abcd2346", &shared, 1, &|pid| pid == 4242, &|dir| fs::remove_dir_all(dir)), None);
+        let shared = node(&base, "ABCD2346", Some(4242));
+        assert_eq!(remove_session_dir("ABCD2346", &shared, 1, &|pid| pid == 4242, &|dir| fs::remove_dir_all(dir)), None);
         assert!(shared.exists(), "another live node still uses it");
-        let refused = remove_session_dir("abcd2346", &shared, 1, &|_| false, &|_| Err(io::Error::other("locked")));
-        assert_eq!(refused, Some("abcd2346".to_string()));
+        let refused = remove_session_dir("ABCD2346", &shared, 1, &|_| false, &|_| Err(io::Error::other("locked")));
+        assert_eq!(refused, Some("ABCD2346".to_string()));
         fs::remove_dir_all(&base).unwrap();
     }
 

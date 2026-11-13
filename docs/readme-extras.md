@@ -17,13 +17,13 @@ cargo run --release
 
 ## Connection mode: Local or Supabase
 
-- **Local (LAN)**: the default. PCs on the same network find each other and chat with no server.
-- **Supabase**: messages go only through the Supabase relay. Nothing is sent over the LAN. Pick it on the first screen (GUI) or the first run (TUI), or change it with `Ctrl+R` (settings) or the 연결 방식 button.
-- The Supabase settings are URL, publishable key, and the other side's 8-character short ID. The display name is assigned automatically.
-- Each launch (`run`, `serve`, the GUI) is its own **node**, with its own key, short ID and trusted peers, kept in `sessions\<id>\`. Two windows on one PC are two nodes. `--session <id>` reuses one.
-- In Supabase mode, nodes on the same PC do not chat with each other: each one talks to the phone through the relay.
- The short ID is made once per PC (`short-id.txt`).
-- Verify each other with `/trust <code>` on both sides before chatting. The relay shows the same code as the LAN does.
+- **Local (LAN)**: the default. UDP broadcast discovers peers and messages go to every visible peer, so LAN chat supports multiple participants.
+- **Supabase**: a many-participant room relay. The server generates a random 8-character room ID when **Create room** is used; share it so others can join. **Retired:** the peer-ID-based one-to-one relay.
+- Room IDs are 8-character `A-Z0-9` values; input ignores case, spaces and dashes. Legacy peer IDs remain only for signed peer-row publishing, not as a room-join input. Trust codes are also 8 characters, but the SAS commit design is decided and implementation is pending.
+- Rooms expire 24 hours after creation and cannot be extended; expired joins return `410`. Expiry cleanup is implemented but not deployed.
+- **Deployment blocker:** room RLS is publicly open and create/join requests have no signature verification. Resolve both before deployment.
+
+See [Supabase relay](docs/supabase-relay.md) for the current model and unverified items.
 
 ## Phone (Expo Go)
 

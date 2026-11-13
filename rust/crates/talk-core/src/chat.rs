@@ -169,14 +169,27 @@ pub struct Chat {
     relay_status: Mutex<String>,
     /// True in Supabase mode: messages go only through the relay, never over the LAN.
     supabase: AtomicBool,
-    /// The configured relay peer's name and Noise key, from its row (set by the relay thread; /trust checks it).
-    relay_candidate: Mutex<Option<(String, Vec<u8>)>>,
-    /// Set after /trust verified a relay peer: the relay thread stops waiting and checks the row again now.
-    relay_wake: AtomicBool,
+    /// One SAS nonce per peer, with its commitment for that peer: (nonce, commitment). Never shared with another peer.
+    my_nonces: Mutex<HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>,
+    /// The commitment each peer gave us for us, pinned at first sight by its public key. A different one is refused.
+    commits: Mutex<HashMap<Vec<u8>, [u8; 32]>>,
+    /// (peer key, commitment) pairs already reported as refused, so the warning comes once.
+    refused: Mutex<std::collections::HashSet<(Vec<u8>, [u8; 32])>>,
+    /// The nonce each peer revealed, checked against its commitment, by its public key.
+    reveals: Mutex<HashMap<Vec<u8>, [u8; 32]>>,
+    /// Peers whose reveal is being fetched right now (one worker per peer).
+    revealing: Mutex<std::collections::HashSet<Vec<u8>>>,
+    /// Reveals asked for by the announce parser (key, address, port); the listener starts their workers.
+    reveal_requests: Mutex<Vec<(Vec<u8>, String, u16)>>,
 }
 
-/// The address label shown for a peer verified through the relay (it has no LAN address).
-const RELAY_LABEL: &str = "relay";
+
+/// A fresh random nonce for the SAS commitment. Without a random source the code could be ground, so this panics instead.
+fn random_nonce() -> [u8; 32] {
+    let mut nonce = [0u8; 32];
+    getrandom::getrandom(&mut nonce).expect("system random source for the SAS nonce");
+    nonce
+}
 
 /// How long the phone address and token stay on screen when nobody hides them.
 const PHONE_SHOWN: Duration = Duration::from_secs(30);
@@ -203,9 +216,91 @@ impl Chat {
             relay_inbox: Mutex::new(None),
             relay_status: Mutex::new(String::new()),
             supabase: AtomicBool::new(false),
-            relay_candidate: Mutex::new(None),
-            relay_wake: AtomicBool::new(false),
+            my_nonces: Mutex::new(HashMap::new()),
+            commits: Mutex::new(HashMap::new()),
+            refused: Mutex::new(std::collections::HashSet::new()),
+            reveals: Mutex::new(HashMap::new()),
+            revealing: Mutex::new(std::collections::HashSet::new()),
+            reveal_requests: Mutex::new(Vec::new()),
         }
+    }
+
+    /// This node's nonce for one peer, made on first use. The commitment for that peer is in the announce.
+    pub fn my_nonce_for(&self, key: &[u8]) -> [u8; 32] {
+        let own = self.me.lock().unwrap().key.clone();
+        self.my_nonces.lock().unwrap().entry(key.to_vec()).or_insert_with(|| {
+            let nonce = random_nonce();
+            (nonce, store::commit(&own, &nonce))
+        }).0
+    }
+
+    /// The commitment this node makes for one peer (SHA-256 over this PC's key and the nonce kept for that peer).
+    pub fn my_commit_for(&self, key: &[u8]) -> [u8; 32] {
+        let _ = self.my_nonce_for(key);
+        self.my_nonces.lock().unwrap().get(key).map(|entry| entry.1).expect("nonce made just above")
+    }
+
+    /// One (peer key, commitment) pair per peer, hex: what the announce carries in its `commits` map.
+    pub fn announced_commits(&self) -> Vec<(String, String)> {
+        self.my_nonces.lock().unwrap().iter().map(|(key, entry)| (store::to_hex(key), store::to_hex(&entry.1))).collect()
+    }
+
+    /// Pin the commitment a peer gave us for us, at first sight. True when it is pinned now or was already this one;
+    /// false for a different commitment (the caller refuses that peer).
+    pub fn pin_commit(&self, key: &[u8], commit: [u8; 32]) -> bool {
+        let mut map = self.commits.lock().unwrap();
+        match map.get(key) {
+            Some(pinned) => *pinned == commit,
+            None => {
+                map.insert(key.to_vec(), commit);
+                true
+            }
+        }
+    }
+
+    /// True the first time a refused (key, commitment) pair is seen, so the warning is shown once.
+    pub fn refuse_once(&self, key: &[u8], commit: [u8; 32]) -> bool {
+        self.refused.lock().unwrap().insert((key.to_vec(), commit))
+    }
+
+    pub fn commit_of(&self, key: &[u8]) -> Option<[u8; 32]> {
+        self.commits.lock().unwrap().get(key).copied()
+    }
+
+    /// The nonce a peer revealed to us, once it was checked against its commitment.
+    pub fn reveal_of(&self, key: &[u8]) -> Option<[u8; 32]> {
+        self.reveals.lock().unwrap().get(key).copied()
+    }
+
+    /// Keep a peer's revealed nonce once it matched the commitment. True when it was new.
+    pub fn set_reveal(&self, key: &[u8], nonce: [u8; 32]) -> bool {
+        self.reveals.lock().unwrap().insert(key.to_vec(), nonce).is_none()
+    }
+
+    /// The code for a peer, once both nonces are known (after the reveal exchange). None before that.
+    pub fn sas_for(&self, key: &[u8]) -> Option<String> {
+        let peer_nonce = *self.reveals.lock().unwrap().get(key)?;
+        let own_nonce = self.my_nonces.lock().unwrap().get(key).map(|entry| entry.0)?;
+        let own = self.me.lock().unwrap().key.clone();
+        Some(store::sas_code(&own, &own_nonce, key, &peer_nonce))
+    }
+
+    /// Start the reveal worker for a peer. False when one is already running for it.
+    pub fn start_reveal(&self, key: &[u8]) -> bool {
+        self.revealing.lock().unwrap().insert(key.to_vec())
+    }
+
+    /// Ask for a peer's reveal (the announce parser cannot start a thread itself).
+    pub fn request_reveal(&self, key: &[u8], ip: &str, port: u16) {
+        self.reveal_requests.lock().unwrap().push((key.to_vec(), ip.to_string(), port));
+    }
+
+    pub fn take_reveal_requests(&self) -> Vec<(Vec<u8>, String, u16)> {
+        std::mem::take(&mut *self.reveal_requests.lock().unwrap())
+    }
+
+    pub fn finish_reveal(&self, key: &[u8]) {
+        self.revealing.lock().unwrap().remove(key);
     }
 
     /// True while this node holds the phone host lock.
@@ -306,6 +401,11 @@ impl Chat {
         self.trusted.lock().unwrap().iter().find(|trusted| trusted.key == key).map(|trusted| trusted.name.clone())
     }
 
+    /// The name and address of a fresh peer with this key (for the code line shown after the reveal).
+    pub(crate) fn peer_by_key(&self, key: &[u8]) -> Option<(String, String)> {
+        self.fresh_peers().into_iter().find(|peer| peer.key.as_deref() == Some(key)).map(|peer| (peer.name, peer.ip))
+    }
+
     pub fn link_of(&self, peer: &Peer) -> Link {
         match &peer.key {
             None => Link::Plain,
@@ -349,35 +449,9 @@ impl Chat {
 
     /// Stop the running relay thread (it exits at its next check) and forget its inbox.
     pub fn stop_relay(&self) {
-        *self.relay_candidate.lock().unwrap() = None;
         if let Some((_, stop)) = self.relay_inbox.lock().unwrap().take() {
             stop.store(true, Ordering::Relaxed);
         }
-    }
-
-    /// The relay thread reports the configured peer's row, so /trust can verify that peer by its Noise key.
-    pub(crate) fn set_relay_candidate(&self, name: &str, key: Vec<u8>) {
-        *self.relay_candidate.lock().unwrap() = Some((name.to_string(), key));
-    }
-
-    /// The name shown for a relay peer: the name in its row (from the latest lookup) while that is a valid name,
-    /// otherwise the name the user verified with /trust. The row name wins, so a renamed phone shows its new name.
-    pub(crate) fn relay_display_name(&self, key: &[u8]) -> Option<String> {
-        let row = self.relay_candidate.lock().unwrap().as_ref().filter(|(_, candidate)| candidate.as_slice() == key).map(|(name, _)| name.clone());
-        match row {
-            Some(name) if crate::relay_rest::valid_name(&name) => Some(name),
-            _ => self.trusted_name(key),
-        }
-    }
-
-    /// Ask the relay thread to check its peer again now (after a trust).
-    pub(crate) fn wake_relay(&self) {
-        self.relay_wake.store(true, Ordering::Relaxed);
-    }
-
-    /// True once after wake_relay: the relay thread's wait ends early.
-    pub(crate) fn take_relay_wake(&self) -> bool {
-        self.relay_wake.swap(false, Ordering::Relaxed)
     }
 
     pub fn set_relay_status(&self, text: &str) {
@@ -413,11 +487,6 @@ impl Chat {
             }
             None => self.say(t("relay.not_sent", &[])),
         }
-    }
-
-    /// A received relay message: shown like a verified LAN message (the sender's verified name, one line).
-    pub(crate) fn add_relay_line(&self, line: Line) {
-        self.add(vec![line]);
     }
 
     /// Show one notice line in the chat.
@@ -497,12 +566,15 @@ impl Chat {
             if found.is_empty() {
                 self.say(t("peers.none", &[]));
             }
-            let own = self.me.lock().unwrap().key.clone();
             for peer in found {
                 let state = match (self.link_of(&peer), &peer.key) {
                     (Link::Encrypted, _) => t("peers.verified", &[]),
                     (Link::Plain, _) => t("peers.plain", &[]),
-                    (Link::Unverified, Some(key)) => t("peers.unverified", &[("code", &store::fingerprint(&own, key))]),
+                    // The code exists only after the reveal exchange; until then the line says it is pending.
+                    (Link::Unverified, Some(key)) => match self.sas_for(key) {
+                        Some(code) => t("peers.unverified", &[("code", &code)]),
+                        None => "(code pending)".to_string(), // shortcut: English-only pending text; move it to the locales
+                    },
                     (Link::Unverified, None) => String::new(),
                 };
                 self.say(format!("- {} ({}:{}) {state}", peer.name, peer.ip, peer.port));
@@ -581,36 +653,20 @@ impl Chat {
         true
     }
 
-    /// The configured relay peer, when its Noise key gives this code (Supabase mode only, and not yet verified).
-    fn relay_match(&self, own: &[u8], code: &str) -> Option<(String, Vec<u8>, String)> {
-        if !self.is_supabase() {
-            return None;
-        }
-        let (name, key) = self.relay_candidate.lock().unwrap().clone()?;
-        let matches = store::normalize_code(&store::fingerprint(own, &key)) == code && !self.trusts(&key);
-        matches.then_some((name, key, RELAY_LABEL.to_string()))
-    }
-
-    /// Verify the unverified peer whose code matches (a LAN peer or the configured relay peer): remember its key, and say so.
+    /// Verify the unverified LAN peer whose code matches: remember its key, and say so.
     fn trust(&self, code: &str) {
-        let own = self.me.lock().unwrap().key.clone();
         let lan: Vec<(String, Vec<u8>, String)> = self.fresh_peers().into_iter().filter_map(|peer| {
             let key = peer.key.clone()?;
-            let matches = store::normalize_code(&store::fingerprint(&own, &key)) == code && self.link_of(&peer) == Link::Unverified;
+            let matches = self.sas_for(&key).is_some_and(|sas| store::normalize_code(&sas) == code) && self.link_of(&peer) == Link::Unverified;
             matches.then_some((peer.name, key, peer.ip))
         }).collect();
-        let lan_hits = lan.len();
-        let relay = self.relay_match(&own, code);
-        let relay_hit = relay.is_some();
-        let matching: Vec<(String, Vec<u8>, String)> = lan.into_iter().chain(relay).collect();
-        // Two different keys with the same code would mean a collision or an attacker, and a LAN peer and the relay
-        // peer with the same code is ambiguous too: refuse rather than pick one.
-        let distinct: std::collections::BTreeSet<&Vec<u8>> = matching.iter().map(|(_, key, _)| key).collect();
-        if distinct.len() > 1 || (relay_hit && lan_hits > 0) {
+        // Two different keys with the same code would mean a collision or an attacker: refuse rather than pick one.
+        let distinct: std::collections::BTreeSet<&Vec<u8>> = lan.iter().map(|(_, key, _)| key).collect();
+        if distinct.len() > 1 {
             self.say(t("trust.ambiguous", &[("code", code)]));
             return;
         }
-        let Some((name, key, ip)) = matching.into_iter().next() else {
+        let Some((name, key, ip)) = lan.into_iter().next() else {
             self.say(t("trust.none", &[("code", code)]));
             return;
         };
@@ -621,7 +677,6 @@ impl Chat {
             None => Ok(()),
         };
         drop(trusted);
-        self.wake_relay();
         match saved {
             Ok(()) => self.say(t("trust.done", &[("name", &name), ("ip", &ip)])),
             Err(error) => self.say(t("trust.save_failed", &[("error", &error.to_string())])),
@@ -824,6 +879,14 @@ mod tests {
         assert_eq!(my_name(&keeps), "Alice");
     }
 
+    /// Give a peer its reveal, as the LAN exchange does (our nonce for it is made first). Returns the code both sides then see.
+    fn reveal_peer(chat: &Chat, key: &[u8]) -> String {
+        let nonce = [9u8; 32];
+        chat.my_nonce_for(key);
+        assert!(chat.set_reveal(key, nonce));
+        chat.sas_for(key).expect("code after the reveal")
+    }
+
     fn keyed_peer(name: &str, key: &[u8]) -> Peer {
         Peer { id: store::peer_id(key), name: name.into(), ip: "10.0.0.2".into(), port: 52311, seen: Instant::now(), key: Some(key.to_vec()) }
     }
@@ -997,69 +1060,11 @@ mod tests {
         chat.peers.lock().unwrap().push(keyed_peer("Bob", &key));
         chat.handle("/trust 0000");
         assert_eq!(texts(&chat).last().unwrap(), &t("trust.none", &[("code", "0000")]));
-        chat.handle(&format!("/trust {}", store::fingerprint(&[0; 32], &key).to_uppercase()));
+        let code = reveal_peer(&chat, &key);
+        chat.handle(&format!("/trust {}", code.to_lowercase()));
         assert!(chat.trusts(&key));
         assert_eq!(chat.link_of(&chat.fresh_peers()[0]), Link::Encrypted);
         assert!(texts(&chat).contains(&t("trust.done", &[("name", "Bob"), ("ip", "10.0.0.2")])));
-    }
-
-    #[test]
-    fn relay_peer_with_the_matching_code_is_trusted() {
-        let chat = chat(&[]);
-        chat.set_supabase_mode(true);
-        let key = [7u8; 32];
-        chat.set_relay_candidate("Bob", key.to_vec());
-        chat.handle(&format!("/trust {}", store::fingerprint(&[0; 32], &key).to_uppercase()));
-        assert!(chat.trusts(&key));
-        assert!(texts(&chat).contains(&t("trust.done", &[("name", "Bob"), ("ip", "relay")])));
-        assert!(chat.take_relay_wake(), "the relay thread is told to check again");
-    }
-
-    #[test]
-    fn relay_peer_with_another_code_is_refused() {
-        let chat = chat(&[]);
-        chat.set_supabase_mode(true);
-        let key = [7u8; 32];
-        chat.set_relay_candidate("Bob", key.to_vec());
-        chat.handle("/trust 0000");
-        assert!(!chat.trusts(&key));
-        assert_eq!(texts(&chat).last().unwrap(), &t("trust.none", &[("code", "0000")]));
-    }
-
-    #[test]
-    fn relay_peer_shows_its_row_name_and_falls_back_to_the_trusted_one() {
-        let chat = chat(&[]);
-        let key = [7u8; 32];
-        chat.trusted.lock().unwrap().push(Trusted { name: "A".into(), key: key.to_vec(), ip: "relay".into() });
-        chat.set_relay_candidate("B", key.to_vec());
-        assert_eq!(chat.relay_display_name(&key).as_deref(), Some("B"));
-        chat.set_relay_candidate("", key.to_vec());
-        assert_eq!(chat.relay_display_name(&key).as_deref(), Some("A"), "an empty row name falls back");
-        chat.set_relay_candidate(&"x".repeat(33), key.to_vec());
-        assert_eq!(chat.relay_display_name(&key).as_deref(), Some("A"), "a row name over 32 characters falls back");
-        chat.set_relay_candidate("B", vec![9; 32]);
-        assert_eq!(chat.relay_display_name(&key).as_deref(), Some("A"), "a row of another key is not used");
-    }
-
-    #[test]
-    fn relay_candidate_is_ignored_outside_supabase_mode() {
-        let chat = chat(&[]);
-        let key = [7u8; 32];
-        chat.set_relay_candidate("Bob", key.to_vec());
-        chat.handle(&format!("/trust {}", store::fingerprint(&[0; 32], &key).to_uppercase()));
-        assert!(!chat.trusts(&key));
-    }
-
-    #[test]
-    fn lan_and_relay_with_the_same_code_are_ambiguous() {
-        let chat = chat(&[]);
-        chat.set_supabase_mode(true);
-        let key = [7u8; 32];
-        chat.peers.lock().unwrap().push(keyed_peer("Bob", &key));
-        chat.set_relay_candidate("Bob", key.to_vec());
-        chat.handle(&format!("/trust {}", store::fingerprint(&[0; 32], &key).to_uppercase()));
-        assert!(!chat.trusts(&key));
-        assert_eq!(texts(&chat).last().unwrap(), &t("trust.ambiguous", &[("code", &store::normalize_code(&store::fingerprint(&[0; 32], &key)))]));
     }
 
     #[test]

@@ -34,7 +34,7 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual(sessions.existing_session(self.base, session_id), (session_id, folder))
         self.assertEqual(sessions.existing_session(self.base, sessions.DEFAULT_SESSION), (sessions.DEFAULT_SESSION, self.base))
         with self.assertRaises(ValueError):
-            sessions.existing_session(self.base, "abcd2345")
+            sessions.existing_session(self.base, "ABCD2345")
         with self.assertRaises(ValueError):
             sessions.existing_session(self.base, "../x")
 
@@ -51,9 +51,9 @@ class SessionsTest(unittest.TestCase):
         return folder
 
     def test_dead_nodes_go_and_live_or_unknown_ones_stay(self):
-        dead = self._node("abcd2345", pid=4000001)
-        live = self._node("abcd2346", pid=4242)
-        unknown = self._node("abcd2347")
+        dead = self._node("ABCD2345", pid=4000001)
+        live = self._node("ABCD2346", pid=4242)
+        unknown = self._node("ABCD2347")
         failed = sessions.remove_dead_sessions(self.base, alive=lambda pid: pid == 4242)
         self.assertEqual(failed, [])
         self.assertFalse(os.path.exists(dead))
@@ -66,9 +66,9 @@ class SessionsTest(unittest.TestCase):
             relay_key.load_or_create_short_id(folder)
             return folder
 
-        keyed = keys(self._node("abcd2345", pid=4000001))
-        keyless = self._node("abcd2346", pid=4000001)
-        live = keys(self._node("abcd2347", pid=4242))
+        keyed = keys(self._node("ABCD2345", pid=4000001))
+        keyless = self._node("ABCD2346", pid=4000001)
+        live = keys(self._node("ABCD2347", pid=4242))
         left = []
 
         def leave(folder):
@@ -83,9 +83,9 @@ class SessionsTest(unittest.TestCase):
         self.assertTrue(os.path.exists(live))
 
     def test_the_own_session_is_kept_even_when_its_old_node_is_dead(self):
-        mine = self._node("abcd2345", pid=4000001)
-        other = self._node("abcd2346", pid=4000001)
-        sessions._chosen = ("abcd2345", mine)
+        mine = self._node("ABCD2345", pid=4000001)
+        other = self._node("ABCD2346", pid=4000001)
+        sessions._chosen = ("ABCD2345", mine)
         try:
             self.assertEqual(sessions.remove_dead_sessions(self.base, alive=lambda pid: False), [])
         finally:
@@ -100,23 +100,23 @@ class SessionsTest(unittest.TestCase):
         self.assertTrue(os.path.exists(control))
 
     def test_a_folder_that_cannot_be_removed_is_skipped_and_named(self):
-        dead = self._node("abcd2345", pid=4000001)
+        dead = self._node("ABCD2345", pid=4000001)
 
         def refuse(folder):
             raise PermissionError("locked")
 
-        self.assertEqual(sessions.remove_dead_sessions(self.base, alive=lambda pid: False, remove=refuse), ["abcd2345"])
+        self.assertEqual(sessions.remove_dead_sessions(self.base, alive=lambda pid: False, remove=refuse), ["ABCD2345"])
         self.assertTrue(os.path.exists(dead))
 
     def test_an_own_folder_goes_when_no_other_live_node_is_in_it(self):
-        mine = self._node("abcd2345", pid=1)
-        self.assertIsNone(sessions._remove_session_folder("abcd2345", mine, 1, alive=lambda pid: False))
+        mine = self._node("ABCD2345", pid=1)
+        self.assertIsNone(sessions._remove_session_folder("ABCD2345", mine, 1, alive=lambda pid: False))
         self.assertFalse(os.path.exists(mine))
-        shared = self._node("abcd2346", pid=4242)
-        self.assertIsNone(sessions._remove_session_folder("abcd2346", shared, 1, alive=lambda pid: pid == 4242))
+        shared = self._node("ABCD2346", pid=4242)
+        self.assertIsNone(sessions._remove_session_folder("ABCD2346", shared, 1, alive=lambda pid: pid == 4242))
         self.assertTrue(os.path.exists(shared), "another live node still uses it")
-        refused = sessions._remove_session_folder("abcd2346", shared, 1, alive=lambda pid: False, remove=lambda folder: (_ for _ in ()).throw(PermissionError("locked")))
-        self.assertEqual(refused, "abcd2346")
+        refused = sessions._remove_session_folder("ABCD2346", shared, 1, alive=lambda pid: False, remove=lambda folder: (_ for _ in ()).throw(PermissionError("locked")))
+        self.assertEqual(refused, "ABCD2346")
 
     def test_the_default_folder_is_never_removed_on_stop(self):
         self.assertIsNone(sessions._remove_session_folder(sessions.DEFAULT_SESSION, self.base, 1, alive=lambda pid: False))

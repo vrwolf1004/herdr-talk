@@ -168,16 +168,15 @@ Screens and controls:
 
 ## 11a. Connection mode (Local or Supabase)
 
-- **Local (LAN)**: the default. PCs on the same network chat directly.
-- **Supabase**: messages go only through the Supabase relay; nothing goes over the LAN.
-- Each launch (`run`, `serve`, the GUI) is its own **node**, with its own key, short ID and trusted peers, kept in `sessions\<id>\`. Two windows on one PC are two nodes. `--session <id>` reuses one.
-- In Supabase mode, nodes on the same PC do not chat with each other: each one talks to the phone through the relay. Nothing goes over the LAN.
- Choose it on the first screen (GUI) or the first run (TUI), or change it with `Ctrl+R` (settings) or the 연결 방식 button in the GUI.
-- Supabase needs the project URL, the publishable key, and the other PC's 8-character short ID. Your display name is assigned automatically.
-- Each launch (`run`, `serve`, the GUI) is its own **node**, with its own key, short ID and trusted peers, kept in `sessions\<id>\`. Two windows on one PC are two nodes. `--session <id>` reuses one.
-- In Supabase mode, nodes on the same PC do not chat with each other: each one talks to the phone through the relay.
- Your own short ID is shown on the settings screen and is kept in `short-id.txt`.
-- Verify each other with `/trust <code>` on both sides before the first message.
+- **Local (LAN)**: the default. UDP broadcast discovers peers and each message goes to every visible peer; LAN chat supports multiple participants.
+- **Supabase**: a many-participant room relay. Enter the project URL, publishable key, display name, and an 8-character room ID. **Create room** asks the server for a random room ID; give that code to people joining the room.
+- Room IDs are 8-character `A-Z0-9` values. Input ignores case, spaces and dashes. **Retired:** entering a peer ID for one-to-one relay or room joining; legacy peer IDs are only for signed peer-row publishing.
+- A room is usable for 24 hours from creation and cannot be extended. Joining an expired room returns `410`. Expiry cleanup is implemented but not deployed.
+- **Retired:** the old peer-ID-based one-to-one Supabase relay.
+- Trust codes are also 8 characters. The SAS commit design is decided, but implementation is pending.
+- **Security warning:** room RLS is currently publicly open and room create/join requests have no signature verification. Both must be resolved before deployment.
+
+See [Supabase relay](supabase-relay.md) for the current model and unverified items.
 
 ## 12. Headless mode and control channel
 

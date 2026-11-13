@@ -3,6 +3,9 @@
 //! talk-core yet; see the reply that added this module.) Same rules as python/src/relay_rest.py.
 
 use ed25519_dalek::{Signer, SigningKey};
+
+/// The tag of the room requests (create and join), in front of the signed bytes.
+pub const ROOM_TAG: &str = "herdr-talk-room-v1";
 use serde_json::Value;
 use std::time::Duration;
 
@@ -27,14 +30,11 @@ impl std::fmt::Debug for Config {
 
 impl Config {
     /// The relay URL (no trailing slash). Crate-internal: the key must not leave this crate through here.
+    #[cfg(test)]
     pub(crate) fn url(&self) -> &str {
         &self.url
     }
 
-    /// The publishable key. Crate-internal, used only to build the websocket URL.
-    pub(crate) fn key(&self) -> &str {
-        &self.key
-    }
 }
 
 /// One HTTP request, ready to send.
@@ -44,15 +44,6 @@ pub struct Request {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
-}
-
-/// A peer as the relay returns it, after checks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Peer {
-    pub pk: String,
-    pub name: String,
-    /// The X25519 key of the peer's Noise identity, as written by put-peer.
-    pub noise_pk: String,
 }
 
 /// Settings from two values. Either one missing (or empty) means the relay is off: Ok(None).
@@ -101,9 +92,10 @@ fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// 8 lowercase characters, letters and digits: the short ID that others type to find this PC.
+/// 8 uppercase characters, letters and digits: the short ID that others type to find this PC. Input in lowercase is
+/// made uppercase before this check (the callers do it).
 pub fn valid_short_id(text: &str) -> bool {
-    text.len() == 8 && text.bytes().all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+    text.len() == 8 && text.bytes().all(|byte| byte.is_ascii_digit() || byte.is_ascii_uppercase())
 }
 
 /// 8 uppercase characters, letters and digits: the room code shared by all peers in a room.
@@ -200,21 +192,6 @@ pub(crate) fn delete_peer_within(config: &Config, seed: &[u8; 32], short_id: &st
     }
 }
 
-/// Lookup of one peer by pk.
-pub fn get_request(config: &Config, pk: &str) -> Result<Request, String> {
-    if !valid_pk(pk) {
-        return Err("pk must be 64 lowercase hex characters".to_string());
-    }
-    let mut headers = common_headers(config);
-    headers.push(("Accept".to_string(), "application/json".to_string()));
-    Ok(Request {
-        method: "GET",
-        url: format!("{}/rest/v1/peers?pk=eq.{pk}&select=pk,name,noise_pk", config.url),
-        headers,
-        body: None,
-    })
-}
-
 /// What the put-peer answer means: written, the short ID belongs to another key (409), or any other failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PutOutcome {
@@ -231,55 +208,81 @@ pub fn put_outcome(status: u16) -> PutOutcome {
     }
 }
 
-/// The answer to a lookup. Ok(None): no such peer. Anything malformed is an error, and the caller drops it.
-pub fn read_get_response(status: u16, body: &str, pk: &str) -> Result<Option<Peer>, String> {
-    if status != 200 {
-        return Err(format!("status {status}"));
-    }
-    let rows: Value = serde_json::from_str(body).map_err(|_| "answer is not JSON".to_string())?;
-    let rows = rows.as_array().ok_or("answer is not a list")?;
-    let row = match rows.as_slice() {
-        [] => return Ok(None),
-        [row] => row,
-        _ => return Err("more than one row for one pk".to_string()),
-    };
-    let answered_pk = row["pk"].as_str().ok_or("row has no pk")?;
-    let name = row["name"].as_str().ok_or("row has no name")?;
-    let noise_pk = row["noise_pk"].as_str().ok_or("row has no noise_pk")?;
-    if !valid_hex(noise_pk, 64) {
-        return Err("row noise_pk is not valid".to_string());
-    }
-    if answered_pk != pk || !valid_pk(answered_pk) {
-        return Err("row pk does not match the request".to_string());
-    }
-    if !valid_name(name) {
-        return Err("row name is not valid".to_string());
-    }
-    Ok(Some(Peer { pk: answered_pk.to_string(), name: name.to_string(), noise_pk: noise_pk.to_string() }))
+/// Which room request is signed: a create (the new room's owner) or a join.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomAction {
+    Create,
+    Join,
 }
 
-/// Request to join a room by code.
-pub fn join_room_request(config: &Config, room_code: &str, peer_pk: &str, display_name: &str) -> Result<Request, String> {
-    if !valid_room_code(room_code) {
-        return Err("room_code must be 8 uppercase letters or digits".to_string());
+impl RoomAction {
+    fn word(self) -> &'static str {
+        match self {
+            RoomAction::Create => "create",
+            RoomAction::Join => "join",
+        }
     }
-    if !valid_pk(peer_pk) {
-        return Err("peer_pk must be 64 lowercase hex characters".to_string());
+}
+
+/// The bytes signed for a room request (v1): ROOM_TAG, action, room code (an empty line for create), peer pk, display
+/// name, ts, nonce, one per line, no newline at the end. The Python relay_rest.room_message and supabase checks.rs match it.
+pub fn room_message(action: RoomAction, room_code: &str, peer_pk: &str, display_name: &str, ts: u64, nonce: &str) -> String {
+    let code = if action == RoomAction::Create { "" } else { room_code };
+    let ts = ts.to_string();
+    let newline = char::from(10).to_string();
+    [ROOM_TAG, action.word(), code, peer_pk, display_name, ts.as_str(), nonce].join(newline.as_str())
+}
+
+/// The JSON body of a room request, signed with the peer's Ed25519 key (the seed from relay_key): peer_pk, display_name,
+/// ts, nonce and sig, plus room_code for a join. Refuses bad input before any signature is made.
+pub fn signed_room_body(seed: &[u8; 32], action: RoomAction, room_code: &str, display_name: &str, ts: u64, nonce: &str) -> Result<String, String> {
+    if action == RoomAction::Join && !valid_room_code(room_code) {
+        return Err("room_code must be 8 uppercase letters or digits".to_string());
     }
     if !valid_name(display_name) {
         return Err("display_name must be 1 to 32 characters without control characters".to_string());
     }
+    if !valid_hex(nonce, 32) {
+        return Err("nonce must be 32 lowercase hex characters".to_string());
+    }
+    let signing = SigningKey::from_bytes(seed);
+    let peer_pk = to_hex(&signing.verifying_key().to_bytes());
+    let sig = to_hex(&signing.sign(room_message(action, room_code, &peer_pk, display_name, ts, nonce).as_bytes()).to_bytes());
+    let mut body = serde_json::Map::new();
+    if action == RoomAction::Join {
+        body.insert("room_code".to_string(), Value::String(room_code.to_string()));
+    }
+    body.insert("peer_pk".to_string(), Value::String(peer_pk));
+    body.insert("display_name".to_string(), Value::String(display_name.to_string()));
+    body.insert("ts".to_string(), Value::from(ts));
+    body.insert("nonce".to_string(), Value::String(nonce.to_string()));
+    body.insert("sig".to_string(), Value::String(sig));
+    Ok(Value::Object(body).to_string())
+}
+
+/// 16 random bytes as 32 lowercase hex characters: the nonce of one request (the server accepts each nonce once).
+pub fn random_nonce() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|error| error.to_string())?;
+    Ok(to_hex(&bytes))
+}
+
+/// Seconds since the Unix epoch (the ts of a signed request; the server accepts 300 seconds either way).
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_secs())
+}
+
+/// Request to join a room by code, signed with this PC's key (ts and a fresh nonce are made here).
+pub fn join_room_request(config: &Config, seed: &[u8; 32], room_code: &str, display_name: &str) -> Result<Request, String> {
+    signed_join_request(config, seed, room_code, display_name, unix_now(), &random_nonce()?)
+}
+
+/// The join request with ts and nonce given (tests use this; join_room_request makes them).
+pub(crate) fn signed_join_request(config: &Config, seed: &[u8; 32], room_code: &str, display_name: &str, ts: u64, nonce: &str) -> Result<Request, String> {
+    let body = signed_room_body(seed, RoomAction::Join, room_code, display_name, ts, nonce)?;
     let mut headers = common_headers(config);
     headers.push(("Content-Type".to_string(), "application/json".to_string()));
-    let name_json = serde_json::to_string(display_name).map_err(|error| error.to_string())?;
-    Ok(Request {
-        method: "POST",
-        url: format!("{}/functions/v1/join-room", config.url),
-        headers,
-        body: Some(format!(
-            r#"{{"room_code":"{room_code}","peer_pk":"{peer_pk}","display_name":{name_json}}}"#
-        )),
-    })
+    Ok(Request { method: "POST", url: format!("{}/functions/v1/join-room", config.url), headers, body: Some(body) })
 }
 
 /// Response from join-room: room code, owner pk, and list of member pks.
@@ -292,6 +295,9 @@ pub struct RoomInfo {
 
 /// Parse the response from join-room Edge Function.
 pub fn read_join_room_response(status: u16, body: &str) -> Result<RoomInfo, String> {
+    if status == 410 {
+        return Err("방 기한이 지났습니다".to_string()); // join-room: the room is past its 24 hours
+    }
     if status != 200 {
         return Err(format!("status {status}: {body}"));
     }
@@ -323,58 +329,6 @@ pub fn read_join_room_response(status: u16, body: &str) -> Result<RoomInfo, Stri
         owner_pk: owner_pk.to_string(),
         members: members?,
     })
-}
-
-/// Lookup by short ID: `short_id = eq.<id>`, at most one row (the column is unique).
-pub fn short_id_request(config: &Config, short_id: &str) -> Result<Request, String> {
-    if !valid_short_id(short_id) {
-        return Err("short_id must be 8 lowercase letters or digits".to_string());
-    }
-    let mut headers = common_headers(config);
-    headers.push(("Accept".to_string(), "application/json".to_string()));
-    Ok(Request {
-        method: "GET",
-        url: format!("{}/rest/v1/peers?short_id=eq.{short_id}&select=pk,name,noise_pk,short_id", config.url),
-        headers,
-        body: None,
-    })
-}
-
-/// The answer to a short ID lookup: exactly one checked row. Zero rows (or anything else) is "not found" for the user.
-pub fn read_short_response(status: u16, body: &str, short_id: &str) -> Result<Peer, String> {
-    if status != 200 {
-        return Err("the relay did not answer".to_string());
-    }
-    let rows: Value = serde_json::from_str(body).map_err(|_| "the relay answer is not JSON".to_string())?;
-    let rows = rows.as_array().ok_or("the relay answer is not a list")?;
-    let row = match rows.as_slice() {
-        [row] => row,
-        _ => return Err("상대를 찾지 못함".to_string()),
-    };
-    let pk = row["pk"].as_str().ok_or("row has no pk")?;
-    let name = row["name"].as_str().ok_or("row has no name")?;
-    let noise_pk = row["noise_pk"].as_str().ok_or("row has no noise_pk")?;
-    if row["short_id"].as_str() != Some(short_id) || !valid_pk(pk) {
-        return Err("row does not match the request".to_string());
-    }
-    if !valid_name(name) || !valid_hex(noise_pk, 64) {
-        return Err("row is not valid".to_string());
-    }
-    Ok(Peer { pk: pk.to_string(), name: name.to_string(), noise_pk: noise_pk.to_string() })
-}
-
-/// Find the peer for the short ID the user typed. The full key of the row found is what the caller uses from then on.
-/// Every error is a message for the user.
-pub fn find_peer(config: &Config, short_id: &str) -> Result<Peer, String> {
-    let request = short_id_request(config, short_id).map_err(|_| "상대 ID는 8자리 (소문자 영문·숫자)".to_string())?;
-    let mut builder = agent(config).get(&request.url);
-    for (key, value) in &request.headers {
-        builder = builder.header(key.as_str(), value.as_str());
-    }
-    let mut response = builder.call().map_err(|_| "the relay did not answer".to_string())?;
-    let status = response.status().as_u16();
-    let body = response.body_mut().read_to_string().map_err(|_| "the relay did not answer".to_string())?;
-    read_short_response(status, &body, short_id)
 }
 
 /// Agent for one relay: 5 seconds for the whole request, no proxy for loopback (a test server), the environment's proxy otherwise.
@@ -411,19 +365,6 @@ pub fn put_peer(config: &Config, seed: &[u8; 32], noise_pk: &str, short_id: &str
     }
 }
 
-/// Look up one peer on the relay. None when there is no such peer, the call failed, or the answer does not check out.
-pub fn get_peer(config: &Config, pk: &str) -> Option<Peer> {
-    let request = get_request(config, pk).ok()?;
-    let mut builder = agent(config).get(&request.url);
-    for (key, value) in &request.headers {
-        builder = builder.header(key.as_str(), value.as_str());
-    }
-    let mut response = builder.call().ok()?;
-    let status = response.status().as_u16();
-    let body = response.body_mut().read_to_string().ok()?;
-    read_get_response(status, &body, pk).ok().flatten()
-}
-
 /// Execute an HTTP POST request and return (status, body).
 pub fn http_post(request: &Request) -> Result<(u16, String), String> {
     // Create a dummy config for the agent (we only need a timeout, URL will be from request)
@@ -444,8 +385,6 @@ pub(crate) mod tests {
     use super::*;
 
     // Dummy values only. No test here sends anything.
-    const PK: &str = "0101010101010101010101010101010101010101010101010101010101010101";
-
     fn dummy() -> Config {
         config(Some("http://127.0.0.1:9/"), Some("dummy-test-key")).unwrap().unwrap()
     }
@@ -473,7 +412,7 @@ pub(crate) mod tests {
     ];
     const NOISE: &str = "abababababababababababababababababababababababababababababababab";
     const VECTOR_NONCE: &str = "00112233445566778899aabbccddeeff";
-    const SHORT: &str = "abcd2345";
+    const SHORT: &str = "ABCD2345";
 
     #[test]
     fn v3_message_and_body_are_signed_over_the_fixed_order() {
@@ -511,7 +450,7 @@ pub(crate) mod tests {
         assert_eq!(request.url, "http://127.0.0.1:9/functions/v1/delete-peer");
         let sig = to_hex(&signing.sign(message.as_bytes()).to_bytes());
         assert_eq!(request.body.unwrap(), format!(r#"{{"pk":"{pk}","short_id":"{SHORT}","ts":1700000000,"nonce":"{VECTOR_NONCE}","sig":"{sig}"}}"#));
-        assert!(delete_request(&dummy(), &SEED, "ABCD2345", 1, VECTOR_NONCE).is_err());
+        assert!(delete_request(&dummy(), &SEED, "abcd2345", 1, VECTOR_NONCE).is_err());
     }
 
     #[test]
@@ -530,42 +469,62 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn get_request_selects_pk_and_name() {
-        let request = get_request(&dummy(), PK).unwrap();
-        assert_eq!(request.method, "GET");
-        assert_eq!(request.url, format!("http://127.0.0.1:9/rest/v1/peers?pk=eq.{PK}&select=pk,name,noise_pk"));
-        assert!(request.body.is_none());
-    }
-
-    #[test]
     fn bad_input_is_refused_before_a_request_exists() {
         assert!(put_request(&dummy(), &SEED, &"AB".repeat(32), SHORT, "A", 1, VECTOR_NONCE).is_err());
         assert!(put_request(&dummy(), &SEED, NOISE, SHORT, "", 1, VECTOR_NONCE).is_err());
         assert!(put_request(&dummy(), &SEED, NOISE, SHORT, &"x".repeat(33), 1, VECTOR_NONCE).is_err());
         assert!(put_request(&dummy(), &SEED, NOISE, SHORT, "a\u{7}b", 1, VECTOR_NONCE).is_err());
         assert!(put_request(&dummy(), &SEED, NOISE, SHORT, "A", 1, "ABC").is_err());
-        assert!(put_request(&dummy(), &SEED, NOISE, "ABCD2345", "A", 1, VECTOR_NONCE).is_err());
+        assert!(put_request(&dummy(), &SEED, NOISE, "abcd2345", "A", 1, VECTOR_NONCE).is_err());
         assert!(put_request(&dummy(), &SEED, NOISE, "abc", "A", 1, VECTOR_NONCE).is_err());
-        assert!(get_request(&dummy(), "abc").is_err());
+    }
+
+    // Fixed vectors shared with python/src/relay_rest.py and supabase/functions/*/checks.test.ts: seed bytes 0..31.
+    fn vector_seed() -> [u8; 32] {
+        std::array::from_fn(|index| index as u8)
+    }
+
+    #[test]
+    fn room_signatures_match_the_shared_vectors() {
+        let seed = vector_seed();
+        let nonce = "00112233445566778899aabbccddeeff";
+        let create: Value = serde_json::from_str(&signed_room_body(&seed, RoomAction::Create, "", "Alice", 1_700_000_000, nonce).unwrap()).unwrap();
+        assert_eq!(create["peer_pk"], "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8");
+        assert_eq!(create["sig"], "f26ec1d02def0df18204cf6507e74e121432cf29ff999b89f30b3137f6084fd2e10b3b6a5d1982a13a531547bbb23370fe821a91a27af0b616b3a05c9b718b0c");
+        assert!(create.get("room_code").is_none(), "create has no room code");
+        let join: Value = serde_json::from_str(&signed_room_body(&seed, RoomAction::Join, "ABCD1234", "Bob", 1_700_000_000, nonce).unwrap()).unwrap();
+        assert_eq!(join["room_code"], "ABCD1234");
+        assert_eq!(join["sig"], "4128444185a03e137deca1e066f73d7bf2121162a1f620c01b75f0e217511189388e4da58a7774bb5b18f0e2263a77ff65136eeab8b6a765ac53ca8a15f33c08");
+    }
+
+    #[test]
+    fn the_signed_message_is_the_seven_line_string() {
+        let text = room_message(RoomAction::Create, "", "pk", "Alice", 1, "n");
+        assert_eq!(text.split(char::from(10)).collect::<Vec<_>>(), ["herdr-talk-room-v1", "create", "", "pk", "Alice", "1", "n"]);
+    }
+
+    #[test]
+    fn a_join_request_is_signed_and_refuses_bad_input() {
+        let seed = vector_seed();
+        let request = signed_join_request(&dummy(), &seed, "ABCD1234", "Bob", 1_700_000_000, "00112233445566778899aabbccddeeff").unwrap();
+        assert_eq!(request.url, "http://127.0.0.1:9/functions/v1/join-room");
+        let body: Value = serde_json::from_str(request.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["sig"], "4128444185a03e137deca1e066f73d7bf2121162a1f620c01b75f0e217511189388e4da58a7774bb5b18f0e2263a77ff65136eeab8b6a765ac53ca8a15f33c08");
+        assert!(signed_join_request(&dummy(), &seed, "abcd1234", "Bob", 1, "00112233445566778899aabbccddeeff").is_err());
+        assert!(signed_join_request(&dummy(), &seed, "ABCD1234", "Bob", 1, "short").is_err());
+        assert!(join_room_request(&dummy(), &seed, "ABCD1234", "Bob").is_ok());
+    }
+
+    #[test]
+    fn an_expired_room_says_so() {
+        let error = read_join_room_response(410, r#"{"error":"방 기한이 지났습니다"}"#).unwrap_err();
+        assert_eq!(error, "방 기한이 지났습니다");
     }
 
     #[test]
     fn name_length_counts_characters() {
         assert!(valid_name(&"가".repeat(32)));
         assert!(!valid_name(&"가".repeat(33)));
-    }
-
-    #[test]
-    fn answers_are_checked() {
-        let good = format!(r#"[{{"pk":"{PK}","name":"Alice","noise_pk":"abababababababababababababababababababababababababababababababab"}}]"#);
-        assert_eq!(read_get_response(200, &good, PK), Ok(Some(Peer { pk: PK.into(), name: "Alice".into(), noise_pk: NOISE.into() })));
-        assert_eq!(read_get_response(200, "[]", PK), Ok(None));
-        assert!(read_get_response(401, &good, PK).is_err());
-        assert!(read_get_response(200, "{}", PK).is_err());
-        assert!(read_get_response(200, "not json", PK).is_err());
-        assert!(read_get_response(200, &good, &"2".repeat(64)).is_err());
-        assert!(read_get_response(200, &format!(r#"[{{"pk":"{PK}","name":"","noise_pk":"abababababababababababababababababababababababababababababababab"}}]"#), PK).is_err());
-        assert!(read_get_response(200, &format!("[{good_row},{good_row}]", good_row = r#"{"pk":"x"}"#), PK).is_err());
     }
 
     #[test]
@@ -630,45 +589,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn get_peer_reads_one_checked_row() {
-        let body = format!(r#"[{{"pk":"{PK}","name":"Alice","noise_pk":"abababababababababababababababababababababababababababababababab"}}]"#);
-        let response: &'static str = Box::leak(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_boxed_str());
-        let (config, received) = serve_once(response);
-        assert_eq!(get_peer(&config, PK), Some(Peer { pk: PK.into(), name: "Alice".into(), noise_pk: NOISE.into() }));
-        let request = received.recv().unwrap().to_ascii_lowercase();
-        assert!(request.starts_with(&format!("get /rest/v1/peers?pk=eq.{PK}&select=pk,name,noise_pk http/1.1")), "{request}");
-    }
-
-    #[test]
-    fn short_id_is_eight_lowercase_letters_or_digits() {
-        assert!(valid_short_id("abcd2345"));
-        for bad in ["abcd234", "abcd23456", "ABCD2345", "abcd-234", "ab cd234", ""] {
+    fn short_id_is_eight_uppercase_letters_or_digits() {
+        assert!(valid_short_id("ABCD2345"));
+        for bad in ["ABCD234", "ABCD23456", "abcd2345", "ABCD-234", "AB CD234", ""] {
             assert!(!valid_short_id(bad), "{bad}");
         }
     }
 
-    #[test]
-    fn short_lookup_needs_exactly_one_row_with_the_same_short_id() {
-        let full = "ab".repeat(32);
-        let row = format!(r#"{{"pk":"{full}","name":"Bob","noise_pk":"{}","short_id":"abcd2345"}}"#, "cd".repeat(32));
-        assert_eq!(read_short_response(200, &format!("[{row}]"), "abcd2345").unwrap().pk, full);
-        assert!(read_short_response(200, "[]", "abcd2345").unwrap_err().contains("찾지"));
-        assert!(read_short_response(200, &format!("[{row},{row}]"), "abcd2345").unwrap_err().contains("찾지"));
-        assert!(read_short_response(500, &format!("[{row}]"), "abcd2345").is_err());
-        assert!(read_short_response(200, &format!("[{row}]"), "zzzz9999").is_err(), "row must carry the asked short_id");
-    }
-
-    #[test]
-    fn short_lookup_request_uses_eq() {
-        let request = short_id_request(&dummy(), "abcd2345").unwrap();
-        assert!(request.url.ends_with("/rest/v1/peers?short_id=eq.abcd2345&select=pk,name,noise_pk,short_id"), "{}", request.url);
-        assert!(short_id_request(&dummy(), "abc").is_err());
-        assert!(short_id_request(&dummy(), "ABCD2345").is_err());
-    }
-
-    #[test]
-    fn find_peer_refuses_other_forms_without_a_request() {
-        assert!(find_peer(&dummy(), &"ab".repeat(32)).unwrap_err().contains("8"));
-        assert!(find_peer(&dummy(), "abc").unwrap_err().contains("8"));
-    }
 }

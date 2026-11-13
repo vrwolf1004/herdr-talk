@@ -264,7 +264,7 @@ fn worker(shared: Arc<Mutex<Shared>>, outgoing: Receiver<String>, started: Start
                 Ok(()) => None,
             };
             if let Some(reason) = failure {
-                run_embedded(&shared, &outgoing, &started, &reason);
+                run_embedded(&shared, &outgoing, &started, &reload, &reason);
             }
             set_status(&shared, &status_starting());
             thread::sleep(Duration::from_millis(500));
@@ -281,7 +281,7 @@ fn worker(shared: Arc<Mutex<Shared>>, outgoing: Receiver<String>, started: Start
 
 /// Second choice: the chat runs in this process through talk-core. It does not go back to herdr-talk
 /// later (a control file that appears afterwards is not picked up).
-fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, started: &Started, reason: &str) -> ! {
+fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, started: &Started, reload: &AtomicBool, reason: &str) -> ! {
     stop_serve(started); // a serve that is only late would be a second chat on this PC
     let chat = loop {
         let state = talk_core::store::state_dir();
@@ -303,6 +303,12 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
     }
     set_status(shared, &talk_core::t("gui.status.embedded_after", &[("reason", reason)]));
     loop {
+        // Settings were saved in this window: restart the embedded relay with them.
+        if reload.swap(false, Ordering::SeqCst) {
+            if let Err(error) = talk_core::relay_chat::start(&chat, &talk_core::store::state_dir()) {
+                chat.set_relay_status(&format!("relay: {error}"));
+            }
+        }
         while let Ok(text) = outgoing.try_recv() {
             chat.handle(&text);
         }
@@ -383,7 +389,7 @@ impl App {
                 self.reload.store(true, Ordering::SeqCst);
                 self.notice = message;
                 self.relay_form = None;
-                if self.first_run {
+                if self.first_run || self.screen == Screen::Intro {
                     self.first_run = false;
                     self.screen = Screen::Chat;
                 }
@@ -468,7 +474,6 @@ impl App {
             }
         } else {
             // Missing settings: the form opens, and a successful save goes straight into the chat.
-            self.first_run = true;
             self.relay_form = Some(relay_form::Form::open_supabase(&state));
         }
     }

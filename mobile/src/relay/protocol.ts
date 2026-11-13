@@ -135,20 +135,20 @@ export function putBody(pk: string, noisePk: string, shortId: string, name: stri
   return JSON.stringify({ pk, noise_pk: noisePk, short_id: shortId, name, ts, nonce, sig });
 }
 
-/** Same as the Rust store::fingerprint: the first 128 bits of SHA-256 over the two keys, sorted, in groups of four. */
+/** The characters of a code (same as Rust store::CODE_ALPHABET and Python store.CODE_ALPHABET). */
+const CODE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/** Same as the Rust store::fingerprint: the first 8 bytes of SHA-256 over the two keys, sorted, each byte mod 36, shown as XXXX-XXXX. */
 export function fingerprint(own: Uint8Array, peer: Uint8Array): string {
   const [first, second] = compareBytes(own, peer) <= 0 ? [own, peer] : [peer, own];
-  const hex = bytesToHex(sha256(concatBytes(first, second))).slice(0, 32);
-  const groups: string[] = [];
-  for (let i = 0; i < 32; i += 4) {
-    groups.push(hex.slice(i, i + 4));
-  }
-  return groups.join("-");
+  const digest = sha256(concatBytes(first, second)).slice(0, 8);
+  const code = Array.from(digest, (byte) => CODE_ALPHABET[byte % 36]).join("");
+  return `${code.slice(0, 4)}-${code.slice(4)}`;
 }
 
-/** What the user types for a code: no dashes, spaces or capitals. */
+/** What the user types for a code: no dashes or spaces; capitals are accepted and made uppercase. */
 export function normalizeCode(text: string): string {
-  return text.replace(/[\s-]/g, "").toLowerCase();
+  return text.replace(/[\s-]/g, "").toUpperCase();
 }
 
 /** Replay protection: a nonce is accepted once, only while its ts is within the window. Same rules as relay_replay.rs. */

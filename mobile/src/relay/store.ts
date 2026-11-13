@@ -20,7 +20,7 @@ const SIGNING_SEED_KEY = "herdr-talk.relay.signing-seed";
 const NOISE_PRIVATE_KEY = "herdr-talk.relay.noise-private";
 const SHORT_ID_KEY = "herdr-talk.relay.short-id";
 const DISPLAY_NAME_KEY = "herdr-talk.relay.display-name";
-const SHORT_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+const SHORT_ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 /** Random bytes from expo-crypto (the platform CSPRNG). Throws when no bytes come back: never a weak key. */
 export function randomBytes(length: number): Uint8Array {
@@ -42,7 +42,7 @@ function parseSettings(text: string | null): RelaySettings | null {
 }
 
 /**
- * App defaults from mobile/.env (EXPO_PUBLIC_RELAY_URL, _KEY, _PEER). Expo inlines them at build time.
+ * App defaults from mobile/.env (EXPO_PUBLIC_RELAY_URL, _KEY, _ROOM_CODE). Expo inlines them at build time.
  * The display name is not part of these defaults: the app assigns it (loadOrCreateDisplayName). Nothing here logs or prints a value.
  */
 export function defaultSettings(): RelaySettings {
@@ -50,7 +50,7 @@ export function defaultSettings(): RelaySettings {
     url: process.env.EXPO_PUBLIC_RELAY_URL ?? "",
     key: process.env.EXPO_PUBLIC_RELAY_KEY ?? "",
     name: "",
-    peer: process.env.EXPO_PUBLIC_RELAY_PEER ?? "",
+    roomCode: process.env.EXPO_PUBLIC_RELAY_ROOM_CODE ?? "",
   };
 }
 
@@ -128,7 +128,8 @@ export function newShortId(): string {
 
 /** This phone's short ID, made on the first use and kept in secure storage. A damaged value is an error, not replaced. */
 export async function loadOrCreateShortId(): Promise<string> {
-  const saved = await SecureStore.getItemAsync(SHORT_ID_KEY);
+  // A value saved by an older version may be lowercase: it is read as uppercase.
+  const saved = (await SecureStore.getItemAsync(SHORT_ID_KEY))?.toUpperCase();
   if (!saved) {
     const id = newShortId();
     await SecureStore.setItemAsync(SHORT_ID_KEY, id);

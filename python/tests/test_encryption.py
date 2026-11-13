@@ -21,12 +21,24 @@ def make_chat(name="Me", plaintext=False):
     return talk.Chat({"id": store.peer_id(public), "name": name, "port": 1, "key": public, "secret": secret}, plaintext=plaintext)
 
 
+def wait_code(chat, key, seconds=5):
+    """The code chat shows for the peer with this key, once the reveal exchange has run (a real loopback exchange)."""
+    deadline = time.time() + seconds
+    while chat.sas_for(key) is None and time.time() < deadline:
+        time.sleep(0.02)
+    code = chat.sas_for(key)
+    assert code is not None, "the reveal exchange did not finish"
+    return code
+
+
 def announce(chat, peer, ip, **changes):
     """Feed one announcement of `peer` (a Chat, or a dict of fields) into chat the way the UDP listener does."""
     me = peer.me if isinstance(peer, talk.Chat) else peer
     info = {"app": talk.APP, "id": me["id"], "name": me["name"], "port": me["port"]}
     if me.get("key") is not None:
         info["key"] = store.to_hex(me["key"])
+    if me.get("commits"):
+        info["commits"] = dict(me["commits"])
     info.update(changes)
     info = {k: v for k, v in info.items() if v is not None}
     packet = json.dumps(info).encode("utf-8")
@@ -81,13 +93,22 @@ class StoreTest(Base):
             self.assertEqual(json.load(f), [{"name": "Bob 밥", "key": "09" * 32, "ip": "10.0.0.2"}])
         self.assertEqual(store.read_trusted(self.dir), [peer])
 
+    def test_sas_and_commit_match_the_rust_vectors(self):
+        # The same values as rust/crates/talk-core store.rs (sas_and_commit_match_the_python_reference).
+        self.assertEqual(store.commit(bytes([1]) * 32, bytes([2]) * 32).hex(), "8d02d5ba2bcdc8c3392ffda99d1a66c4eede8c57cc4443c7d0fc00d5f39d7b59")
+        self.assertEqual(store.sas_code(bytes([1]) * 32, bytes([2]) * 32, bytes([3]) * 32, bytes([4]) * 32), "HWCF-KZ1W")
+        self.assertEqual(store.sas_code(bytes([3]) * 32, bytes([4]) * 32, bytes([1]) * 32, bytes([2]) * 32), "HWCF-KZ1W")
+        mobile = json.load(open(os.path.join(os.path.dirname(__file__), "..", "..", "mobile", "test-vectors", "relay.json")))["outputs"]
+        code = store.sas_code(bytes.fromhex(mobile["initiatorPublic"]), bytes([0x11]) * 32, bytes.fromhex(mobile["responderPublic"]), bytes([0x22]) * 32)
+        self.assertEqual(code, "I81X-P7D6")
+
     def test_ids_and_codes(self):
         key = bytes(range(32))
         self.assertEqual(store.peer_id(key), "630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd")
         a, b = bytes([3]) * 32, bytes([4]) * 32
         code = store.fingerprint(a, b)
         self.assertEqual(code, store.fingerprint(b, a))
-        self.assertRegex(code, r"^([0-9a-f]{4}-){7}[0-9a-f]{4}$")
+        self.assertRegex(code, r"^[0-9A-Z]{4}-[0-9A-Z]{4}$")
         self.assertEqual(store.normalize_code(f" {code.upper()} "), store.normalize_code(code))
 
     def test_plaintext_follows_config_json(self):
@@ -124,13 +145,31 @@ class AnnouncementTest(Base):
         self.assertIsNone(peer["key"])
         self.assertEqual(me.link_of(peer), "plain")
 
-    def test_new_peer_shows_a_code_both_sides_agree_on(self):
+    def test_an_announce_alone_shows_no_code(self):
+        # The code needs both nonces (the reveal exchange). An announce only pins the peer's commitment for us.
         mine, theirs = make_chat("A"), make_chat("B")
+        theirs.my_nonce_for(mine.me["key"])
         announce(mine, theirs, "10.0.0.5")
-        announce(theirs, mine, "10.0.0.6")
-        code = store.fingerprint(mine.me["key"], theirs.me["key"])
-        self.assertIn(talk.t("peer.fingerprint", name="B", ip="10.0.0.5", label=store.key_label(theirs.me["key"]), code=code), self.lines)
-        self.assertIn(talk.t("peer.fingerprint", name="A", ip="10.0.0.6", label=store.key_label(mine.me["key"]), code=code), self.lines)
+        self.assertEqual(mine.commits[theirs.me["key"]], store.commit(theirs.me["key"], theirs.my_nonce_for(mine.me["key"])))
+        self.assertIsNone(mine.sas_for(theirs.me["key"]))
+        self.assertFalse(any("code" in line or "fingerprint" in line for line in self.lines), self.lines)
+
+    def test_a_changed_commitment_is_refused_with_one_warning(self):
+        mine, theirs = make_chat("A"), make_chat("B")
+        theirs.my_nonce_for(mine.me["key"])
+        announce(mine, theirs, "10.0.0.5")
+        pinned = mine.commits[theirs.me["key"]]
+        theirs.me["commits"][store.to_hex(mine.me["key"])] = store.to_hex(bytes(32))  # another commitment for us
+        announce(mine, theirs, "10.0.0.5")
+        announce(mine, theirs, "10.0.0.5")
+        self.assertEqual(mine.commits[theirs.me["key"]], pinned, "the first commitment stays")
+        self.assertEqual(len([line for line in self.lines if "key" in line.lower()]), 1, self.lines)
+        self.assertEqual(len(mine.peers), 1, "the first entry stays and the changed commitment adds none")
+
+    def test_a_reveal_needs_a_commitment_from_the_sender(self):
+        mine, theirs = make_chat("A"), make_chat("B")
+        with self.assertRaises(ValueError):
+            talk.read_reveal(mine, theirs.me["key"], talk.reveal_message(theirs, mine.me["key"]))
 
     def test_own_key_is_taken_only_from_this_pc(self):
         me = make_chat()
@@ -182,8 +221,10 @@ class ExchangeTest(Base):
             chat.me["port"] = server.getsockname()[1]
             threading.Thread(target=talk.receive_messages, args=(server, chat), daemon=True).start()
             self.servers.append(server)
+        # Three rounds, as three announce cycles: each side learns the other's nonce commitment, then pins it.
         announce(self.a, self.b, "127.0.0.1")
         announce(self.b, self.a, "127.0.0.1")
+        announce(self.a, self.b, "127.0.0.1")
         if a_trusts_b:
             self.a.trusted.append({"name": "B", "key": self.b.me["key"], "ip": "127.0.0.1"})
         if b_trusts_a:
@@ -223,12 +264,15 @@ class ExchangeTest(Base):
         self.assertTrue(seen)
         self.assertFalse(any(b"secret-text" in chunk for chunk in seen))
 
-    def test_an_unverified_sender_gets_no_answer_and_nothing_is_shown(self):
+    def test_an_unverified_sender_message_is_never_shown(self):
+        # B answers only the reveal of an unverified sender (its commitment is known). A chat message is refused.
         self.pair(b_trusts_a=False)
-        with self.assertRaises(OSError):
+        try:
             talk.send_to(self.peer(self.a), self.a.me, "let me in")
+        except OSError:
+            pass
         time.sleep(0.2)
-        self.assertEqual(self.lines, [])
+        self.assertFalse(any("let me in" in line for line in self.lines), self.lines)
 
     def test_plain_text_is_dropped_unless_turned_on(self):
         self.pair()
@@ -268,7 +312,7 @@ class ExchangeTest(Base):
     def test_trust_command_saves_and_then_the_message_flows(self):
         self.pair(a_trusts_b=False, b_trusts_a=False)
         self.b.state_dir = self.dir
-        code = store.fingerprint(self.b.me["key"], self.a.me["key"])
+        code = wait_code(self.b, self.a.me["key"])
         self.b.handle("/trust 0000-0000")
         self.assertIn(talk.t("trust.none", code="00000000"), self.lines)
         self.b.handle(f"/trust {code.upper()}")
@@ -283,17 +327,19 @@ class ExchangeTest(Base):
 
     def test_trust_refuses_two_different_keys_with_one_code(self):
         me = make_chat()
-        code = "abcd"
+        code = "ABCD-1234"
         k1, k2 = bytes([1]) * 32, bytes([2]) * 32
-        original = store.fingerprint
+        original = store.sas_code
         try:
-            store.fingerprint = lambda own, key: code
+            store.sas_code = lambda *args: code
             for key in (k1, k2):
                 me.peers[key.hex()] = {"id": store.peer_id(key), "name": "X", "ip": "10.0.0.9", "port": 1, "seen": time.time(), "key": key}
-            me.handle("/trust abcd")
+                me.reveals[key] = bytes(32)
+                me.my_nonce_for(key)
+            me.handle("/trust abcd1234")
         finally:
-            store.fingerprint = original
-        self.assertIn(talk.t("trust.ambiguous", code=code), self.lines)
+            store.sas_code = original
+        self.assertIn(talk.t("trust.ambiguous", code="ABCD1234"), self.lines)
         self.assertEqual(me.trusted, [])
 
 

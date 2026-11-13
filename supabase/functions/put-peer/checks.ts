@@ -18,7 +18,7 @@ export interface PutBody {
 
 const PK_PATTERN = /^[0-9a-f]{64}$/;
 const NOISE_PK_PATTERN = /^[0-9a-f]{64}$/;
-const SHORT_ID_PATTERN = /^[a-z0-9]{8}$/;
+const SHORT_ID_PATTERN = /^[A-Z0-9]{8}$/;
 const NONCE_PATTERN = /^[0-9a-f]{32}$/;
 const SIG_PATTERN = /^[0-9a-f]{128}$/;
 // Unicode category Cc: C0 controls, DEL, C1 controls. Same rule as the table constraint and both editions.

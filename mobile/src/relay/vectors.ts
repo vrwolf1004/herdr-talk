@@ -19,11 +19,11 @@ export const INPUTS = {
   signingSeed: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
   rowNoisePk: "ab".repeat(32),
   rowName: "Alice",
-  rowShortId: "ab12cd34",
+  rowShortId: "AB12CD34",
   rowTs: 1700000000,
   rowNonce: "00112233445566778899aabbccddeeff",
   // The delete-peer vector (signed by the same seed; the signed string is herdr-talk-del-v1).
-  deleteShortId: "ab12cd34",
+  deleteShortId: "AB12CD34",
   deleteTs: 1700000000,
   deleteNonce: "00112233445566778899aabbccddeeff",
   // The two public keys of the known channel-name vector (0x01 x 32 and 0x02 x 32).

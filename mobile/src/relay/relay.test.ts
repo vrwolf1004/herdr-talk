@@ -18,9 +18,7 @@ import {
   verifyPut,
 } from "./protocol.ts";
 import { computeVectors, INPUTS } from "./vectors.ts";
-import { codeMatches, emptySettings, isHttpsUrl, isPeerInput, keyLabel, missingFields } from "./settings.ts";
-import { readShortAnswer } from "./client.ts";
-import { receiveLine, sealText, type Keys } from "./engine.ts";
+import { codeMatches, emptySettings, isHttpsUrl, isRoomCode, keyLabel, missingFields, normalizeRoomCode } from "./settings.ts";
 import { NAMES_BY_LANGUAGE, namesFor } from "./names.ts";
 import { parseNames } from "../../scripts/gen-names.mjs";
 
@@ -114,20 +112,20 @@ test("replay: entries leave with the window; a full cache of live entries refuse
 
 test("signed row: verifies, and any change breaks it", () => {
   const seed = hexToBytes(INPUTS.signingSeed);
-  const SHORT = "abcd2345";
+  const SHORT = "ABCD2345";
   const row = signPut(seed, INPUTS.rowNoisePk, SHORT, "Alice", NOW, NONCE);
   assert.equal(verifyPut(row.pk, INPUTS.rowNoisePk, SHORT, "Alice", NOW, NONCE, row.sig), true);
-  assert.equal(verifyPut(row.pk, INPUTS.rowNoisePk, "abcd2346", "Alice", NOW, NONCE, row.sig), false, "short_id is signed");
+  assert.equal(verifyPut(row.pk, INPUTS.rowNoisePk, "ABCD2346", "Alice", NOW, NONCE, row.sig), false, "short_id is signed");
   assert.equal(verifyPut(row.pk, INPUTS.rowNoisePk, SHORT, "Bob", NOW, NONCE, row.sig), false);
   assert.equal(verifyPut(row.pk, INPUTS.rowNoisePk, SHORT, "Alice", NOW + 1, NONCE, row.sig), false);
   const body = JSON.parse(putBody(row.pk, INPUTS.rowNoisePk, SHORT, "Alice", NOW, NONCE, row.sig));
   assert.deepEqual(Object.keys(body), ["pk", "noise_pk", "short_id", "name", "ts", "nonce", "sig"]);
 });
 
-test("fingerprint: symmetric, four-digit groups, and typed codes are compared without dashes or case", () => {
+test("fingerprint: symmetric, XXXX-XXXX groups, and typed codes are compared without dashes or case", () => {
   const a = fingerprint(KEY_A, KEY_B);
   assert.equal(a, fingerprint(KEY_B, KEY_A));
-  assert.match(a, /^[0-9a-f]{4}(-[0-9a-f]{4}){7}$/);
+  assert.match(a, /^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
   assert.equal(codeMatches(a.toUpperCase().replace(/-/g, " "), a), true);
   assert.equal(codeMatches(normalizeCode(a).slice(1) + "0", a), false);
 });
@@ -139,72 +137,25 @@ test("base64 and UTF-8 helpers", () => {
   assert.equal(utf8Decode(utf8Encode("가a😀")), "가a😀");
 });
 
-test("settings: four fields are required, the URL must be https, the key is shown by length", () => {
-  assert.deepEqual(missingFields(emptySettings()), ["url", "key", "peer"]);
-  const full = { url: "https://x.supabase.co", key: "k", name: "Alice", peer: "abcd2345" };
+test("settings: room ID is required, the URL must be https, the key is shown by length", () => {
+  assert.deepEqual(missingFields(emptySettings()), ["url", "key", "roomCode"]);
+  const full = { url: "https://x.supabase.co", key: "k", name: "Alice", roomCode: "ABCD2345" };
   assert.deepEqual(missingFields(full), []);
   assert.deepEqual(missingFields({ ...full, url: "http://x.example" }), ["url"]);
-  assert.deepEqual(missingFields({ ...full, peer: "ABCD2345" }), ["peer"]);
+  assert.deepEqual(missingFields({ ...full, roomCode: "abcd2345" }), ["roomCode"], "lowercase is not valid until it is normalized on save");
   assert.equal(isHttpsUrl("https://x.supabase.co/"), true);
   assert.equal(keyLabel("dummy-test-key"), "(14 chars)");
 });
 
-// ---- message loop between two engines (no network) ----
+// ---- room ID (8 characters) ----
 
-function keysFrom(privateHex: string): Keys {
-  const noisePrivate = hexToBytes(privateHex);
-  return { noisePrivate, noisePublic: publicKeyOf(noisePrivate) };
-}
-
-test("message loop: A seals, B shows it once; a replay, an old copy and a stranger's line are dropped", () => {
-  const alice = keysFrom(INPUTS.initiatorStaticPrivate);
-  const bob = keysFrom(INPUTS.responderStaticPrivate);
-  const ephemeral = hexToBytes(INPUTS.ephemeralPrivate);
-  const cache = new NonceCache();
-  const line = sealText(alice, bob.noisePublic, "hello bob", NOW, NONCE, ephemeral);
-  assert.deepEqual(receiveLine(bob, alice.noisePublic, "Alice", line, cache, NOW), {
-    kind: "shown",
-    line: { sender: "Alice", text: "hello bob", mine: false },
-  });
-  assert.deepEqual(receiveLine(bob, alice.noisePublic, "Alice", line, cache, NOW), { kind: "dropped" }, "replay");
-  // The same envelope captured later, outside the window
-  const old = sealText(alice, bob.noisePublic, "old", NOW - 400, "ff".repeat(16), ephemeral);
-  assert.deepEqual(receiveLine(bob, alice.noisePublic, "Alice", old, new NonceCache(), NOW), { kind: "dropped" }, "outside 300 s");
-  // A message from a stranger who knows the channel but not the verified key
-  const stranger = keysFrom("55".repeat(32));
-  const fromStranger = sealText(stranger, bob.noisePublic, "spam", NOW, "aa".repeat(16), ephemeral);
-  assert.deepEqual(receiveLine(bob, alice.noisePublic, "Alice", fromStranger, new NonceCache(), NOW), { kind: "dropped" }, "unverified sender");
-});
-
-test("message loop: a wrong version or a changed ciphertext is dropped", () => {
-  const alice = keysFrom(INPUTS.initiatorStaticPrivate);
-  const bob = keysFrom(INPUTS.responderStaticPrivate);
-  const line = sealText(alice, bob.noisePublic, "x", NOW, NONCE, hexToBytes(INPUTS.ephemeralPrivate));
-  assert.deepEqual(receiveLine(bob, alice.noisePublic, "A", line.replace('"v":1', '"v":2'), new NonceCache(), NOW), { kind: "dropped" });
-  const tampered = line.replace(/"ct":"(.)/, (_m, c: string) => `"ct":"${c === "A" ? "B" : "A"}`);
-  assert.deepEqual(receiveLine(bob, alice.noisePublic, "A", tampered, new NonceCache(), NOW), { kind: "dropped" });
-});
-
-// ---- short ID (8 characters) ----
-
-test("peer input: 8 lowercase letters or digits only", () => {
-  assert.equal(isPeerInput("abcd2345"), true);
-  assert.equal(isPeerInput("zzzzzzzz"), true);
-  for (const bad of ["a".repeat(7), "a".repeat(9), "ab".repeat(32), "ABCD2345", "abcd-234", ""]) {
-    assert.equal(isPeerInput(bad), false, bad);
+test("room input: 8 uppercase letters or digits; typed lowercase is normalized first", () => {
+  assert.equal(isRoomCode("ABCD2345"), true);
+  assert.equal(isRoomCode("ZZZZZZZZ"), true);
+  for (const bad of ["A".repeat(7), "A".repeat(9), "ab".repeat(32), "abcd2345", "ABCD-234", ""]) {
+    assert.equal(isRoomCode(bad), false, bad);
   }
-});
-
-test("short ID lookup: exactly one row with the same short_id; 0 or 2 rows give the message", () => {
-  const full = "ab".repeat(32);
-  const row = JSON.stringify({ pk: full, name: "Bob", noise_pk: "cd".repeat(32), short_id: "abcd2345" });
-  const one = readShortAnswer(200, `[${row}]`, "abcd2345");
-  assert.ok("row" in one);
-  assert.equal(one.row.pk, full, "the full key is what the app keeps");
-  assert.deepEqual(readShortAnswer(200, "[]", "abcd2345"), { reason: "상대를 찾지 못함" });
-  assert.deepEqual(readShortAnswer(200, `[${row},${row}]`, "abcd2345"), { reason: "상대를 찾지 못함" });
-  assert.ok("reason" in readShortAnswer(500, `[${row}]`, "abcd2345"));
-  assert.ok("reason" in readShortAnswer(200, `[${row}]`, "zzzz9999"), "row must carry the asked short_id");
+  assert.equal(normalizeRoomCode(" abcd-2345 "), "ABCD2345");
 });
 
 test("names.ts equals the talk-core name table (regenerate with scripts/gen-names.mjs)", () => {

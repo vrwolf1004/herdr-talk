@@ -114,7 +114,7 @@ fn announce(udp_port: u16, chat: Arc<Chat>) {
     chat.resolve_name_conflict();
     while !chat.stop.is_set() {
         let me = chat.me.lock().unwrap().clone();
-        let payload = json!({"app": APP, "id": me.id, "name": me.name, "port": me.port, "key": store::to_hex(&me.key)}).to_string();
+        let payload = announce_payload(&chat, &me);
         let _ = socket.send_to(payload.as_bytes(), ("255.255.255.255", udp_port));
         chat.stop.wait(ANNOUNCE_INTERVAL);
     }
@@ -125,11 +125,27 @@ fn listen_for_peers(socket: UdpSocket, chat: Arc<Chat>) {
     let mut buffer = [0; 4096];
     while !chat.stop.is_set() {
         match socket.recv_from(&mut buffer) {
-            Ok((size, address)) => remember_peer(&chat, &buffer[..size], address.ip().to_string()),
+            Ok((size, address)) => {
+                remember_peer(&chat, &buffer[..size], address.ip().to_string());
+                // The reveal workers need the Arc, so they are started here, not inside the parser.
+                for (key, ip, port) in chat.take_reveal_requests() {
+                    reveal_later(&chat, &key, &ip, port);
+                }
+            }
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
             Err(_) => return,
         }
     }
+}
+
+/// The discovery packet: name, port, key, and one commitment per known peer (the commitment this PC makes for that peer).
+fn announce_payload(chat: &Chat, me: &Me) -> String {
+    let mut fields = json!({"app": APP, "id": me.id, "name": me.name, "port": me.port, "key": store::to_hex(&me.key)});
+    let commits = chat.announced_commits();
+    if !commits.is_empty() {
+        fields["commits"] = Value::Object(commits.into_iter().map(|(key, commit)| (key, Value::String(commit))).collect());
+    }
+    fields.to_string()
 }
 
 /// How long a new chat listens for announcements before it announces itself, so a name that clashes with a
@@ -162,6 +178,23 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
     // This PC's own key belongs to another pane here. Only an announcement from a local address is taken.
     if key.as_deref() == Some(me.key.as_slice()) && !is_local_address(&ip) {
         return;
+    }
+    // The commitment (SAS): the one this peer gave us for us. Pinned at first sight; a different one is refused.
+    // Without one the peer is an old version and cannot be verified.
+    let commit: Option<[u8; 32]> = match key.as_deref() {
+        Some(_) => info.get("commits").and_then(Value::as_object).and_then(|map| map.get(&store::to_hex(&me.key))).and_then(Value::as_str).and_then(store::from_hex).and_then(|bytes| bytes.try_into().ok()),
+        None => None,
+    };
+    if let (Some(key), Some(commit)) = (key.as_deref(), commit) {
+        if !chat.pin_commit(key, commit) {
+            if chat.refuse_once(key, commit) {
+                chat.say(t("peer.key_changed", &[("name", &peer_name(info.get("name").and_then(Value::as_str))), ("ip", &ip)]));
+            }
+            return;
+        }
+    }
+    if let Some(key) = key.as_deref() {
+        chat.my_nonce_for(key); // our nonce for this peer; its commitment goes out in the next announce
     }
     // A key the user trusts: an announcement may not rename its entry or move it to another address.
     let trusted = key.as_deref().is_some_and(|key| chat.trusts(key));
@@ -198,12 +231,14 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
         let changed = chat.trusted.lock().unwrap().iter().any(|trusted| {
             trusted.ip == ip && !alive.iter().any(|peer| peer.ip == ip && peer.key.as_deref() == Some(trusted.key.as_slice()))
         });
-        let code = store::fingerprint(&me.key, &key);
         if changed {
             chat.say(t("peer.key_changed", &[("name", &name), ("ip", &ip)]));
+        } else if commit.is_some() {
+            // The code is shown only after both nonces are known (see reveal_later), never from the announce alone.
+            chat.request_reveal(&key, &ip, port);
         } else {
-            let label = store::key_label(&key);
-            chat.say(t("peer.fingerprint", &[("name", &name), ("ip", &ip), ("label", &label), ("code", &code)]));
+            // shortcut: a Korean-only notice; move it to the locales when the wording is settled.
+            chat.say(format!("{name} ({ip}): 구버전이라 확인할 수 없습니다. 양쪽 PC 를 새 판으로 올리세요"));
         }
     }
 }
@@ -327,7 +362,11 @@ fn receive_one(mut conn: impl Read + Write, chat: &Chat) {
         }
         read_plain(&mut conn, first[0]).ok().map(|data| (data, None))
     } else {
-        receive_encrypted(&mut conn, first[0], chat).ok().map(|(data, key)| (data, Some(key)))
+        match receive_encrypted(&mut conn, first[0], chat) {
+            Ok(Some((data, key))) => Some((data, Some(key))),
+            // A reveal was exchanged on this connection: nothing to show.
+            Ok(None) | Err(_) => None,
+        }
     };
     if let Some((data, key)) = received {
         deliver(&data, key.as_deref(), chat);
@@ -351,7 +390,7 @@ fn read_plain(conn: &mut impl Read, first: u8) -> io::Result<Vec<u8>> {
 
 /// Noise IK responder. The handshake shows the sender's key before we answer, so an unverified
 /// sender gets no answer at all. Returns the message and the verified key.
-fn receive_encrypted(conn: &mut (impl Read + Write), first: u8, chat: &Chat) -> io::Result<(Vec<u8>, Vec<u8>)> {
+fn receive_encrypted(conn: &mut (impl Read + Write), first: u8, chat: &Chat) -> io::Result<Option<(Vec<u8>, Vec<u8>)>> {
     let mut second = [0; 1];
     conn.read_exact(&mut second)?;
     let hello = read_body(conn, usize::from(u16::from_be_bytes([first, second[0]])))?;
@@ -360,7 +399,9 @@ fn receive_encrypted(conn: &mut (impl Read + Write), first: u8, chat: &Chat) -> 
     let mut buffer = vec![0; MAX_FRAME];
     handshake.read_message(&hello, &mut buffer).map_err(noise_error)?;
     let sender = handshake.get_remote_static().map(<[u8]>::to_vec).ok_or_else(|| invalid("no sender key"))?;
-    if !chat.trusts(&sender) {
+    let trusted = chat.trusts(&sender);
+    // A peer not verified yet may only reveal its nonce, and only when it announced a commitment. Nothing else is answered.
+    if !trusted && chat.commit_of(&sender).is_none() {
         return Err(invalid("sender is not verified"));
     }
     let n = handshake.write_message(&[], &mut buffer).map_err(noise_error)?;
@@ -368,7 +409,110 @@ fn receive_encrypted(conn: &mut (impl Read + Write), first: u8, chat: &Chat) -> 
     let mut session = handshake.into_transport_mode().map_err(noise_error)?;
     let frame = read_frame(conn)?;
     let n = session.read_message(&frame, &mut buffer).map_err(noise_error)?;
-    Ok((buffer[..n].to_vec(), sender))
+    let payload = buffer[..n].to_vec();
+    if trusted {
+        return Ok(Some((payload, sender)));
+    }
+    let nonce = read_reveal(chat, &sender, &payload)?;
+    if chat.reveal_of(&sender).is_some_and(|known| known != nonce) {
+        return Err(invalid("a different reveal from this peer was already given"));
+    }
+    if chat.set_reveal(&sender, nonce) {
+        show_code(chat, &sender);
+    }
+    // Our reveal (our nonce for this peer) goes back on the same connection, so the initiator gets it too.
+    let n = session.write_message(reveal_message(chat, &sender).as_bytes(), &mut buffer).map_err(noise_error)?;
+    write_frame(conn, &buffer[..n])?;
+    Ok(None)
+}
+
+/// How often a peer's reveal is tried, and how many times, before the worker gives up (the next announce starts it again).
+const REVEAL_RETRY: Duration = Duration::from_secs(2);
+const REVEAL_TRIES: u32 = 10;
+
+/// Fetch a peer's reveal in the background, then show its code. One worker per peer; it stops when the code is known.
+fn reveal_later(chat: &Arc<Chat>, key: &[u8], ip: &str, port: u16) {
+    if !chat.start_reveal(key) {
+        return;
+    }
+    let (chat, key, ip) = (chat.clone(), key.to_vec(), ip.to_string());
+    thread::spawn(move || {
+        for _ in 0..REVEAL_TRIES {
+            if chat.stop.is_set() || chat.sas_for(&key).is_some() {
+                break;
+            }
+            match exchange_reveal(&chat, &ip, port, &key) {
+                Ok(nonce) => {
+                    if chat.set_reveal(&key, nonce) {
+                        show_code(&chat, &key);
+                    }
+                    break;
+                }
+                Err(_) => chat.stop.wait(REVEAL_RETRY),
+            }
+        }
+        chat.finish_reveal(&key);
+    });
+}
+
+/// The line that shows the code for a peer (only when its nonce is known).
+fn show_code(chat: &Chat, key: &[u8]) {
+    let Some(code) = chat.sas_for(key) else { return };
+    let (name, ip) = chat.peer_by_key(key).unwrap_or_else(|| ("?".to_string(), "?".to_string()));
+    let label = store::key_label(key);
+    chat.say(t("peer.fingerprint", &[("name", &name), ("ip", &ip), ("label", &label), ("code", &code)]));
+}
+
+/// The reveal message (plain JSON inside the Noise session): this PC's key and its nonce for that peer.
+fn reveal_message(chat: &Chat, peer_key: &[u8]) -> String {
+    let key = chat.me.lock().unwrap().key.clone();
+    let nonce = chat.my_nonce_for(peer_key);
+    json!({"app": APP, "type": "reveal", "pk": store::to_hex(&key), "nonce": store::to_hex(&nonce)}).to_string()
+}
+
+/// Check a reveal from `expected` against its announced commitment. The nonce is returned only when it matches.
+fn read_reveal(chat: &Chat, expected: &[u8], payload: &[u8]) -> io::Result<[u8; 32]> {
+    let value: Value = serde_json::from_slice(payload).map_err(|_| invalid("reveal is not JSON"))?;
+    if value.get("app").and_then(Value::as_str) != Some(APP) || value.get("type").and_then(Value::as_str) != Some("reveal") {
+        return Err(invalid("not a reveal"));
+    }
+    let key = value.get("pk").and_then(Value::as_str).and_then(store::from_hex);
+    if key.as_deref() != Some(expected) {
+        return Err(invalid("reveal is for another key"));
+    }
+    let nonce: [u8; 32] = value.get("nonce").and_then(Value::as_str).and_then(store::from_hex).and_then(|bytes| bytes.try_into().ok()).ok_or_else(|| invalid("reveal nonce is not 32 bytes"))?;
+    let commit = chat.commit_of(expected).ok_or_else(|| invalid("no commitment from this peer"))?;
+    if store::commit(expected, &nonce) != commit {
+        return Err(invalid("reveal does not match the commitment"));
+    }
+    Ok(nonce)
+}
+
+/// The initiator side of the reveal: connect with the peer's key, send our reveal, read the peer's reveal back.
+fn exchange_reveal(chat: &Chat, ip: &str, port: u16, key: &[u8]) -> io::Result<[u8; 32]> {
+    let address = (ip, port).to_socket_addrs()?.next().ok_or_else(|| io::Error::new(ErrorKind::NotFound, "no address"))?;
+    let mut conn = TcpStream::connect_timeout(&address, SEND_TIMEOUT)?;
+    conn.set_read_timeout(Some(SEND_TIMEOUT))?;
+    conn.set_write_timeout(Some(SEND_TIMEOUT))?;
+    exchange_reveal_on(&mut conn, chat, key)
+}
+
+/// The reveal exchange on an open connection (the initiator's half).
+fn exchange_reveal_on(conn: &mut (impl Read + Write), chat: &Chat, key: &[u8]) -> io::Result<[u8; 32]> {
+    let secret = chat.me.lock().unwrap().secret.clone();
+    let builder = noise_builder().local_private_key(&secret).map_err(noise_error)?;
+    let mut handshake = builder.remote_public_key(key).map_err(noise_error)?.build_initiator().map_err(noise_error)?;
+    let mut buffer = vec![0; MAX_FRAME];
+    let n = handshake.write_message(&[], &mut buffer).map_err(noise_error)?;
+    write_frame(conn, &buffer[..n])?;
+    let reply = read_frame(conn)?;
+    handshake.read_message(&reply, &mut buffer).map_err(noise_error)?;
+    let mut session = handshake.into_transport_mode().map_err(noise_error)?;
+    let n = session.write_message(reveal_message(chat, key).as_bytes(), &mut buffer).map_err(noise_error)?;
+    write_frame(conn, &buffer[..n])?;
+    let frame = read_frame(conn)?;
+    let n = session.read_message(&frame, &mut buffer).map_err(noise_error)?;
+    read_reveal(chat, key, &buffer[..n])
 }
 
 /// Show one message. With a key, the id must be that key's id. Without one, the id must not be a key-derived id.
@@ -966,4 +1110,83 @@ mod tests {
         deliver_plain(&chat, &payload);
         assert!(chat.lines().iter().any(|line| line.text == "hi over lan"));
     }
+    #[test]
+    fn a_reveal_exchange_gives_both_sides_the_same_code() {
+        // Two chats with their own keys and nonces; each knows the other's commitment (from its announce).
+        let (first, second) = (chat_with_keys(1), chat_with_keys(2));
+        let (first_key, second_key) = (first.me.lock().unwrap().key.clone(), second.me.lock().unwrap().key.clone());
+        first.pin_commit(&second_key, second.my_commit_for(&first_key));
+        second.pin_commit(&first_key, first.my_commit_for(&second_key));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let responder = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut first_byte = [0; 1];
+            conn.read_exact(&mut first_byte).unwrap();
+            let outcome = receive_encrypted(&mut conn, first_byte[0], &second).unwrap();
+            assert!(outcome.is_none(), "a reveal is not a message");
+            second
+        });
+        let mut conn = TcpStream::connect(address).unwrap();
+        let peer_nonce = exchange_reveal_on(&mut conn, &first, &second_key).unwrap();
+        assert!(first.set_reveal(&second_key, peer_nonce));
+        let second = responder.join().unwrap();
+        assert!(first.sas_for(&second_key).is_some());
+        assert_eq!(first.sas_for(&second_key), second.sas_for(&first_key), "both sides show the same code");
+    }
+
+    #[test]
+    fn a_reveal_that_does_not_match_the_commitment_is_refused() {
+        let (first, second) = (chat_with_keys(1), chat_with_keys(2));
+        let second_key = second.me.lock().unwrap().key.clone();
+        // The responder has a commitment that is not the one the first chat reveals.
+        first.pin_commit(&second_key, [0xAB; 32]);
+        second.pin_commit(&first.me.lock().unwrap().key.clone(), [0xCD; 32]);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let responder = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut first_byte = [0; 1];
+            conn.read_exact(&mut first_byte).unwrap();
+            receive_encrypted(&mut conn, first_byte[0], &second).is_err()
+        });
+        let mut conn = TcpStream::connect(address).unwrap();
+        assert!(exchange_reveal_on(&mut conn, &first, &second_key).is_err());
+        assert!(responder.join().unwrap(), "the responder refuses the reveal");
+    }
+
+    #[test]
+    fn a_commitment_is_pinned_and_a_second_reveal_is_refused() {
+        let chat = chat_with_keys(1);
+        let key = [7u8; 32];
+        assert!(chat.pin_commit(&key, [1; 32]));
+        assert!(!chat.pin_commit(&key, [2; 32]), "a different commitment is refused");
+        assert!(chat.pin_commit(&key, [1; 32]), "the pinned one is still accepted");
+        assert!(chat.refuse_once(&key, [2; 32]));
+        assert!(!chat.refuse_once(&key, [2; 32]), "the warning comes once");
+        assert!(chat.set_reveal(&key, [3; 32]));
+        assert_eq!(chat.reveal_of(&key), Some([3; 32]));
+    }
+
+    #[test]
+    fn the_announce_carries_one_commitment_per_peer() {
+        let chat = chat_with_keys(1);
+        let peer = [9u8; 32];
+        chat.my_nonce_for(&peer);
+        let me = chat.me.lock().unwrap().clone();
+        let payload: Value = serde_json::from_str(&announce_payload(&chat, &me)).unwrap();
+        assert_eq!(payload["commits"][store::to_hex(&peer)], store::to_hex(&chat.my_commit_for(&peer)));
+        assert_eq!(payload["key"], store::to_hex(&me.key));
+        let other = chat_with_keys(2);
+        let other_me = other.me.lock().unwrap().clone();
+        let alone: Value = serde_json::from_str(&announce_payload(&other, &other_me)).unwrap();
+        assert!(alone.get("commits").is_none(), "no commitment before a peer is known");
+    }
+
+    fn chat_with_keys(seed: u8) -> Chat {
+        let keys = noise_builder().generate_keypair().unwrap();
+        let _ = seed;
+        Chat::new(Me { id: store::peer_id(&keys.public), name: format!("N{seed}"), port: 1, key: keys.public, secret: keys.private })
+    }
+
 }

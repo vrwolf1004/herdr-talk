@@ -79,7 +79,6 @@ ANNOUNCE_SECONDS = 2
 PEER_TIMEOUT_SECONDS = 10
 AUTO_RENAME_GAP_SECONDS = 60  # 자동 이름 변경 사이의 최소 간격
 MAX_MESSAGE_BYTES = 64 * 1024
-RECEIVE_TIMEOUT_SECONDS = 5
 LOOP_POLL_SECONDS = 0.5  # 종료 신호를 이 간격으로 확인한다
 MAX_TEXT_CHARS = 2000
 SEND_WORKERS = 8  # 메시지를 동시에 보내는 피어 수의 상한
@@ -179,6 +178,15 @@ class Chat:
         # (off unless the user turns it on). The default keeps a chat built without an identity, as in tests, plain.
         self.me = me
         self.plaintext = plaintext
+        # SAS: one nonce per peer, kept secret until a reveal to that peer. Only its commitment is announced, in
+        # me["commits"] = {peer key hex: commitment for that peer} (read by announce, see my_nonce_for).
+        self.my_nonces = {}       # peer key -> (nonce, commitment) for that peer
+        self.commits = {}         # peer key -> commitment it gave us for us, pinned at first sight (setdefault)
+        self.refused = set()      # (peer key, commitment) pairs already reported as refused, so the warning comes once
+        self.reveals = {}         # peer key -> nonce it revealed (checked against its commitment)
+        self.revealing = set()    # peers whose reveal is being fetched right now (one worker each)
+        if me.get("key") is not None:
+            me["commits"] = {}
         self.trusted = []         # verified peers: {"name", "key", "ip"}
         self.state_dir = None     # where /trust saves; None keeps it for this session
         self.received = {}        # sender address -> arrival times of recent messages
@@ -197,7 +205,6 @@ class Chat:
         self.supabase = False     # connection mode: True sends and shows chat only through the relay (no LAN chat)
         self.relay = None         # relay_chat.Relay while the relay runs
         self.relay_status = ""    # short text for the status row, empty when the relay is off
-        self.relay_candidate = None  # (name, Noise key) of the configured relay peer, from its row; /trust checks it
 
     def touch(self):
         """Mark activity so the idle timer restarts. Used by every view, not only add_line()."""
@@ -296,6 +303,24 @@ class Chat:
             return [t("phone.none")]
         return [t("phone.title"), *[f"  {url}" for url in info["urls"]], t("phone.token", token=info["token"]), t("phone.hint")]
 
+    def my_nonce_for(self, key):
+        """This node's nonce for one peer: made once per peer, never shared with another peer. Its commitment is put in
+        the announce (me["commits"]) for that peer, so the peer can check the reveal later."""
+        entry = self.my_nonces.get(key)
+        if entry is None:
+            nonce = os.urandom(32)
+            entry = (nonce, store.commit(self.me["key"], nonce))
+            self.my_nonces[key] = entry
+            self.me["commits"][store.to_hex(key)] = store.to_hex(entry[1])
+        return entry[0]
+
+    def sas_for(self, key):
+        """The code for a peer, once both nonces are known (after the reveal exchange). None before that."""
+        reveal = self.reveals.get(key)
+        if reveal is None or self.me.get("key") is None or key not in self.my_nonces:
+            return None
+        return store.sas_code(self.me["key"], self.my_nonces[key][0], key, reveal)
+
     def trusts(self, key):
         """True for a key the user verified, and for this PC's own key (another chat pane on this PC)."""
         return key == self.me.get("key") or any(peer["key"] == key for peer in self.trusted)
@@ -325,38 +350,25 @@ class Chat:
             times.append(now)
         return True
 
-    def _relay_match(self, own, code):
-        """The configured relay peer when its Noise key gives this code (Supabase mode, not yet verified), else None."""
-        if not self.supabase or own is None or self.relay_candidate is None:
-            return None
-        name, key = self.relay_candidate
-        if store.normalize_code(store.fingerprint(own, key)) == code and not self.trusts(key):
-            return {"name": name, "key": key, "ip": RELAY_LABEL}
-        return None
-
     def trust(self, code):
-        """Verify the unverified peer whose code matches (a LAN peer or the configured relay peer): remember its key, and say so."""
+        """Verify the unverified LAN peer whose code matches: remember its key, and say so."""
         own = self.me.get("key")
         found = []
         for info in self.fresh_peers().values():
             key = info.get("key")
-            if own is not None and key is not None and self.link_of(info) == "unverified" \
-                    and store.normalize_code(store.fingerprint(own, key)) == code:
+            sas = self.sas_for(key) if key is not None else None
+            if own is not None and sas is not None and self.link_of(info) == "unverified" \
+                    and store.normalize_code(sas) == code:
                 found.append(info)
-        relay_hit = self._relay_match(own, code)
-        matching = found + ([relay_hit] if relay_hit else [])
-        # Two different keys with the same code would mean a collision or an attacker, and a LAN peer and the relay
-        # peer with the same code is ambiguous too: refuse rather than pick one.
-        if len({info["key"] for info in matching}) > 1 or (relay_hit and found):
+        # Two different keys with the same code would mean a collision or an attacker: refuse rather than pick one.
+        if len({info["key"] for info in found}) > 1:
             say(t("trust.ambiguous", code=code))
             return
-        if not matching:
+        if not found:
             say(t("trust.none", code=code))
             return
-        info = matching[0]
+        info = found[0]
         self.trusted.append({"name": info["name"], "key": info["key"], "ip": info["ip"]})
-        if self.relay is not None:
-            self.relay.wake()
         try:
             if self.state_dir is not None:
                 store.write_trusted(self.state_dir, self.trusted)
@@ -374,14 +386,13 @@ class Chat:
         self.relay_status = ""
         if not self.supabase or secret is None or key is None:
             return ""
-        self.relay, self.relay_status = relay_chat.start(RelayHooks(self), self.state_dir, settings, secret, key)
+        self.relay, self.relay_status = relay_chat.start(RelayHooks(self), self.state_dir, settings)
         if self.relay_status:
             say(self.relay_status)
         return self.relay_status
 
     def stop_relay(self):
         relay, self.relay = self.relay, None
-        self.relay_candidate = None
         if relay is not None:
             relay.stop()
 
@@ -438,7 +449,9 @@ class Chat:
                 elif link == "plain":
                     state = t("peers.plain")
                 else:
-                    state = t("peers.unverified", code=store.fingerprint(own, info["key"])) if own is not None else ""
+                    sas = self.sas_for(info["key"]) if info.get("key") is not None else None
+                    # shortcut: the pending text is English-only; move it to the locales with the other peer states.
+                    state = t("peers.unverified", code=sas) if sas is not None else ("(code pending)" if own is not None else "")
                 say(f"- {clean_text(info['name'], 32)} ({info['ip']}:{info['port']}) {state}")
             return True
         if text == "/phone" or text.startswith("/phone "):
@@ -493,9 +506,6 @@ class Chat:
         return True
 
 
-RELAY_LABEL = "relay"  # the address label of a peer verified through the relay (it has no LAN address)
-
-
 class RelayHooks:
     """What relay_chat needs from the chat (relay_chat does not import this module)."""
 
@@ -505,17 +515,9 @@ class RelayHooks:
     def say(self, text):
         say(text)
 
-    def show(self, sender, text):
-        say(f"{sender}: {text}")
-
-    def trusted_name(self, key):
-        return self.chat.trusted_name(key)
-
     def set_status(self, text):
         self.chat.relay_status = text
 
-    def set_relay_candidate(self, name, key):
-        self.chat.relay_candidate = (name, key)
 
 
 def announce(udp_port, me):
@@ -527,6 +529,8 @@ def announce(udp_port, me):
             fields = {"app": APP, "id": me["id"], "name": me["name"], "port": me["port"]}
             if me.get("key") is not None:
                 fields["key"] = store.to_hex(me["key"])
+            if me.get("commits"):
+                fields["commits"] = dict(me["commits"])
             try:
                 sock.sendto(json.dumps(fields).encode("utf-8"), ("255.255.255.255", udp_port))
             except OSError:
@@ -615,6 +619,24 @@ def remember_peer(chat, info, ip):
     own = chat.me.get("key")
     if key is not None and key == own and not is_local_address(ip):
         return None
+    # The commitment (SAS): the one the peer gave us for us. It is pinned at first sight; a different one is refused.
+    commit = None
+    if key is not None and own is not None:
+        commits = info.get("commits")
+        raw = commits.get(store.to_hex(own)) if isinstance(commits, dict) else None
+        if isinstance(raw, str):
+            commit = store.from_hex(raw)
+            if commit is None or len(commit) != 32:
+                commit = None
+    if commit is not None:
+        pinned = chat.commits.setdefault(key, commit)
+        if pinned != commit:
+            if (key, commit) not in chat.refused:
+                chat.refused.add((key, commit))
+                say(t("peer.key_changed", name=peer_name(info.get("name", "unknown")), ip=ip))  # shortcut: reused wording
+            return None
+    if key is not None and own is not None:
+        chat.my_nonce_for(key)  # our nonce for this peer; its commitment goes out in the next announce
     # A key the user trusts: an announcement may not rename its entry or move it to another address.
     trusted = key is not None and chat.trusts(key)
     trusted_name = chat.trusted_name(key) if key is not None else None
@@ -652,9 +674,87 @@ def remember_peer(chat, info, ip):
         )
         if changed:
             say(t("peer.key_changed", name=name, ip=ip))
+        elif commit is not None:
+            # The code is shown only after both nonces are known (see reveal_later), never from the announce alone.
+            if key not in chat.revealing:
+                chat.revealing.add(key)
+                threading.Thread(target=reveal_later, args=(chat, key, ip, port), daemon=True).start()
         else:
-            say(t("peer.fingerprint", name=name, ip=ip, label=store.key_label(key), code=store.fingerprint(own, key)))
+            # shortcut: a Korean-only notice; move it to the locales when the wording is settled.
+            say(f"{name} ({ip}): 구버전이라 확인할 수 없습니다. 양쪽 PC 를 새 판으로 올리세요")
     return name
+
+
+REVEAL_RETRY_SECONDS = 2
+REVEAL_TRIES = 10
+
+
+def reveal_message(chat, peer_key):
+    """The reveal inside the Noise session: this PC's key and its nonce for that peer (plain JSON, as in the Rust edition)."""
+    nonce = chat.my_nonce_for(peer_key)
+    return json.dumps({"app": APP, "type": "reveal", "pk": store.to_hex(chat.me["key"]), "nonce": store.to_hex(nonce)}).encode("utf-8")
+
+
+def read_reveal(chat, expected, payload):
+    """Check a reveal from `expected` against its announced commitment. Returns the nonce; ValueError when it does not match."""
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except ValueError:
+        raise ValueError("reveal is not JSON")
+    if not isinstance(value, dict) or value.get("app") != APP or value.get("type") != "reveal":
+        raise ValueError("not a reveal")
+    pk = store.from_hex(value["pk"]) if isinstance(value.get("pk"), str) else None
+    if pk != expected:
+        raise ValueError("reveal is for another key")
+    nonce = store.from_hex(value["nonce"]) if isinstance(value.get("nonce"), str) else None
+    if nonce is None or len(nonce) != 32:
+        raise ValueError("reveal nonce is not 32 bytes")
+    commit = chat.commits.get(expected)
+    if commit is None:
+        raise ValueError("no commitment from this peer")
+    if store.commit(expected, nonce) != commit:
+        raise ValueError("reveal does not match the commitment")
+    return nonce
+
+
+def exchange_reveal(chat, ip, port, key):
+    """The initiator's half: connect with the peer's key, send our reveal, read the peer's reveal back."""
+    with socket.create_connection((ip, port), timeout=SEND_TIMEOUT_SECONDS) as raw:
+        conn = _Deadline(raw, SEND_TIMEOUT_SECONDS)
+        handshake = noise.Initiator(chat.me["secret"], key)
+        conn.write_frame(handshake.write_message1())
+        handshake.read_message2(conn.read_frame())
+        conn.write_frame(handshake.send.encrypt(reveal_message(chat, key)))
+        return read_reveal(chat, key, handshake.recv.decrypt(conn.read_frame()))
+
+
+def show_code(chat, key):
+    """The line with the code for a peer (only once its nonce is known)."""
+    code = chat.sas_for(key)
+    if code is None:
+        return
+    with chat.peers_lock:
+        found = next((info for info in chat.peers.values() if info.get("key") == key), None)
+    name, ip = (found["name"], found["ip"]) if found else ("?", "?")
+    say(t("peer.fingerprint", name=name, ip=ip, label=store.key_label(key), code=code))
+
+
+def reveal_later(chat, key, ip, port):
+    """Fetch a peer's reveal in the background, then show its code. Stops when the code is known or after REVEAL_TRIES."""
+    try:
+        for _ in range(REVEAL_TRIES):
+            if STOP.is_set() or chat.sas_for(key) is not None:
+                break
+            try:
+                nonce = exchange_reveal(chat, ip, port, key)
+            except (OSError, ValueError, noise.NoiseError):
+                STOP.wait(REVEAL_RETRY_SECONDS)
+                continue
+            chat.reveals.setdefault(key, nonce)
+            show_code(chat, key)
+            break
+    finally:
+        chat.revealing.discard(key)
 
 
 def receive_messages(server, chat):
@@ -775,6 +875,8 @@ def receive_one(conn, chat):
                 data, key = _receive_encrypted(conn, first, chat)
         except (OSError, EOFError, ValueError, noise.NoiseError):
             return
+    if data is None:
+        return  # a reveal exchange: nothing to show
     deliver(data, key, chat)
 
 
@@ -791,8 +893,8 @@ def _read_plain(conn, first):
 
 
 def _receive_encrypted(conn, first, chat):
-    """Noise IK responder. The handshake shows the sender's key before we answer, so an unverified sender gets no
-    answer at all. Returns the message and the verified key."""
+    """Noise IK responder. The handshake shows the sender's key before we answer. An unverified sender is answered only
+    to exchange reveals (it must have announced a commitment). Returns (message, verified key), or (None, None) for a reveal."""
     secret = chat.me.get("secret")
     if secret is None:
         raise ValueError("no identity")
@@ -800,10 +902,20 @@ def _receive_encrypted(conn, first, chat):
     handshake = noise.Responder(secret)
     handshake.read_message1(hello)
     sender = handshake.remote_static
-    if not chat.trusts(sender):
+    trusted = chat.trusts(sender)
+    if not trusted and sender not in chat.commits:
         raise ValueError("sender is not verified")
     conn.write_frame(handshake.write_message2())
-    return handshake.recv.decrypt(conn.read_frame()), sender
+    payload = handshake.recv.decrypt(conn.read_frame())
+    if trusted:
+        return payload, sender
+    nonce = read_reveal(chat, sender, payload)
+    if sender not in chat.reveals:
+        chat.reveals[sender] = nonce
+        show_code(chat, sender)
+    # Our reveal (our nonce for this peer) goes back on the same connection, so the initiator gets it too.
+    conn.write_frame(handshake.send.encrypt(reveal_message(chat, sender)))
+    return None, None
 
 
 def deliver(data, key, chat):
@@ -1233,10 +1345,18 @@ def settings_screen(state, open_supabase=False):
     form = relay_form.SettingsForm(state)
     if open_supabase:
         form.open_supabase()
+    dirty = True
     while True:
-        size = shutil.get_terminal_size((80, 24))
-        _draw(form.render(size.columns, size.lines))
-        outcome = form.on_key(read_char())
+        if dirty:
+            size = shutil.get_terminal_size((80, 24))
+            _draw(form.render(size.columns, size.lines))
+            dirty = False
+        key = read_char_timeout(0.2)
+        if key is None:
+            dirty = form.poll()  # a create-room answer that has come back
+            continue
+        outcome = form.on_key(key)
+        dirty = True
         if outcome:
             return outcome, form.message
 

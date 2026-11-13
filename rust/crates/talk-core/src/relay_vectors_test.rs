@@ -3,7 +3,6 @@
 
 #![cfg(test)]
 
-use crate::relay;
 use crate::relay_rest;
 use crate::store;
 use ed25519_dalek::{Signer, SigningKey, Verifier};
@@ -74,15 +73,9 @@ fn rust_computes_the_same_values_as_the_javascript_side() {
     assert_eq!(&plain[..read], payload.as_bytes());
     assert_eq!(store::to_hex(responder.get_remote_static().unwrap()), text(outputs, "initiatorPublic"));
 
-    // Envelope and channel name, from the two public keys.
+    // Fingerprint code of the two Noise keys.
     let initiator_public = bytes(outputs, "initiatorPublic");
     let responder_public = bytes(outputs, "responderPublic");
-    assert_eq!(relay::channel_name(&initiator_public, &responder_public), text(outputs, "channelFromNoiseKeys"));
-    assert_eq!(relay::channel_name(&bytes(inputs, "channelKeyA"), &bytes(inputs, "channelKeyB")), text(outputs, "channelOfKnownKeys"));
-    let envelope = relay::seal(&initiator_public, &responder_public, &message).unwrap();
-    assert_eq!(envelope, text(outputs, "envelope"));
-
-    // Fingerprint code of the two Noise keys.
     assert_eq!(store::fingerprint(&initiator_public, &responder_public), text(outputs, "fingerprint"));
 }
 

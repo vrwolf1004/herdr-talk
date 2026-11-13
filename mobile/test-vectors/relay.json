@@ -9,12 +9,12 @@
     "signingSeed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     "rowNoisePk": "abababababababababababababababababababababababababababababababab",
     "rowName": "Alice",
-    "rowShortId": "ab12cd34",
+    "rowShortId": "AB12CD34",
     "rowTs": 1700000000,
     "rowNonce": "00112233445566778899aabbccddeeff",
     "channelKeyA": "0101010101010101010101010101010101010101010101010101010101010101",
     "channelKeyB": "0202020202020202020202020202020202020202020202020202020202020202",
-    "deleteShortId": "ab12cd34",
+    "deleteShortId": "AB12CD34",
     "deleteTs": 1700000000,
     "deleteNonce": "00112233445566778899aabbccddeeff"
   },
@@ -27,8 +27,8 @@
     "channelFromNoiseKeys": "335b1f24ee003379c3b1075b8f05442095b2bcd7e5a40b8fa568fc386227345e",
     "channelOfKnownKeys": "c3492c89862240d31414b19d37da93d42c204f15687632dd436238f5701eb83e",
     "rowPublic": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
-    "rowSignature": "c87383be2bc3213255c8122a7e7900dab7910ea4b97aeca17e1f8adbb43b371d533340a0f1debc1d26a358ddc8f563f1bcedd7fe8714d8acd4f482777f85c202",
-    "fingerprint": "b48a-3b73-3e7a-32f8-6ac6-8a01-b056-9e7d",
-    "deleteSignature": "8ef091fb1ca2c37949db8bbb5071dbcb7e2b493ba41728898ea4a2356f5e6086c7f1f0630bc5341f2f046626c4aeda109aaf24170100fc7bae89cdf4a3836b08"
+    "rowSignature": "5a5d9f0ee7490ec09cf1eb71643d08c89e840a7b0a4209d32d328a38098a43a0c2c31ddb456d5ff719d599c63162511acd51bb8c558cd065d212bf0502d77301",
+    "fingerprint": "0UN7-QEEW",
+    "deleteSignature": "0ce853ecd94f6a2471f0063833d8df437a7a95900ce70ec84a50858da6f4c71c941c290e970b2ed543ed4632dd81664d394c9245d00d5c6cf9b8ed7cc3262905"
   }
 }

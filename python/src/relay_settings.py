@@ -14,11 +14,11 @@ import relay_rest
 FILE = "relay.json"
 LOCAL = "local"
 SUPABASE = "supabase"
-_FIELDS = ("url", "key", "name", "peer")
+_FIELDS = ("url", "key", "name", "room_code")
 
 
 def empty():
-    return {"mode": LOCAL, "url": "", "key": "", "name": "", "peer": ""}
+    return {"mode": LOCAL, "url": "", "key": "", "name": "", "room_code": ""}
 
 
 def _read(state):
@@ -59,6 +59,8 @@ def effective(state, env_url=None, env_key=None):
     """The settings the relay uses: a non-empty environment value replaces the saved URL or key.
     env_url and env_key (tests) replace reading the environment."""
     settings = load_saved(state)
+    # A room code saved by an older version may be lowercase: the relay uses it uppercase (the input rule).
+    settings["room_code"] = settings["room_code"].upper()
     url = env_url if env_url is not None else _env(relay_rest.URL_VARIABLE)
     key = env_key if env_key is not None else _env(relay_rest.KEY_VARIABLE)
     if url:
@@ -75,12 +77,12 @@ def from_environment():
 
 def validate(settings):
     """None when the settings can be saved, else the reason. Empty fields are allowed in local mode."""
-    if settings["mode"] == SUPABASE and any(not settings[name] for name in _FIELDS):
-        return "Supabase mode needs the URL, the key, the display name and the peer key"
+    if settings["mode"] == SUPABASE and any(not settings.get(name) for name in _FIELDS):
+        return "Supabase mode needs the URL, the key, the display name and the room code"
     if settings["name"] and not relay_rest.valid_name(settings["name"]):
         return "name must be 1 to 32 characters without control characters"
-    if settings["peer"] and not relay_rest.valid_short(settings["peer"]):
-        return "peer id must be 8 lowercase letters or digits"
+    if settings.get("room_code") and not relay_rest.valid_room_code(settings["room_code"]):
+        return "room code must be 8 uppercase letters or digits"
     if settings["mode"] == SUPABASE:
         try:
             if relay_rest.config(settings["url"], settings["key"]) is None:
@@ -92,12 +94,14 @@ def validate(settings):
 
 def save(state, settings):
     """Write relay.json whole through a temporary file (without a byte order mark). Returns None or the reason."""
+    # The input rule: the room code is saved uppercase.
+    settings = {**settings, "room_code": settings.get("room_code", "").upper()}
     reason = validate(settings)
     if reason:
         return reason
     try:
         os.makedirs(state, exist_ok=True)
-        text = json.dumps({"mode": settings["mode"], **{name: settings[name] for name in _FIELDS}}, ensure_ascii=False)
+        text = json.dumps({"mode": settings["mode"], **{name: settings.get(name, "") for name in _FIELDS}}, ensure_ascii=False)
         temp = os.path.join(state, f"{FILE}.{os.getpid()}.tmp")
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

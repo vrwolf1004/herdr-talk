@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { checkBeforeNonce, checkFormat, deleteWithNonce, signatureOk, signedMessage, statusFor, withinWindow, type DeleteBody } from "./checks.ts";
 
-const SHORT_ID = "abcd2345";
+const SHORT_ID = "ABCD2345";
 const NONCE = "00112233445566778899aabbccddeeff";
 const TS = 1700000000;
 
@@ -37,10 +37,10 @@ test("a signed delete body passes the format check and the full check order", as
 
 test("format accepts a short_id of 8 lowercase letters or digits only", () => {
   const key = signer();
-  for (const good of ["abcd2345", "zzzzzzzz", "00000000"]) {
+  for (const good of ["ABCD2345", "ZZZZZZZZ", "00000000"]) {
     assert.equal(checkFormat(bodyFor(key, { short_id: good })), true, good);
   }
-  for (const bad of ["abcd234", "abcd23456", "ABCD2345", "abcd-234", ""]) {
+  for (const bad of ["ABCD234", "ABCD23456", "abcd2345", "ABCD-234", ""]) {
     assert.equal(checkFormat(bodyFor(key, { short_id: bad })), false, bad);
   }
 });
@@ -68,7 +68,7 @@ test("time window is 300 seconds either side", () => {
 test("a change to pk or short_id breaks the signature (both are signed)", async () => {
   const key = signer();
   const body = bodyFor(key);
-  assert.equal(await signatureOk({ ...body, short_id: "abcd2346" }), false);
+  assert.equal(await signatureOk({ ...body, short_id: "ABCD2346" }), false);
   assert.equal(await signatureOk({ ...body, pk: signer().pk }), false);
   assert.equal(await signatureOk({ ...body, ts: TS + 1 }), false);
 });
@@ -85,7 +85,7 @@ test("the full check order: ok, then time, then signature", async () => {
   const body = bodyFor(key);
   assert.equal(await checkBeforeNonce(body, TS), "ok");
   assert.equal(await checkBeforeNonce(body, TS + 301), "time");
-  assert.equal(await checkBeforeNonce({ ...body, short_id: "abcd2346" }, TS), "signature");
+  assert.equal(await checkBeforeNonce({ ...body, short_id: "ABCD2346" }, TS), "signature");
   assert.equal(await checkBeforeNonce({ nope: true }, TS), "format");
 });
 
@@ -101,14 +101,14 @@ test("status codes: 204 ok, 400 format, 401 for time, signature and nonce", () =
 test("delete vector: the signature matches the external vector", async () => {
   const body: DeleteBody = {
     pk: "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
-    short_id: "ab12cd34",
+    short_id: "AB12CD34",
     ts: 1700000000,
     nonce: "00112233445566778899aabbccddeeff",
-    sig: "8ef091fb1ca2c37949db8bbb5071dbcb7e2b493ba41728898ea4a2356f5e6086c7f1f0630bc5341f2f046626c4aeda109aaf24170100fc7bae89cdf4a3836b08",
+    sig: "0ce853ecd94f6a2471f0063833d8df437a7a95900ce70ec84a50858da6f4c71c941c290e970b2ed543ed4632dd81664d394c9245d00d5c6cf9b8ed7cc3262905",
   };
   assert.equal(signedMessage(body.pk, body.short_id, body.ts, body.nonce).length, 135);
   assert.equal(await signatureOk(body), true);
-  assert.equal(await signatureOk({ ...body, short_id: "ab12cd35" }), false);
+  assert.equal(await signatureOk({ ...body, short_id: "AB12CD35" }), false);
 });
 
 // A put_nonces table and a peers DELETE that can fail, in memory.

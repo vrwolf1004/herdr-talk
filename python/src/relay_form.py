@@ -7,16 +7,20 @@ Same rules as rust/crates/herdr-talk/src/first_run.rs and settings_form.rs. A ke
 Keys arrive as single characters from read_char(): arrow keys are not available, so Tab moves, Space changes the mode.
 """
 
+import queue
+import threading
 import time
 
 import relay_key
+import relay_rest
 import relay_settings
 from i18n import t
 
 TIMEOUT_SECONDS = 30
-FIELD_LABELS = ("Project URL", "Publishable key", "Display name", "Peer id (8 characters)")
-FIELD_NAMES = ("url", "key", "name", "peer")
+FIELD_LABELS = ("Project URL", "Publishable key", "Display name", "Room id (8 characters)")
+FIELD_NAMES = ("url", "key", "name", "room_code")
 KEY_FIELD = 1
+ROOM_FIELD = 3
 
 
 def _row(row, text, style=""):
@@ -86,8 +90,20 @@ class FirstRun:
         return "".join(out)
 
 
+def publish_failure(status):
+    """Why the row write did not go through (the create is not sent), or None when it did."""
+    if status is None:
+        return "this PC's row could not be published (network or server error)"
+    if status == 409:
+        return "this PC's short id is already used by another key (409). Try again"
+    if not relay_rest.put_succeeded(status):
+        return f"this PC's row could not be published (status {status})"
+    return None
+
+
 class SettingsForm:
-    """Mode row, then the four fields. Enter moves down and saves on the last row; Esc leaves without saving."""
+    """Mode row, then the four fields. Enter moves down and saves on the last row; Esc leaves without saving.
+    Ctrl+N asks the relay for a new room and puts its code in the room field (saved with Enter)."""
 
     def __init__(self, state, mine=None):
         self.state = state
@@ -98,6 +114,7 @@ class SettingsForm:
         self.focus = 0
         self.message = ""
         self.mine = mine if mine is not None else self._own_keys(state)
+        self._room_result = None  # a queue of the running create-room request, None when none runs
 
     @staticmethod
     def _own_keys(state):
@@ -127,7 +144,8 @@ class SettingsForm:
             if missing:
                 self.message = t("settings.save_refused_missing", fields=", ".join(missing))
                 return False
-        values.update({name: value.strip() for name, value in zip(FIELD_NAMES, self.fields)})
+        # The input rule: the room code is saved uppercase; the key and the name keep their text.
+        values.update({name: value.strip().upper() if name == "room_code" else value.strip() for name, value in zip(FIELD_NAMES, self.fields)})
         reason = relay_settings.save(self.state, values)
         if reason:
             self.message = f"not saved: {reason}"
@@ -151,12 +169,70 @@ class SettingsForm:
                 self.focus += 1
             elif self.save():
                 return "saved"
+        elif ch == "\x0e":
+            self.create_room()
         elif ch in ("\x08", "\x7f"):
             if not on_mode:
                 self.fields[self.focus - 1] = self.fields[self.focus - 1][:-1]
         elif ch.isprintable() and not on_mode:
             self.fields[self.focus - 1] += ch
         return None
+
+    def create_room(self):
+        """Ctrl+N: create-room in a background thread, so the screen keeps working. poll() applies the answer: the code goes
+        into the room field (saved with Enter)."""
+        if self._room_result is not None:
+            return
+        if self.mode != relay_settings.SUPABASE:
+            self.message = "create room: switch to Supabase mode first"
+            return
+        if self.mine is None:
+            self.message = "create room: this PC has no keys yet (start a chat first)"
+            return
+        url, key, name = (value.strip() for value in self.fields[:3])
+        if not (url and key and name):
+            self.message = "create room: fill in the URL, the key and the display name first"
+            return
+        try:
+            config = relay_rest.config(url, key)
+            seed = relay_key.load_or_create(self.state)
+            noise_pk = relay_key.noise_public_hex(self.state)
+            short_id = relay_key.load_or_create_short_id(self.state)
+        except (ValueError, relay_key.SigningKeyError, OSError) as error:
+            self.message = f"create room failed: {error}"
+            return
+        result = queue.Queue()
+
+        def work():
+            try:
+                # The room's owner row (peers) must exist before the room is made (rooms.owner_pk references it).
+                failure = publish_failure(relay_rest.put_status(config, seed, noise_pk, short_id, name))
+                if failure:
+                    result.put(("error", failure))
+                    return
+                result.put(("ok", relay_rest.create_room(config, seed, name)))
+            except (OSError, ValueError) as error:
+                result.put(("error", str(error)))
+
+        self._room_result = result
+        threading.Thread(target=work, daemon=True).start()
+        self.message = "create room: working..."
+
+    def poll(self):
+        """Apply the create-room answer when it has come back. True when the screen must be drawn again."""
+        if self._room_result is None:
+            return False
+        try:
+            kind, value = self._room_result.get_nowait()
+        except queue.Empty:
+            return False
+        self._room_result = None
+        if kind == "ok":
+            self.fields[ROOM_FIELD] = value
+            self.message = f"room created: {value} (save with Enter to apply)"
+        else:
+            self.message = f"create room failed: {value}"
+        return True
 
     def _shown(self, index):
         env = (index == 0 and self.from_env[0]) or (index == KEY_FIELD and self.from_env[1])
@@ -183,7 +259,7 @@ class SettingsForm:
             lines.append((f"This PC, Noise key:   {self.mine[1]}", ""))
         lines.append((self.message, ""))
         lines.append(("", ""))
-        lines.append(("Tab: next · Space: change mode · Enter: next / save · Esc: leave without saving", "\x1b[90m"))
+        lines.append(("Tab: next · Space: change mode · Enter: next / save · Ctrl+N: create room · Esc: leave without saving", "\x1b[90m"))
         out = ["\x1b[?25l\x1b[2J"]
         out += [_row(index + 1, _cut(text, cols - 1), style) for index, (text, style) in enumerate(lines[: rows - 1])]
         return "".join(out)

@@ -181,6 +181,7 @@ pub fn choose_mode(chat: &Arc<Chat>) -> io::Result<Choice> {
             Step::Pick(Mode::Supabase) => {
                 let mut form = Form::open_supabase(&state);
                 loop {
+                    form.poll(); // a create-room answer that has come back
                     let (cols, rows) = terminal::size()?;
                     settings_form::render(&mut terminal.0, &form, usize::from(cols), usize::from(rows))?;
                     if !event::poll(POLL)? {
@@ -234,6 +235,9 @@ pub fn run(chat: &Arc<Chat>) -> io::Result<()> {
                 Event::Resize(..) => redraw = true,
                 _ => {}
             }
+        }
+        if let Some(open) = form.as_mut() {
+            redraw |= open.poll(); // a create-room answer that has come back
         }
         // Peers come and go without a chat line, and the status row shows their count.
         let status = format!("{}/{}/{}/{}", chat.me.lock().unwrap().name, chat.fresh_peers().len(), chat.is_host(), chat.relay_status());

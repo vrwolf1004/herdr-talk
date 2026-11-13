@@ -6,8 +6,6 @@ use crate::chat::Chat;
 use crate::relay_rest::{self, Config};
 use crate::relay_settings::Settings;
 use crate::relay_replay::NonceCache;
-use crate::store;
-use ed25519_dalek::SigningKey;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -19,13 +17,11 @@ const SLICE: Duration = Duration::from_millis(200);
 /// Run the room-based relay: join the room and listen for messages.
 pub(crate) fn run(chat: &Chat, state: &Path, config: &Config, settings: &Settings, rx: &Receiver<String>, stop: &AtomicBool) {
     let mut cache = NonceCache::default();
-    let session = match super::peer_relay::session(state) {
-        Ok(session) => session,
+    let seed = match super::seed(state) {
+        Ok(seed) => seed,
         Err(error) => return chat.set_relay_status(&format!("relay: {error}")),
     };
-    
-    let pk = store::to_hex(&SigningKey::from_bytes(&session.seed).verifying_key().to_bytes());
-    let room_result = join_room_and_listen(chat, config, &settings.room_code, &pk, &settings.name, rx, stop, &mut cache);
+    let room_result = join_room_and_listen(chat, config, &settings.room_code, &seed, &settings.name, rx, stop, &mut cache);
     if let Err(error) = room_result {
         chat.set_relay_status(&format!("relay: {error}"));
     }
@@ -36,14 +32,14 @@ fn join_room_and_listen(
     chat: &Chat,
     config: &Config,
     room_code: &str,
-    peer_pk: &str,
+    seed: &[u8; 32],
     display_name: &str,
     rx: &Receiver<String>,
     stop: &AtomicBool,
     _cache: &mut NonceCache,
 ) -> Result<(), String> {
     // Build request to join room
-    let req = relay_rest::join_room_request(config, room_code, peer_pk, display_name)?;
+    let req = relay_rest::join_room_request(config, seed, room_code, display_name)?;
     
     // Send HTTP POST request to join the room
     let (status, response_body) = relay_rest::http_post(&req)?;

@@ -18,6 +18,13 @@ Check the symptom in the table first. Each check points to the setting or step t
 | `<name> 에게 보내지 않음: 암호화하지 않는 상대이고 평문이 꺼져 있습니다` | The peer is a plaintext (Python) edition and `"plaintext": true` is off in the Rust `config.json`. Rust drops Python messages silently in the other direction. See [mobile.md](mobile.md). |
 | Phone app cannot connect | Use the bridge `app address` of the phone's Wi-Fi, not a virtual adapter (e.g. `192.168.56.1`). Same Wi-Fi, firewall allows the bridge port (47860). After 5 wrong tokens an IP is blocked for 10 minutes. |
 | Expo QR missing | Metro started with `CI=1`. Run `npx expo start --host lan` in a normal terminal. If port 8081 is busy Expo uses 8082: check the port in the QR or `exp://` address. |
+| Supabase join returns `410` | The room expired. Rooms last 24 hours from creation and cannot be extended; create a new room. Expiry cleanup is implemented but not deployed. |
+| A room ID does not match | Enter all 8 `A-Z0-9` characters. Case, spaces, and dashes are ignored. **Retired:** peer ID as a room-join input. |
+| Trust-code behavior differs from old documentation | The SAS commit design is decided but not implemented yet. Treat unverified behavior as unconfirmed. |
+
+## Supabase deployment warning
+
+The current relay is a many-participant room model; the peer-ID-based one-to-one relay is **retired**. Room RLS is publicly open and create/join requests lack signature verification. These are unresolved deployment blockers.
 
 ## Related
 

@@ -1,6 +1,7 @@
 //! The relay settings screen (Ctrl+R). First row: the connection mode (Local or Supabase, one of the two, never both).
-//! Then four fields: project URL, publishable key, display name and the peer's short ID (8 characters). Tab or Up/Down moves between
+//! Then four fields: project URL, publishable key, display name and the room ID (8 characters). Tab or Up/Down moves between
 //! rows; Left/Right or Space toggles the mode; Enter goes on, and saves on the last field; Esc leaves without saving.
+//! Ctrl+N asks the relay for a new room (Supabase mode) and puts its code in the room ID field; it still needs a save.
 //! The key is never drawn: only its length. Environment variables win over the saved values, and the screen says so.
 //! Saving in Local mode keeps the typed fields; saving in Supabase mode checks them all (talk-core validate).
 
@@ -10,18 +11,21 @@ use crossterm::terminal::{Clear, ClearType};
 use crossterm::{cursor, queue};
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::thread;
 use talk_core::relay_key;
+use talk_core::relay_rest::{self, Request};
 use talk_core::relay_settings::{self, Mode, Settings};
 use talk_core::{relay_chat, t, Chat};
 
 /// The four field labels, in field order.
+/// shortcut: the room ID label is written here because locales have no key for it; move it to talk-core/locales when those may change.
 fn labels() -> [String; 4] {
     [
         t("tui.settings.label.url", &[]),
         t("tui.settings.label.key", &[]),
         t("tui.settings.label.name", &[]),
-        t("tui.settings.label.peer", &[]),
+        "방 ID (8자리)".to_string(),
     ]
 }
 const KEY_FIELD: usize = 1;
@@ -40,6 +44,8 @@ pub struct Form {
     state: PathBuf,
     /// True once a setting was written (the first-run choice then goes on to the chat).
     saved: bool,
+    /// A create-room request running in the background: its answer (the code, or the reason it failed).
+    creating: Option<mpsc::Receiver<Result<String, String>>>,
 }
 
 pub enum Action {
@@ -63,6 +69,7 @@ impl Form {
             short_id,
             state: state.to_path_buf(),
             saved: false,
+            creating: None,
         }
     }
 
@@ -84,7 +91,7 @@ impl Form {
             url: self.fields[0].trim().to_string(),
             key: self.fields[1].trim().to_string(),
             name: self.fields[2].trim().to_string(),
-            room_code: self.fields[3].trim().to_string(),
+            room_code: self.fields[3].trim().to_ascii_uppercase(),
         }
     }
 
@@ -123,6 +130,125 @@ impl Form {
             Mode::Supabase => Mode::Local,
         };
     }
+
+    /// Ctrl+N: ask the relay for a new room with this PC's key and put the code in the room ID field (saved with Enter).
+    fn create_room(&mut self) {
+        if self.creating.is_some() {
+            return;
+        }
+        if self.mine.is_none() {
+            self.message = t("tui.settings.no_keys", &[]);
+            return;
+        }
+        let url = self.fields[0].trim().trim_end_matches('/').to_string();
+        let key = self.fields[1].trim().to_string();
+        let name = self.fields[2].trim().to_string();
+        if self.mode != Mode::Supabase || url.is_empty() || key.is_empty() || name.is_empty() {
+            self.message = "방 만들기: Supabase 모드에서 프로젝트 URL, 키, 표시 이름을 먼저 입력하세요".to_string();
+            return;
+        }
+        let config = match relay_rest::config(Some(&url), Some(&key)) {
+            Ok(Some(config)) => config,
+            Ok(None) => {
+                self.message = "방 만들기: 프로젝트 URL 과 키가 필요합니다".to_string();
+                return;
+            }
+            Err(error) => {
+                self.message = format!("방 만들기 실패: {error}");
+                return;
+            }
+        };
+        // The room's owner row (peers) must exist before the room is made (rooms.owner_pk references it).
+        let short_id = match relay_key::short_id(&self.state) {
+            Ok(short_id) => short_id,
+            Err(error) => {
+                self.message = format!("방 만들기 실패: {error}");
+                return;
+            }
+        };
+        let noise_pk = self.mine.as_ref().map(|(_, noise)| noise.clone()).unwrap_or_default();
+        let seed = match relay_key::load_or_create(&self.state) {
+            Ok(seed) => seed,
+            Err(error) => {
+                self.message = format!("방 만들기 실패: {error}");
+                return;
+            }
+        };
+        let nonce = match relay_rest::random_nonce() {
+            Ok(nonce) => nonce,
+            Err(error) => {
+                self.message = format!("방 만들기 실패: {error}");
+                return;
+            }
+        };
+        let body = match relay_rest::signed_room_body(&seed, relay_rest::RoomAction::Create, "", &name, relay_rest::unix_now(), &nonce) {
+            Ok(body) => body,
+            Err(error) => {
+                self.message = format!("방 만들기 실패: {error}");
+                return;
+            }
+        };
+        let request = Request {
+            method: "POST",
+            url: format!("{url}/functions/v1/create-room"),
+            headers: vec![
+                ("apikey".to_string(), key.clone()),
+                ("Authorization".to_string(), format!("Bearer {key}")),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: Some(body),
+        };
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let answer = publish_message(relay_rest::put_peer(&config, &seed, &noise_pk, &short_id, &name)).and_then(|()| {
+                relay_rest::http_post(&request).and_then(|(status, text)| read_room_code(status, &text))
+            });
+            let _ = sender.send(answer);
+        });
+        self.creating = Some(receiver);
+        self.message = "방 만드는 중...".to_string();
+    }
+
+    /// Applies a create-room answer that has come back. True when the screen must be drawn again.
+    pub fn poll(&mut self) -> bool {
+        let Some(receiver) = self.creating.as_ref() else { return false };
+        let answer = match receiver.try_recv() {
+            Ok(answer) => answer,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => Err("방 만들기 중 오류".to_string()),
+        };
+        self.creating = None;
+        match answer {
+            Ok(code) => {
+                self.message = format!("방을 만들었습니다: {code} (저장을 눌러야 적용됩니다)");
+                self.fields[3] = code;
+            }
+            Err(error) => self.message = format!("방 만들기 실패: {error}"),
+        }
+        true
+    }
+}
+
+/// What the row write (put-peer) answer means for the create: Ok to go on, or the message to show (the create is not sent).
+fn publish_message(outcome: relay_rest::PutOutcome) -> Result<(), String> {
+    match outcome {
+        relay_rest::PutOutcome::Written => Ok(()),
+        relay_rest::PutOutcome::Taken => Err("이 PC의 짧은 ID 가 다른 키에 이미 있습니다 (409). 다시 시도하세요".to_string()),
+        relay_rest::PutOutcome::Failed => Err("이 PC 의 행을 게시하지 못했습니다 (네트워크나 서버 오류)".to_string()),
+    }
+}
+
+/// The create-room answer: the room code on 200, otherwise the status and body.
+fn read_room_code(status: u16, text: &str) -> Result<String, String> {
+    if status != 200 {
+        return Err(format!("status {status}: {text}"));
+    }
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| "answer is not JSON".to_string())?;
+    value["room_code"]
+        .as_str()
+        .filter(|code| relay_rest::valid_room_code(code))
+        .map(str::to_string)
+        .ok_or_else(|| "answer has no valid room_code".to_string())
 }
 
 /// One key for the form.
@@ -130,6 +256,7 @@ pub fn on_key(form: &mut Form, key: KeyEvent, chat: &Arc<Chat>) -> Action {
     let on_mode_row = form.focus == 0;
     match key.code {
         KeyCode::Esc => return Action::Leave,
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => form.create_room(),
         KeyCode::Tab | KeyCode::Down => form.focus = (form.focus + 1) % ROWS,
         KeyCode::Up => form.focus = (form.focus + ROWS - 1) % ROWS,
         KeyCode::Left | KeyCode::Right if on_mode_row => form.toggle_mode(),
@@ -168,7 +295,8 @@ fn mode_row(mode: Mode) -> String {
     }
 }
 
-pub fn render(out: &mut Stdout, form: &Form, width: usize, rows: usize) -> io::Result<()> {
+/// The lines of the settings screen: the text, and whether it is dimmed.
+fn lines(form: &Form) -> Vec<(String, bool)> {
     let hint = match form.mode {
         Mode::Local => t("mode.hint_local", &[]),
         Mode::Supabase => t("mode.hint_supabase", &[]),
@@ -186,8 +314,11 @@ pub fn render(out: &mut Stdout, form: &Form, width: usize, rows: usize) -> io::R
     for (index, label) in labels().iter().enumerate() {
         lines.push((format!("{} {label}: {}", marker(index + 1), shown(form, index)), dimmed));
     }
+    // shortcut: this hint is English-only like the other Ctrl key notes; move it to the locales with the room label.
+    lines.push(("Ctrl+N: create room (Supabase mode, needs the URL, key and name)".to_string(), dimmed));
     lines.push((String::new(), false));
-    if !form.short_id.is_empty() {
+    // The short ID is this PC's room row ID: shown only in Supabase mode (not on the LAN screen).
+    if form.mode == Mode::Supabase && !form.short_id.is_empty() {
         lines.push((t("tui.settings.my_id", &[("id", &form.short_id)]), false));
     }
     match &form.mine {
@@ -199,6 +330,11 @@ pub fn render(out: &mut Stdout, form: &Form, width: usize, rows: usize) -> io::R
     }
     lines.push((String::new(), false));
     lines.push((form.message.clone(), false));
+    lines
+}
+
+pub fn render(out: &mut Stdout, form: &Form, width: usize, rows: usize) -> io::Result<()> {
+    let lines = lines(form);
     queue!(out, cursor::Hide, Clear(ClearType::All))?;
     for (row, (text, dim)) in lines.iter().take(rows).enumerate() {
         let text: String = text.chars().take(width).collect();
@@ -234,6 +370,7 @@ mod tests {
             short_id: String::new(),
             state: state.to_path_buf(),
             saved: false,
+            creating: None,
         }
     }
 
@@ -332,11 +469,75 @@ mod tests {
     }
 
     #[test]
+    fn the_short_id_is_shown_only_in_supabase_mode() {
+        let mut form = form_at(&folder("my-id"));
+        form.short_id = "ABCD2345".into();
+        let shown = t("tui.settings.my_id", &[("id", "ABCD2345")]);
+        assert!(!lines(&form).iter().any(|(text, _)| *text == shown), "Local mode");
+        form.mode = Mode::Supabase;
+        assert!(lines(&form).iter().any(|(text, _)| *text == shown), "Supabase mode");
+    }
+
+    #[test]
+    fn a_background_create_room_answer_is_applied_by_poll() {
+        let mut form = form_at(&folder("poll"));
+        let (sender, receiver) = mpsc::channel();
+        form.creating = Some(receiver);
+        assert!(!form.poll(), "no answer yet: nothing to draw");
+        assert!(form.creating.is_some());
+        sender.send(Ok("ABCD1234".to_string())).unwrap();
+        assert!(form.poll());
+        assert_eq!(form.fields[3], "ABCD1234");
+        assert!(form.creating.is_none());
+        assert!(form.message.contains("ABCD1234"), "{}", form.message);
+    }
+
+    #[test]
+    fn a_failed_background_create_room_says_why() {
+        let mut form = form_at(&folder("poll-error"));
+        let (sender, receiver) = mpsc::channel();
+        form.creating = Some(receiver);
+        sender.send(Err("status 500".to_string())).unwrap();
+        assert!(form.poll());
+        assert!(form.fields[3].is_empty());
+        assert_eq!(form.message, "방 만들기 실패: status 500");
+    }
+
+    #[test]
+    fn a_failed_row_write_stops_the_create_with_a_message() {
+        assert_eq!(publish_message(relay_rest::PutOutcome::Written), Ok(()));
+        assert!(publish_message(relay_rest::PutOutcome::Taken).unwrap_err().contains("409"));
+        assert!(publish_message(relay_rest::PutOutcome::Failed).unwrap_err().contains("게시하지 못했습니다"));
+    }
+
+    #[test]
+    fn create_room_answer_needs_200_and_a_valid_code() {
+        assert_eq!(read_room_code(200, r#"{"room_code":"ABCD1234"}"#), Ok("ABCD1234".to_string()));
+        assert!(read_room_code(500, r#"{"error":"x"}"#).is_err());
+        assert!(read_room_code(200, "not json").is_err());
+        assert!(read_room_code(200, r#"{"room_code":"abcd1234"}"#).is_err());
+        assert!(read_room_code(200, "{}").is_err());
+    }
+
+    #[test]
+    fn ctrl_n_without_keys_or_outside_supabase_sends_nothing() {
+        let chat = chat();
+        let mut form = form_at(&folder("ctrl-n"));
+        let ctrl_n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        on_key(&mut form, ctrl_n, &chat);
+        assert_eq!(form.message, t("tui.settings.no_keys", &[]));
+        form.mine = Some(("11".repeat(32), "22".repeat(32)));
+        on_key(&mut form, ctrl_n, &chat);
+        assert!(form.message.starts_with("방 만들기:"), "{}", form.message);
+        assert!(form.fields[3].is_empty());
+    }
+
+    #[test]
     fn a_complete_supabase_setting_is_saved_and_the_first_run_goes_on() {
         let dir = folder("first-run-supabase");
         let chat = chat();
         let mut form = Form::open_supabase(&dir);
-        form.fields = ["http://127.0.0.1:9".into(), "dummy-test-key".into(), "Alice".into(), "abcd2345".into()];
+        form.fields = ["http://127.0.0.1:9".into(), "dummy-test-key".into(), "Alice".into(), "ABCD2345".into()];
         press(&mut form, &chat, KeyCode::Enter);
         assert!(!form.is_saved(), "Enter on a field row only moves on");
         form.focus = 4;

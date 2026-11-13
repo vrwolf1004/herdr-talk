@@ -1,14 +1,12 @@
-"""Supabase REST side of the relay: settings, the requests for the `peers` table, and checks of the answers.
+"""Supabase REST side of the relay: settings, the signed row write and delete, the room requests, and checks of the answers.
 
 Same rules as rust/crates/talk-core/src/relay_rest.rs. Standard library only (urllib for sending).
 The key is the publishable key; the secret key is never read or stored here.
 
-Row writes are signed (format v3). The signed text carries the short id (8 characters, [a-z0-9]) that people type to
-find this PC. The short id is unique on the server; a write that takes an id owned by another key gets 409.
+Row writes are signed (format v3). The signed text carries the short id (8 characters, [A-Z0-9]) of this PC. The short id is unique on the server; a write that takes an id owned by another key gets 409.
 """
 
 import json
-import os
 import re
 import secrets
 import time
@@ -27,7 +25,8 @@ TIMEOUT_SECONDS = 5
 
 _PK_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _NONCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
-_SHORT_PATTERN = re.compile(r"^[a-z0-9]{8}$")
+_SHORT_PATTERN = re.compile(r"^[A-Z0-9]{8}$")
+_ROOM_PATTERN = re.compile(r"^[A-Z0-9]{8}$")
 
 
 class Config:
@@ -61,8 +60,13 @@ def valid_pk(text):
 
 
 def valid_short(text):
-    """A short id: exactly 8 characters, lowercase letters and digits."""
+    """A short id: exactly 8 characters, uppercase letters and digits. Lowercase input is made uppercase by the caller."""
     return isinstance(text, str) and _SHORT_PATTERN.match(text) is not None
+
+
+def valid_room_code(text):
+    """A room code: exactly 8 characters, uppercase letters and digits (the same rule as talk-core)."""
+    return isinstance(text, str) and _ROOM_PATTERN.match(text) is not None
 
 
 def valid_name(text):
@@ -90,7 +94,7 @@ def put_request(config, seed, noise_pk, short_id, name, ts=None, nonce=None):
     if not _PK_PATTERN.match(noise_pk or ""):
         raise ValueError("noise_pk must be 64 lowercase hex characters")
     if not valid_short(short_id):
-        raise ValueError("short_id must be 8 lowercase letters or digits")
+        raise ValueError("short_id must be 8 uppercase letters or digits")
     if not valid_name(name):
         raise ValueError("name must be 1 to 32 characters without control characters")
     ts = int(time.time()) if ts is None else ts
@@ -109,44 +113,8 @@ def put_request(config, seed, noise_pk, short_id, name, ts=None, nonce=None):
     }
 
 
-def get_request(config, short_id):
-    """Lookup of one peer by its short id (unique on the server). Raises ValueError for bad input."""
-    if not valid_short(short_id):
-        raise ValueError("short_id must be 8 lowercase letters or digits")
-    headers = _common_headers(config)
-    headers["Accept"] = "application/json"
-    query = urllib.parse.urlencode({"short_id": f"eq.{short_id}", "select": "pk,name,noise_pk,short_id"}, safe=",.")
-    return {"method": "GET", "url": f"{config.url}/rest/v1/peers?{query}", "headers": headers, "body": None}
-
-
 def put_succeeded(status):
     return 200 <= status < 300
-
-
-def read_get_response(status, body, short_id):
-    """The answer to a lookup: None when there is no such peer. Malformed answers raise ValueError (drop them)."""
-    if status != 200:
-        raise ValueError(f"status {status}")
-    try:
-        rows = json.loads(body)
-    except (ValueError, TypeError):
-        raise ValueError("answer is not JSON")
-    if not isinstance(rows, list):
-        raise ValueError("answer is not a list")
-    if not rows:
-        return None
-    if len(rows) != 1 or not isinstance(rows[0], dict):
-        raise ValueError("expected one row")
-    row = rows[0]
-    if row.get("short_id") != short_id:
-        raise ValueError("row short_id does not match the request")
-    if not valid_pk(row.get("pk")):
-        raise ValueError("row pk is not valid")
-    if not valid_name(row.get("name")):
-        raise ValueError("row name is not valid")
-    if not valid_pk(row.get("noise_pk")):
-        raise ValueError("row noise_pk is not valid")
-    return {"pk": row["pk"], "name": row["name"], "noise_pk": row["noise_pk"], "short_id": short_id}
 
 
 def _send(request, timeout=TIMEOUT_SECONDS):
@@ -170,19 +138,6 @@ def put_status(config, seed, noise_pk, short_id, name):
         return None
 
 
-def put_peer(config, seed, noise_pk, short_id, name):
-    """True when the relay accepted the signed write."""
-    status = put_status(config, seed, noise_pk, short_id, name)
-    return status is not None and put_succeeded(status)
-
-
-def get_peer(config, short_id):
-    """The relay's record for short_id, or None (no such peer, a failure, or an answer that does not check out)."""
-    try:
-        status, body = _send(get_request(config, short_id))
-        return read_get_response(status, body, short_id)
-    except (OSError, ValueError):
-        return None
 
 
 def delete_message(pk, short_id, ts, nonce):
@@ -194,7 +149,7 @@ def delete_request(config, seed, short_id, ts=None, nonce=None):
     """Signed delete of this node's own row through the delete-peer function. Raises ValueError for bad input."""
     pk = ed25519.public_key(seed).hex()
     if not valid_short(short_id):
-        raise ValueError("short_id must be 8 lowercase letters or digits")
+        raise ValueError("short_id must be 8 uppercase letters or digits")
     ts = int(time.time()) if ts is None else ts
     nonce = secrets.token_hex(16) if nonce is None else nonce
     if not isinstance(ts, int) or isinstance(ts, bool) or not _NONCE_PATTERN.match(nonce):
@@ -218,3 +173,89 @@ def delete_peer(config, seed, short_id, timeout=TIMEOUT_SECONDS):
         return put_succeeded(status)
     except (OSError, ValueError):
         return False
+
+
+def read_room_code(status, body):
+    """The room code of a create-room answer. Anything but 200 with a valid code raises ValueError."""
+    if status != 200:
+        raise ValueError(f"status {status}: {body}")
+    try:
+        value = json.loads(body)
+    except (ValueError, TypeError):
+        raise ValueError("answer is not JSON")
+    code = value.get("room_code") if isinstance(value, dict) else None
+    if not valid_room_code(code):
+        raise ValueError("answer has no valid room_code")
+    return code
+
+
+def read_join_room(status, body):
+    """{room_code, owner_pk, members} from a join-room answer. Anything malformed raises ValueError."""
+    if status == 410:
+        raise ValueError("방 기한 만료")  # join-room: the room is past its 24 hours
+    if status != 200:
+        raise ValueError(f"status {status}: {body}")
+    try:
+        value = json.loads(body)
+    except (ValueError, TypeError):
+        raise ValueError("answer is not JSON")
+    if not isinstance(value, dict) or not valid_room_code(value.get("room_code")):
+        raise ValueError("answer has no valid room_code")
+    if not valid_pk(value.get("owner_pk")):
+        raise ValueError("answer has no valid owner_pk")
+    members = value.get("members")
+    if not isinstance(members, list) or not all(valid_pk(pk) for pk in members):
+        raise ValueError("answer has no valid members list")
+    return {"room_code": value["room_code"], "owner_pk": value["owner_pk"], "members": members}
+
+
+ROOM_TAG = "herdr-talk-room-v1"
+
+
+def room_message(action, room_code, peer_pk, name, ts, nonce):
+    """The bytes signed for a room request (v1): ROOM_TAG, action ("create" or "join"), the room code (empty for create),
+    peer pk, display name, ts, nonce, one per line, no newline at the end, UTF-8. Same as the Rust and mobile sides."""
+    return "\n".join([ROOM_TAG, action, room_code, peer_pk, name, str(ts), nonce]).encode("utf-8")
+
+
+def _signed_room_body(seed, action, room_code, name, ts=None, nonce=None):
+    """The signed fields of a create or join request. `seed` is the 32-byte Ed25519 key (pk is its public key)."""
+    if not valid_name(name):
+        raise ValueError("name must be 1 to 32 characters without control characters")
+    pk = ed25519.public_key(seed).hex()
+    ts = int(time.time()) if ts is None else ts
+    nonce = secrets.token_hex(16) if nonce is None else nonce
+    if not isinstance(ts, int) or isinstance(ts, bool) or not _NONCE_PATTERN.match(nonce):
+        raise ValueError("ts must be an integer and nonce 32 lowercase hex characters")
+    sig = ed25519.sign(seed, room_message(action, room_code, pk, name, ts, nonce)).hex()
+    return {"peer_pk": pk, "display_name": name, "ts": ts, "nonce": nonce, "sig": sig}
+
+
+def create_room_request(config, seed, name, ts=None, nonce=None):
+    """Ask the create-room function for a new room, signed with this PC's key. Raises ValueError for bad input."""
+    headers = _common_headers(config)
+    headers["Content-Type"] = "application/json"
+    body = _signed_room_body(seed, "create", "", name, ts, nonce)
+    return {"method": "POST", "url": f"{config.url}/functions/v1/create-room", "headers": headers,
+            "body": json.dumps(body, ensure_ascii=False)}
+
+
+def join_room_request(config, seed, room_code, name, ts=None, nonce=None):
+    """Ask the join-room function to add this PC to a room, signed with this PC's key. Raises ValueError for bad input."""
+    if not valid_room_code(room_code):
+        raise ValueError("room code must be 8 uppercase letters or digits")
+    headers = _common_headers(config)
+    headers["Content-Type"] = "application/json"
+    body = {"room_code": room_code, **_signed_room_body(seed, "join", room_code, name, ts, nonce)}
+    return {"method": "POST", "url": f"{config.url}/functions/v1/join-room", "headers": headers,
+            "body": json.dumps(body, ensure_ascii=False)}
+
+
+def create_room(config, seed, name, timeout=TIMEOUT_SECONDS):
+    """The code of the new room this PC created. Network errors raise OSError, bad answers ValueError."""
+    return read_room_code(*_send(create_room_request(config, seed, name), timeout))
+
+
+def join_room(config, seed, room_code, name, timeout=TIMEOUT_SECONDS):
+    """Join a room by code; returns the room info from read_join_room."""
+    return read_join_room(*_send(join_room_request(config, seed, room_code, name), timeout))

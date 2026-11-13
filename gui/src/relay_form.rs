@@ -6,17 +6,20 @@ use crate::Palette;
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use talk_core::choice_timer::ChoiceTimer;
+use talk_core::relay_rest::{self, random_nonce, signed_room_body, unix_now, PutOutcome, Request, RoomAction};
 use talk_core::relay_settings::{self, Mode, Settings};
 use talk_core::t;
+use std::sync::mpsc::{self, Receiver};
 use std::time::Instant;
 
 /// The four field labels, in field order.
+/// shortcut: the room ID label is written here because locales have no key for it; move it to talk-core/locales when those are allowed to change.
 fn labels() -> [String; 4] {
     [
         t("gui.relay.label.url", &[]),
         t("gui.relay.label.key", &[]),
         t("gui.relay.label.name", &[]),
-        t("gui.relay.label.room_code", &[]),
+        "방 ID (8자리)".to_string(),
     ]
 }
 const KEY_FIELD: usize = 1;
@@ -46,6 +49,25 @@ pub struct Form {
     /// This PC's short ID (what the peer types to find it); empty when it cannot be read.
     short_id: String,
     state: PathBuf,
+    /// A create-room request in flight: its answer (the room code, or the reason it failed).
+    creating: Option<Receiver<Result<String, String>>>,
+}
+
+/// The answer of create-room: the room code on 200, otherwise the status and body.
+fn read_room_code(status: u16, text: &str) -> Result<String, String> {
+    if status != 200 {
+        return Err(format!("status {status}: {text}"));
+    }
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| "answer is not JSON".to_string())?;
+    value["room_code"].as_str().map(str::to_string).ok_or_else(|| "answer has no room_code".to_string())
+}
+
+fn require_published(outcome: PutOutcome) -> Result<(), String> {
+    match outcome {
+        PutOutcome::Written => Ok(()),
+        PutOutcome::Taken => Err("이 PC ID가 다른 키에 사용 중입니다 (409)".to_string()),
+        PutOutcome::Failed => Err("이 PC 행을 게시하지 못했습니다".to_string()),
+    }
 }
 
 impl Form {
@@ -62,7 +84,87 @@ impl Form {
             mine,
             short_id,
             state: state.to_path_buf(),
+            creating: None,
         }
+    }
+
+    /// Ask Supabase for a new room (create-room) with this PC's key and the display name, and put the code in the room ID field.
+    /// Runs in a thread so the window keeps drawing; `show` reads the answer.
+    fn start_create_room(&mut self, ctx: &egui::Context) {
+        let url = self.fields[0].trim().to_string();
+        let key = self.fields[1].trim().to_string();
+        let name = self.fields[2].trim().to_string();
+        if url.is_empty() || key.is_empty() || name.is_empty() {
+            self.message = "방 만들기: 프로젝트 URL, 키, 표시 이름을 먼저 입력하세요".to_string();
+            return;
+        }
+        let config = match relay_rest::config(Some(&url), Some(&key)) {
+            Ok(Some(config)) => config,
+            Ok(None) => {
+                self.message = "방 만들기: 프로젝트 URL과 키가 필요합니다".to_string();
+                return;
+            }
+            Err(error) => {
+                self.message = format!("방 만들기: 릴레이 설정이 올바르지 않습니다: {error}");
+                return;
+            }
+        };
+        let seed = match talk_core::relay_key::load_or_create(&self.state) {
+            Ok(seed) => seed,
+            Err(error) => {
+                self.message = format!("방 만들기: 서명 키를 읽을 수 없습니다: {error}");
+                return;
+            }
+        };
+        let (_, noise_pk) = match talk_core::relay_chat::my_keys(&self.state) {
+            Ok(keys) => keys,
+            Err(error) => {
+                self.message = format!("방 만들기: Noise 키를 읽을 수 없습니다: {error}");
+                return;
+            }
+        };
+        let short_id = match talk_core::relay_key::short_id(&self.state) {
+            Ok(short_id) => short_id,
+            Err(error) => {
+                self.message = format!("방 만들기: 이 PC ID를 읽을 수 없습니다: {error}");
+                return;
+            }
+        };
+        let nonce = match random_nonce() {
+            Ok(nonce) => nonce,
+            Err(error) => {
+                self.message = format!("방 만들기: nonce를 만들 수 없습니다: {error}");
+                return;
+            }
+        };
+        let body = match signed_room_body(&seed, RoomAction::Create, "", &name, unix_now(), &nonce) {
+            Ok(body) => body,
+            Err(error) => {
+                self.message = format!("방 만들기: 서명 요청을 만들 수 없습니다: {error}");
+                return;
+            }
+        };
+        let request = Request {
+            method: "POST",
+            url: format!("{url}/functions/v1/create-room"),
+            headers: vec![
+                ("apikey".to_string(), key.clone()),
+                ("Authorization".to_string(), format!("Bearer {key}")),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: Some(body),
+        };
+        let (sender, receiver) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let answer = require_published(relay_rest::put_peer(&config, &seed, &noise_pk, &short_id, &name))
+                .and_then(|()| relay_rest::http_post(&request))
+                .and_then(|(status, text)| read_room_code(status, &text));
+            let _ = sender.send(answer);
+            ctx.request_repaint();
+        });
+        self.creating = Some(receiver);
+        self.message = "방 만드는 중...".to_string();
     }
 
     /// The settings window opened for Supabase (the first-run pick).
@@ -78,7 +180,7 @@ impl Form {
             url: self.fields[0].trim().to_string(),
             key: self.fields[1].trim().to_string(),
             name: self.fields[2].trim().to_string(),
-            room_code: self.fields[3].trim().to_string(),
+            room_code: self.fields[3].trim().to_ascii_uppercase(),
         }
     }
 
@@ -167,6 +269,17 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         return Action::Discard;
     }
+    // The create-room answer, when it has come back.
+    if let Some(answer) = form.creating.as_ref().and_then(|receiver| receiver.try_recv().ok()) {
+        form.creating = None;
+        match answer {
+            Ok(code) => {
+                form.message = format!("방을 만들었습니다: {code} (저장을 눌러야 적용됩니다)");
+                form.fields[3] = code;
+            }
+            Err(error) => form.message = format!("방 만들기 실패: {error}"),
+        }
+    }
     egui::CentralPanel::default().show(ctx, |ui| {
         ui.colored_label(palette.accent, egui::RichText::new(t("settings.mode_row", &[])).heading());
         ui.horizontal(|ui| {
@@ -190,8 +303,13 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
             }
             ui.add_space(4.0);
         }
+        // Only Supabase mode can create a room, and only once this PC has its keys and no request is running.
+        let can_create = enabled && form.mine.is_some() && form.creating.is_none();
+        if ui.add_enabled(can_create, egui::Button::new("방 만들기")).clicked() {
+            form.start_create_room(ctx);
+        }
         ui.separator();
-        if !form.short_id.is_empty() {
+        if enabled && !form.short_id.is_empty() {
             ui.label(t("gui.relay.my_id", &[]));
             ui.add(egui::Label::new(egui::RichText::new(form.short_id.as_str()).monospace().size(22.0)));
         }
@@ -234,7 +352,7 @@ mod tests {
     }
 
     fn form_at(state: &Path) -> Form {
-        Form { mode: Mode::Local, fields: Default::default(), message: String::new(), from_env: (false, false), mine: None, short_id: String::new(), state: state.to_path_buf() }
+        Form { mode: Mode::Local, fields: Default::default(), message: String::new(), from_env: (false, false), mine: None, short_id: String::new(), state: state.to_path_buf(), creating: None }
     }
 
     #[test]
@@ -276,15 +394,41 @@ mod tests {
         assert!(form.save());
         let bytes = std::fs::read(dir.join(relay_settings::FILE)).unwrap();
         assert!(!bytes.starts_with(&[0xEF, 0xBB, 0xBF]), "written without BOM");
-        assert_eq!(relay_settings::load_saved(&dir).mode, Mode::Supabase);
+        let saved = relay_settings::load_saved(&dir);
+        assert_eq!(saved.mode, Mode::Supabase);
+        assert_eq!(saved.room_code, "ABCD2345");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_signed_create_body_has_the_required_fields() {
+        let nonce = "00".repeat(16);
+        let body = signed_room_body(&[7; 32], RoomAction::Create, "", "Alice", 1_700_000_000, &nonce).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        for field in ["peer_pk", "display_name", "ts", "nonce", "sig"] {
+            assert!(value.get(field).is_some(), "{field} missing from {body}");
+        }
+        assert_eq!(value["display_name"], "Alice");
+        assert_eq!(value["ts"], 1_700_000_000);
+        assert_eq!(value["nonce"], nonce);
+    }
+
+    #[test]
+    fn a_failed_peer_publication_skips_create_request() {
+        let mut create_called = false;
+        let result = require_published(PutOutcome::Failed).and_then(|()| {
+            create_called = true;
+            Ok::<(), String>(())
+        });
+        assert!(result.is_err());
+        assert!(!create_called);
     }
 
     #[test]
     fn a_file_with_a_byte_order_mark_is_read() {
         let dir = folder("bom");
         std::fs::create_dir_all(&dir).unwrap();
-        let text = format!("{}{}", '\u{feff}', r#"{"url":"https://example.supabase.co","key":"k","name":"Bob","peer":""}"#);
+        let text = format!("{}{}", '\u{feff}', r#"{"url":"https://example.supabase.co","key":"k","name":"Bob","room_code":""}"#);
         std::fs::write(dir.join(relay_settings::FILE), text).unwrap();
         assert_eq!(relay_settings::load_saved(&dir).name, "Bob");
         std::fs::remove_dir_all(&dir).unwrap();

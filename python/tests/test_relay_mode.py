@@ -29,6 +29,17 @@ class FakeRelay:
         self.stopped = True
 
 
+class SettingsScreenTest(unittest.TestCase):
+    def test_the_settings_screen_polls_for_a_room_answer_between_keys(self):
+        state = tempfile.mkdtemp(prefix="herdr-talk-settings-screen-")
+        self.addCleanup(shutil.rmtree, state, True)
+        with mock.patch.object(talk, "read_char_timeout", side_effect=[None, None, ""]) as read,                 mock.patch.object(talk, "_draw"),                 mock.patch("relay_form.SettingsForm.poll", return_value=False) as poll:
+            outcome, _message = talk.settings_screen(state)
+        self.assertEqual(outcome, "cancel")
+        self.assertEqual(poll.call_count, 2, "polled on each empty wait")
+        self.assertEqual(read.call_count, 3)
+
+
 class ModeTest(unittest.TestCase):
     def setUp(self):
         self.lines = []
@@ -90,7 +101,7 @@ class ModeTest(unittest.TestCase):
         self.assertEqual(len(self.lines), 1)
 
     def test_start_relay_in_supabase_mode_starts_it_and_a_restart_stops_the_old_one(self):
-        settings = {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key", "name": "Me", "peer": "ab12cd34"}
+        settings = {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key", "name": "Me", "room_code": "ABCD1234"}
         self.assertIsNone(relay_settings.save(self.dir, settings))
         first, second = FakeRelay(), FakeRelay()
         with self._env(), mock.patch.object(relay_chat, "start", side_effect=[(first, ""), (second, "")]):
@@ -102,7 +113,7 @@ class ModeTest(unittest.TestCase):
         self.assertIs(self.chat.relay, second)
 
     def test_switching_back_to_local_stops_the_relay(self):
-        settings = {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key", "name": "Me", "peer": "ab12cd34"}
+        settings = {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key", "name": "Me", "room_code": "ABCD1234"}
         relay_settings.save(self.dir, settings)
         fake = FakeRelay()
         with self._env(), mock.patch.object(relay_chat, "start", return_value=(fake, "")):
@@ -114,12 +125,12 @@ class ModeTest(unittest.TestCase):
         self.assertIsNone(self.chat.relay)
 
     def test_a_bad_setting_is_shown_and_does_not_stop_the_chat(self):
-        settings = {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key", "name": "Me", "peer": "ab12cd34"}
+        settings = {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key", "name": "Me", "room_code": "ABCD1234"}
         relay_settings.save(self.dir, settings)
-        with self._env(), mock.patch.object(relay_chat, "start", return_value=(None, "relay: peer id missing")):
+        with self._env(), mock.patch.object(relay_chat, "start", return_value=(None, "relay: room code missing")):
             status = self.chat.start_relay()
-        self.assertEqual(status, "relay: peer id missing")
-        self.assertTrue(any("peer id missing" in line for line, _ in self.lines))
+        self.assertEqual(status, "relay: room code missing")
+        self.assertTrue(any("room code missing" in line for line, _ in self.lines))
 
     def test_control_peers_tells_the_mode(self):
         answer = talk.control_answer(self.chat, {"cmd": "peers"}, False)

@@ -16,8 +16,8 @@ herdr-talk has no required settings. Everything below is optional.
 | `identity.json`, `trusted.json` | herdr-talk state folder (`HERDR_PLUGIN_STATE_DIR`) | created on first start | This PC's key and the peers you verified. Do not share `identity.json`. |
 | `control-<pid>.json` | herdr-talk state folder | written while `run` or `serve` is up | Port and token of the [control channel](#control-channel). Removed when the chat ends. |
 | `sessions\<id>\` | `%LOCALAPPDATA%\herdr-talk\sessions\` | one folder per launch | Each launch of `run`, `serve` or the GUI is its own node: its own key, short ID, trusted peers and `relay.json`. `--session <id>` reuses one. The old folder `%LOCALAPPDATA%\herdr-talk` is the default node and is kept. |
-| `relay.json` | herdr-talk state folder | not set (Local) | Connection settings. `mode`: `local` (LAN only, the default; a missing or unknown value means local) or `supabase` (messages only through the relay; needs `url`, `key`, `name` and `peer`). Other keys: `url`, `key`, `name`, `peer` (the peer's Ed25519 key). Environment variables `HERDR_TALK_RELAY_URL` and `HERDR_TALK_RELAY_KEY` win over the file. |
-| `relay-signing.key`, `short-id.txt` | herdr-talk state folder | created on first relay start | This PC's Ed25519 signing key for the relay row, and the short ID (8 letters or digits) other people type to find this PC. Do not share `relay-signing.key`. |
+| `relay.json` | herdr-talk state folder | not set (Local) | Connection settings. `mode`: `local` (LAN only, the default) or `supabase` (room relay). Supabase uses `url`, `key`, `name`, and an 8-character room ID. Environment variables `HERDR_TALK_RELAY_URL` and `HERDR_TALK_RELAY_KEY` win over the file. |
+| `relay-signing.key`, `short-id.txt` | herdr-talk state folder | created on first relay start | This PC's relay signing key and 8-character legacy peer ID for signed peer-row publishing. Do not share the signing key. **Retired as a room input:** join rooms with a room ID, not this ID. |
 | `HERDR_TALK_EXE` | environment, GUI only | not set | Path of `herdr-talk.exe` for the [Windows GUI](usage.md#11-windows-gui) to start. |
 
 Example:
@@ -51,12 +51,20 @@ The language does not change the random name list. Names come from the PC's loca
 
 Messages between herdr-talk peers are encrypted with Noise (`Noise_IK_25519_ChaChaPoly_BLAKE2s`). Each PC has a key pair, stored in `identity.json` in the state folder. Its peers see the public half in the discovery announcement.
 
-- **Verify before you chat.** A new peer shows a code of 32 hex digits in eight groups, for example `1a2b-3c4d-5e6f-7a8b-9c0d-1e2f-3a4b-5c6d`. The code is computed from both PCs' keys, so both screens show the same value. Compare it with the other PC's screen, then type `/trust <code>` on both sides. Only verified keys are remembered in `trusted.json`. If two different keys match one code, `/trust` refuses.
+- **Trust code status.** Trust codes are 8 characters. The SAS commit design is decided but its implementation is pending; do not infer a deployed verification protocol from older 32-hex-code documentation.
 - **Unverified peers get nothing.** Messages are not sent to them, and their messages are not shown. The handshake is refused before any reply.
 - **A changed key is refused.** A new key from an address you trusted before is shown as a warning and is not trusted.
 - **Plain text is off by default.** Peers that do not encrypt (an old Python edition without keys) are skipped unless `"plaintext": true` is set in `config.json`. Even then, a peer that has a key is never sent plain text.
   With it off, you see `peer.plain_off` when you send to such a peer, and its plain messages are dropped without a line. The current Python edition has keys, `identity.json`/`trusted.json` in the same format and the same `/trust` flow, and needs no `plaintext` setting. The protocol is in [encryption-protocol.md](encryption-protocol.md). Several Rust chats that share one state folder share one key, so they trust each other (encrypted) and need no `/trust`.
 - **Limits.** `/trust` only proves what you compared. Compare the whole code on both screens before you type it. On Windows, `identity.json` relies on the default permissions of your user profile folder.
+
+## Supabase rooms
+
+Supabase uses a many-participant room, not the **retired** peer-ID-based one-to-one relay. The server generates an 8-character room ID when a room is created; other participants enter that code to join. Room IDs and trust codes are 8 characters. The legacy peer ID remains for signed peer-row publishing only; it is not a room-join field.
+
+Rooms last 24 hours from creation and cannot be extended. Joining an expired room returns `410`. Expiry and pg_cron cleanup (`0005_room_expiry.sql` comments) are implemented but not deployed.
+
+**Deployment blocker:** room RLS is publicly open, and room creation and joining have no signature verification. Both require resolution before deployment. Other deployment details are unverified.
 
 ## Phone host (방장)
 

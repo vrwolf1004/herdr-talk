@@ -21,11 +21,11 @@ class ShortIdTest(unittest.TestCase):
 
     def test_new_short_id_is_eight_letters_or_digits(self):
         for _ in range(50):
-            self.assertRegex(relay_key.new_short_id(), r"^[a-z0-9]{8}$")
+            self.assertRegex(relay_key.new_short_id(), r"^[A-Z0-9]{8}$")
 
     def test_made_once_then_kept(self):
         first = relay_key.load_or_create_short_id(self.dir)
-        self.assertRegex(first, r"^[a-z0-9]{8}$")
+        self.assertRegex(first, r"^[A-Z0-9]{8}$")
         self.assertEqual(relay_key.load_or_create_short_id(self.dir), first)
 
     def test_damaged_file_is_an_error_not_replaced(self):
@@ -36,10 +36,11 @@ class ShortIdTest(unittest.TestCase):
 
     def test_replace_keeps_the_new_id(self):
         relay_key.load_or_create_short_id(self.dir)
-        relay_key.replace_short_id(self.dir, "zz99zz99")
-        self.assertEqual(relay_key.load_or_create_short_id(self.dir), "zz99zz99")
+        relay_key.replace_short_id(self.dir, "ZZ99ZZ99")
+        self.assertEqual(relay_key.load_or_create_short_id(self.dir), "ZZ99ZZ99")
 
-    def test_publish_retries_with_a_new_id_on_409(self):
+    @mock.patch.object(relay_key, "noise_public_hex", return_value="ab" * 32)
+    def test_publish_retries_with_a_new_id_on_409(self, _noise):
         seed = bytes(range(32))
         statuses = iter([409, 204])
         seen = []
@@ -48,19 +49,18 @@ class ShortIdTest(unittest.TestCase):
             seen.append(short)
             return next(statuses)
 
-        relay = relay_chat.Relay(hooks=None, state=self.dir, config=None, settings={"name": "Alice"}, session=None)
-        session = relay_chat.Session(seed, bytes(32), bytes(32))
+        relay = relay_chat.Relay(hooks=None, state=self.dir, config=None, settings={"name": "Alice"}, session=relay_chat.Session(seed))
         with mock.patch.object(relay_rest, "put_status", side_effect=fake_put):
-            self.assertTrue(relay._publish({"name": "Alice"}, session))
+            self.assertTrue(relay._publish())
         self.assertEqual(len(seen), 2)
         self.assertNotEqual(seen[0], seen[1])
 
-    def test_publish_gives_up_after_five_taken_ids(self):
+    @mock.patch.object(relay_key, "noise_public_hex", return_value="ab" * 32)
+    def test_publish_gives_up_after_five_taken_ids(self, _noise):
         seed = bytes(range(32))
-        relay = relay_chat.Relay(hooks=None, state=self.dir, config=None, settings={"name": "Alice"}, session=None)
-        session = relay_chat.Session(seed, bytes(32), bytes(32))
+        relay = relay_chat.Relay(hooks=None, state=self.dir, config=None, settings={"name": "Alice"}, session=relay_chat.Session(seed))
         with mock.patch.object(relay_rest, "put_status", return_value=409) as put:
-            self.assertFalse(relay._publish({"name": "Alice"}, session))
+            self.assertFalse(relay._publish())
         self.assertEqual(put.call_count, 5)
 
 

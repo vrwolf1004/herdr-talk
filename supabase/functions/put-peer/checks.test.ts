@@ -5,7 +5,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { checkBeforeNonce, checkFormat, signatureOk, signedMessage, statusFor, withinWindow, type PutBody } from "./checks.ts";
 
 const NOISE_PK = "ab".repeat(32);
-const SHORT_ID = "abcd2345";
+const SHORT_ID = "ABCD2345";
 const NONCE = "00112233445566778899aabbccddeeff";
 const TS = 1700000000;
 
@@ -38,10 +38,10 @@ test("a signed v3 body passes the format check and the full check order", async 
 
 test("format accepts a short_id of 8 lowercase letters or digits only", () => {
   const key = signer();
-  for (const good of ["abcd2345", "zzzzzzzz", "00000000"]) {
+  for (const good of ["ABCD2345", "ZZZZZZZZ", "00000000"]) {
     assert.equal(checkFormat(bodyFor(key, { short_id: good })), true, good);
   }
-  for (const bad of ["abcd234", "abcd23456", "ABCD2345", "abcd-234", "", "abcd 234"]) {
+  for (const bad of ["ABCD234", "ABCD23456", "abcd2345", "ABCD-234", "", "ABCD 234"]) {
     assert.equal(checkFormat(bodyFor(key, { short_id: bad })), false, bad);
   }
 });
@@ -81,7 +81,7 @@ test("a change to any signed field breaks the signature", async () => {
   const key = signer();
   const body = bodyFor(key);
   assert.equal(await signatureOk({ ...body, noise_pk: "cd".repeat(32) }), false);
-  assert.equal(await signatureOk({ ...body, short_id: "abcd2346" }), false, "short_id is signed");
+  assert.equal(await signatureOk({ ...body, short_id: "ABCD2346" }), false, "short_id is signed");
   assert.equal(await signatureOk({ ...body, name: "Bob" }), false);
   assert.equal(await signatureOk({ ...body, pk: signer().pk }), false);
 });
@@ -109,13 +109,13 @@ test("v3 vector: the signature matches the external vector", async () => {
   const body: PutBody = {
     pk: "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
     noise_pk: "ab".repeat(32),
-    short_id: "ab12cd34",
+    short_id: "AB12CD34",
     name: "Alice",
     ts: 1700000000,
     nonce: "00112233445566778899aabbccddeeff",
-    sig: "c87383be2bc3213255c8122a7e7900dab7910ea4b97aeca17e1f8adbb43b371d533340a0f1debc1d26a358ddc8f563f1bcedd7fe8714d8acd4f482777f85c202",
+    sig: "5a5d9f0ee7490ec09cf1eb71643d08c89e840a7b0a4209d32d328a38098a43a0c2c31ddb456d5ff719d599c63162511acd51bb8c558cd065d212bf0502d77301",
   };
   assert.equal(new TextDecoder().decode(signedMessage(body.pk, body.noise_pk, body.short_id, body.name, body.ts, body.nonce)).split("\n").length, 7);
   assert.equal(await signatureOk(body), true);
-  assert.equal(await signatureOk({ ...body, short_id: "ab12cd35" }), false);
+  assert.equal(await signatureOk({ ...body, short_id: "AB12CD35" }), false);
 });

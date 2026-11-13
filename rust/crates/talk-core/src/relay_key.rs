@@ -50,15 +50,16 @@ fn create(state: &Path, path: &Path) -> Result<[u8; 32], String> {
 }
 
 pub const SHORT_FILE: &str = "short-id.txt";
-const SHORT_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+const SHORT_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
-/// This PC's short ID (8 characters). Made once and kept in short-id.txt; a damaged file is an error, not replaced.
+/// This PC's short ID (8 uppercase letters or digits). Made once and kept in short-id.txt; a damaged file is an error, not replaced.
 pub fn short_id(state: &Path) -> Result<String, String> {
     let path = state.join(SHORT_FILE);
     match fs::read_to_string(&path) {
         Ok(text) => {
-            let text = text.trim();
-            if crate::relay_rest::valid_short_id(text) { Ok(text.to_string()) } else { Err(format!("{SHORT_FILE} is damaged; it was not replaced")) }
+            // A file written by an older version may hold lowercase: it is read as uppercase (the input rule).
+            let text = text.trim().to_ascii_uppercase();
+            if crate::relay_rest::valid_short_id(&text) { Ok(text) } else { Err(format!("{SHORT_FILE} is damaged; it was not replaced")) }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let id = new_short_id()?;

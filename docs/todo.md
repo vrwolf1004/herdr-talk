@@ -45,7 +45,6 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
   - 처리 1: `STOP` 이벤트로 announce·수신 루프를 끝내고 소켓을 닫는다 (`run()`이 끝날 때 설정)
   - 처리 2: 메시지 목록(`Chat.lines`)에 잠금을 두고, 화면은 복사본으로 그린다
   - 테스트: 종료 신호가 스레드를 제시간에 끝내는지, 동시 추가 중에도 목록이 깨지지 않는지
-  - 수신 루프는 종료 신호 없이 계속 돌고 소켓을 닫지 않는다. 공유 메시지 목록은 네트워크 스레드와 UI가 함께 변경한다. 종료 이벤트·소켓 정리와 잠금 또는 단일 이벤트 큐를 설계하고 종료/동시성 테스트를 추가한다.
 
 - [x] **Encryption (phase 2).** Messages are plain JSON over TCP. Phase 2 plans end-to-end encryption; see [rust-roadmap.md](rust-roadmap.md). Phase 1 must stay on trusted networks only. (Noise IK, 저장된 키만 신뢰, `/trust <코드>`로 지문 확인, 미확인·키 변경 상대는 거부, 평문은 `"plaintext": true` 일 때만. 두 PC 실제 채팅은 미확인. `docs/configuration.md#encryption`)
 - [x] **Limit the message rate.** A peer can send many messages quickly and fill the list. Add a simple per-peer limit. (주소별 10초에 20개, 넘치면 알림 없이 버림. `MESSAGE_LIMIT`, `admit_sender()`)
@@ -67,7 +66,6 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 - [x] **Write `docs/usage.ko.md`.** The main README has a Korean version, but the detailed docs are only in English.
 - [x] **Describe the language setting in the READMEs,** like herdr-timekit does, with a short Language section. (README.md, README.ko.md에 Language 절 추가)
 - [x] **Commit the `docs/` folder and this list** after review.
-- [x] **Check the herdr plugin install from GitHub** (`herdr plugin install vrwolf1004/herdr-talk/rust`). (2026-11-03: Windows 에서 설치 확인, chef 보고. Linux/macOS 는 미확인)
 
 ## Security follow-ups (2026-11-02 review)
 
@@ -102,7 +100,6 @@ Open:
 - [ ] **Phone token after takeover (later).** When the host goes away and the remaining node is the only one on this PC, a new token is issued (`phone.rs` / `phone.py` `try_take`: `other_live_nodes` does not count the node itself). Differs from "takeover keeps token". Deferred 2026-11-09: phone work is not possible on the current network. Decide when phone work resumes.
 - [ ] **Panel position.** The panel is an overlay at the bottom, not a line directly under `방장 입장`, so it never lands in the chat history. Ask whether a position directly under the line is needed.
 - [ ] **Bridge start.** The host does not start the bridge; the user runs `node mobile-bridge/bridge.js`. Decide whether the host should start it (needs a fixed path and process handling).
-- [ ] **Trust flow between Rust nodes with different state folders** (unit tests, and dev ran Rust and Python with matching codes once).
 - [ ] **Chat across two PCs** (not tested). A different state folder is treated as another PC.
 - [ ] **Phone leg encryption**: the bridge is plain HTTP on the LAN. Options: HTTPS with a pinned certificate, or a tunnel.
 - [ ] **Phone as a real P2P peer.** Not possible with Expo Go (UDP/TCP sockets need native modules, so a development build). Would need a JS Noise implementation, Android multicast permission and background limits. Separate project.
@@ -120,11 +117,33 @@ Found by reading the relay, node-folder and CLI code after commit `222aee8`. Not
 - [ ] **A reused pid keeps a dead node's folder.** `_has_live_node` / `has_live_node` treat any live pid in a `control-<pid>.json` as the node. After a crash the OS can give that pid to another program, and the folder is kept until that program exits. Fix: store the process start time in the control file and compare it. Low priority. (코드 읽기로 확인)
 - [ ] **`herdr_cli()` still has no timeout** (`python/src/talk.py:1366`). `subprocess.run` waits forever if herdr does not answer. The item in `improvements.md` (2026-10-22) is still open. Fix the shared copy in herdr-dock-grid first, then sync (shared-module rule).
 
+## Supabase 방 기능 (2026-11-13)
+
+- [ ] **방 보안 (배포 전 필수)**: `0003_rooms.sql`의 RLS가 anon에게 `rooms`·`room_members`·`room_messages` 전체 조회를 열어 둡니다. `join-room`과 `create-room`에는 서명 검증과 재전송 방지가 없습니다. 메시지는 종단 암호화 전제이므로 서버에는 암호문만 저장하고, 조회는 멤버 검증 후 허용합니다. 구현 전까지 main의 방 모델 커밋(`8cbc628`)을 배포하지 않습니다. 진행 (2026-11-13): `0006_rooms_read_closed.sql` 작성 (실행 안 함). 전제: `create-room`·`join-room` 을 service role 키로 바꾼 뒤에만 실행 (승인 항목 f). service role 전환 완료 (미배포). 서명 검증 1단계 완료 (미커밋·미배포): `create-room`·`join-room` 이 Ed25519 서명, ts, nonce 를 검사하고 nonce 는 `put_nonces` 에 기록. 남은 것: talk-core `join_room_request` 와 gui `create_room` 이 아직 서명 없이 보낸다 (허락 필요), 배포 전 실제 Edge Function 실행 확인.
+- [ ] **방 사용기한 24시간 (구현됨, 미커밋·미배포)**: 생성 시점부터 24시간, 연장 없음 가정. `0005_room_expiry.sql`(실행 안 함), `create-room`은 `expires_at` 저장, `join-room`은 만료된 방에 410 응답. 만료 방 정리는 pg_cron (0005 주석). 남은 일: talk-core `relay_rest.rs:295`의 410 처리 한 줄 (공통 모듈, 허락 필요).
+- [ ] **8자리 코드 통일 (trust·상대 ID·방 ID, A-Z0-9)**: 구현됨, 미커밋. `0004_uppercase_codes.sql` 작성 (실행 안 함). 라이브 DB 소문자 행 정리와 실행은 사람이 한다. 입력 소문자는 입력 지점에서 대문자로 변환.
+- [ ] **trust 코드 방식 (SAS 커밋)**: 결정 (2026-11-13): 짧은 8자 코드 + 커밋 방식. 설계는 dev가 작성 (설계만, `docs/encryption-protocol.md` 새 절은 미작성). 결정 (2026-11-13, 권장안 채택): (a) LAN 에도 SAS 적용. (b) 구버전은 거부 (명확한 오류). (c) 기존 신뢰 목록은 재검증하지 않는다. (d) 코드 8자 (SAS 와 함께). (e) 릴레이 commit 은 채널 envelope 으로 전달. (f) rooms 쓰기는 service role 로 전환 완료. (g) talk-core 허락 범위 확대: 미결정 (LAN 의 net.rs, chat.rs 는 talk-core 라서 구현 전 확인 필요). 8자 지문을 SAS 없이 단독으로 쓰면 안 된다 (키 조작으로 같은 코드를 만들 수 있다).
+- [ ] **LAN SAS 테스트 (테스트 전)** (2026-11-13): 로컬/자체 모드로 GUI 두 창 (같은 PC) 을 띄워 상대 목록에 서로 보이는지, 지문 코드가 reveal 뒤에만 나오는지, 양쪽 코드가 같은지, `/trust` 로 신뢰되는지 확인. 주의: Supabase 모드 노드는 LAN 으로 상대를 찾지 않는다 (이번 테스트 실패의 원인은 모드였다). Python 노드는 Rust 맞춤 전이라 Rust 와 연결되지 않는다. 실제 두 PC 확인은 별도.
+- [ ] **SAS 보안 검토 지적 반영 (다른 PC 에서 진행)** (2026-11-13, 자동 보안 검토): `python/src/talk.py` 의 SAS 구현. (1) nonce 를 세션 전체에서 하나만 쓴다 → 상대마다, 페어링 시도마다 새로 만든다. (2) `chat.commits` 를 덮어쓴다 → 처음 받은 커밋을 고정 (`setdefault`), 같은 키의 다른 커밋은 연결 거부와 경고. (3) reveal 이 실패하면 nonce 를 버리고 다음 시도에 새로 만든다. (4) 커밋을 먼저 보내고, 상대 커밋을 받은 뒤에만 reveal (ZRTP 식 순서) 이 지켜지는지 확인. (5) Rust `talk-core` (`net.rs`, `chat.rs`) 도 같은 규칙인지 확인하고 불일치는 목록으로 보고 (talk-core 수정은 허락 필요).
+- [ ] **방 메시지 결정 (2026-11-13, 추천안 채택)**: (1) 암호화 A: 멤버마다 1:1 Noise fan-out. (2) 저장: 멤버별 행 (테이블 형태 `room_message_deliveries` 또는 `room_messages` 수정은 구현 전 확인). (3) 멤버 상한 8명. (4) 보관 24시간 (방 기한과 같이 만료). (5) SAS 결정 전에는 방 메시지를 열지 않는다. (6) 미확인 멤버는 제외하고 알린다. (7) Rust 먼저. (8) 0006 RLS 닫기와 service role 전환을 방 메시지 전에 끝낸다. 설계: `docs/room-messages-design.md`.
+- [ ] **방 메시지 전송 미구현**: `talk-core/src/relay_chat/room_relay.rs`의 `TODO`. talk-core는 공통 모듈이라 허락 필요. 방 메시지에도 `/trust` 확인을 적용해야 한다 (서버가 준 공개키를 그대로 믿지 않는다).
+- [ ] **방 참가·만들기 동작**: 방 참가는 실패해도 재시도하지 않는다. 방 만들기는 Rust·Python 모두 동기 호출이라 최대 5초 화면이 멈춘다 (GUI는 백그라운드). 방 이름·안내 문구는 locale 키가 없어 코드에 직접 넣었다.
+- [ ] **내장 모드 릴레이 재시작·첫 실행 화면 (GUI)**: qa가 수정 보고 (`gui/src/main.rs`, 미커밋). 실제 실행 확인 필요.
+- [ ] **여러 방 소속 시 릴레이 대상**: 설정에는 방 코드가 하나만 저장된다. 새 방을 만들고 저장하면 릴레이가 새 방으로 옮겨 간다. 이전 방 기록은 DB에 남는다.
+- [ ] **기준 확정 (2026-11-13)**: Supabase 는 1대다(방). 로컬/자체(LAN)는 직접 연결로 보이는 상대 모두에게 전송 (다수). 1:1 은 Supabase 기존 릴레이뿐. 쌍별 계획 `docs/multi-peer-relay-plan.md`는 1대다 기준으로 갱신이 필요하다 (추천 방식 A 는 대체됨, 이전 "relay 여러 상대" 항목 폐기). 1:1 릴레이는 폐기 확정 (2026-11-13), 제거 3단계 (서버) 와 모바일 1:1 정리만 남음.
+- [x] **1:1 제거 1단계 (UI)** (2026-11-13, dev 완료, 미커밋): Python 설정은 URL·키·이름·방 ID 4칸. Rust·GUI 는 방 ID 만 받는다. 남은 것: "이 PC의 ID" 표시 (herdr-talk `settings_form.rs`, GUI `relay_form.rs`) 는 방 모드 행 ID 라서 유지했다. Supabase 모드에서만 숨기는 작업은 아직 안 함.
+- [x] **1:1 제거 2단계 (코드)** (2026-11-13, dev 완료, 미커밋): 삭제 `talk-core` `relay.rs`, `relay_realtime.rs`, `relay_e2e_test.rs`, `relay_chat/peer_relay.rs`, Python `relay.py`, `relay_realtime.py`, `relay_replay.py`, `websocket.py` 와 관련 테스트. talk-core 경고 15 → 0. Rust 테스트 148, Python 198 통과. 남긴 것: `relay_replay.rs` (방 `NonceCache` 가 쓴다), `relay_key` 의 `short_id` (행 게시에 쓴다), `put_peer`·`delete_peer` (행 게시에 쓴다).
+- [x] Chat across the internet through Supabase, with end-to-end encryption. (2026-11-09: 노드마다 새 세션 폴더, 자동 이름, 상대 이름은 행 이름을 따름. 남은 확인은 `supabase-relay.md` "남은 일") (2026-11-09: Rust TUI·GUI·Python·안드로이드 구현. 폰 ↔ PC 실사용 송수신 확인. 남은 확인은 `supabase-relay.md` "남은 일")
+- [ ] **배포 상태 미확인**: 로컬 Supabase CLI 가 없어 함수 배포와 마이그레이션 적용 상태를 확인하지 못했다 (qa, 2026-11-13). CLI 설치 후 읽기 전용으로 확인하거나 대시보드에서 확인한다.
+- [ ] **RLS·채널 권한은 코드로만 확인**: 0001~0005 마이그레이션 읽기 기준. 실제 DB 의 정책과 grant 는 확인하지 않았다. 방 보안 항목 (RLS 전체 공개) 과 함께 확인한다.
+- [ ] **Edge Function 응답 경로는 코드로만 확인**: `create-room`, `join-room` 의 200·400·401·410 경로를 코드 읽기로 정리했다. 실행과 호출은 하지 않았다 (실제 방 생성·참가는 쓰기 작업).
+- [ ] **모바일 방 기능 없음**: `mobile/src/relay` 는 1:1 경로만 있다 (`settings.ts` 단일 peer ID, `client.ts` `findRow`, `protocol.ts` 두 키 채널). 방 생성·참가·멤버 조회가 필요하다. 1:1 제거와 함께 맞춘다. 실기기와 Expo 실행은 확인하지 않았다.
+- [ ] **1:1 제거 3단계 (서버, 보류)**: `peers.short_id` 컬럼과 `put-peer`·`delete-peer` 의 짧은 ID 조회를 제거한다. 보류 이유: 행 게시 서명 형식을 바꿔야 하고 (talk-core `put_message`, Python `put_request`, mobile `signPut` 동시 변경), 행 게시를 Rust·Python 이 아직 쓴다. `peers` 테이블은 `rooms.owner_pk`, `room_members.peer_pk` 가 참조하므로 남긴다. 마이그레이션 실행은 사람이 한다.
+- [ ] **모바일 앱 SAS 적용 (차후)**: SAS 커밋 방식 (LAN announce 의 commit, reveal 프레임, 8자 코드) 을 `mobile/` 에 맞춘다. PC 판 (Rust, Python) 과 같은 고정 벡터로 확인. 구버전 앱은 거부된다 (호환 결정 (b)). 지금 PC 판 SAS 구현 (`task_5a16ee93214f`) 이 끝난 뒤 진행.
+- [ ] **모바일 1:1 경로 정리**: `mobile/src/relay` 의 `engine.ts`, `client.ts` `findRow`, `relay.tsx` 의 peer 칸은 이번 정리 범위 밖이라 남았다. 방 기능 구현과 함께 정리한다.
+
 ## Later (phase 2 and beyond)
 
-- [ ] **relay 여러 상대 연결 (3명 이상)**: 계획 `docs/multi-peer-relay-plan.md` (2026-11-11). 방식 A (상대별 채널) 추천, 사용자 결정 4건 대기. 구현 전.
-
-- [x] Chat across the internet through Supabase, with end-to-end encryption. (2026-11-09: 노드마다 새 세션 폴더, 자동 이름, 상대 이름은 행 이름을 따름. 남은 확인은 `supabase-relay.md` "남은 일") (2026-11-09: Rust TUI·GUI·Python·안드로이드 구현. 폰 ↔ PC 실사용 송수신 확인. 남은 확인은 `supabase-relay.md` "남은 일")
 - [ ] Message history for peers that were offline (needs a decision on storage first).
 - [ ] **Android app that sends commands to herdr AI agents.** Pick a target agent on the phone, send it a prompt, and see its state and reply. Needs the relay and encryption first, plus pairing and permission per device: this runs commands on the PC remotely, so an unpaired device must never reach an agent.
 - [ ] Optional sound or highlight for mentions of your name.

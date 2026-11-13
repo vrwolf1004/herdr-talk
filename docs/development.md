@@ -76,6 +76,12 @@ Keep this stable: other PCs may run an older version, including the Python editi
 - Discovery, UDP broadcast: `{"app": "herdr-talk", "id", "name", "port", "key"}`. `id` is the SHA-256 of `key` for Rust peers. `key` is absent for Python peers.
 - Message, one TCP connection each. Plain: `{"app": "herdr-talk", "id", "from", "text"}`. Encrypted: a Noise IK handshake, then one encrypted copy of the same JSON. See [configuration.md](configuration.md#encryption).
 
+## Supabase relay work
+
+The current Supabase model is a many-participant room: `create-room` generates an 8-character room ID and `join-room` accepts it. **Retired:** the peer-ID-based one-to-one relay. A room ID is the only user input for joining; legacy peer IDs remain only for signed peer-row publishing, not routing. Room IDs use `A-Z0-9`, case-insensitive on input with spaces and dashes ignored. Trust codes are also 8 characters; the SAS commit design is decided but implementation is pending.
+
+Room expiry after 24 hours and pg_cron cleanup are implemented but not deployed (`0005_room_expiry.sql` comments). Do not deploy the room flow before resolving its public RLS and missing create/join signature verification.
+
 ## Name clashes
 
 `Chat::resolve_name_conflict()` in `chat.rs` is called when a peer is remembered (`net.rs`), before the first announcement (after `NAME_SETTLE`), and after `/name` and `/lang`. Rules: only verified peers (key hashes to id) count, the larger id renames (port breaks ties between equal ids), the new name is the first 30 characters plus the lowest free number from 2, and an automatic rename happens at most once per `AUTO_RENAME_GAP` (60 s). `/name` and `/lang` bypass the limit. The Python edition (`resolve_name_clash` in `talk.py`) uses the same numbering and limit, without verification. Keep both editions' rules and tests in step.
