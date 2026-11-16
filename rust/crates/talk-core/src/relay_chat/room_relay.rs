@@ -10,7 +10,7 @@ use crate::relay_rest::{self, Config, Delivery, Message, PutOutcome};
 use crate::relay_replay::NonceCache;
 use crate::relay_settings::Settings;
 use crate::store::{self, Identity};
-use crate::text::clean_text;
+use crate::text::{clean_text, name_key};
 use ed25519_dalek::SigningKey;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -107,9 +107,8 @@ fn publish_row(state: &Path, config: &Config, seed: &[u8; 32], identity: &Identi
 fn publish_message(outcome: PutOutcome) -> Result<(), String> {
     match outcome {
         PutOutcome::Written => Ok(()),
-        // shortcut: Korean-only, as the other room notices; move them to the locales when the wording is settled.
-        PutOutcome::Taken => Err("이 PC의 짧은 ID 가 다른 키에 이미 있습니다 (409). 다시 시도하세요".to_string()),
-        PutOutcome::Failed => Err("이 PC 의 행을 게시하지 못했습니다 (네트워크나 서버 오류)".to_string()),
+        PutOutcome::Taken => Err(t("room.put_taken", &[])),
+        PutOutcome::Failed => Err(t("room.put_failed", &[])),
     }
 }
 
@@ -128,14 +127,13 @@ fn load_members(config: &Config, seed: &[u8; 32], room_code: &str, name: &str) -
 /// user is told how many.
 #[allow(clippy::too_many_arguments)]
 fn send_text(chat: &Chat, config: &Config, seed: &[u8; 32], room_code: &str, identity: &Identity, me: &str, members: &[Member], names: &mut HashMap<String, String>, text: &str) {
-    let own = chat.me.lock().unwrap().name.clone();
+    let own = name_key(&chat.me.lock().unwrap().name);
     names.insert(me.to_string(), own.clone());
     let others: Vec<&Member> = members.iter().filter(|member| member.pk != me).collect();
     let mut trusted: Vec<&Member> = others.iter().copied().filter(|member| chat.trusts(&member.noise)).collect();
     let left_out = others.len() - trusted.len();
     if trusted.is_empty() {
-        // shortcut: Korean-only notice, as the other room notices.
-        chat.say("방에 확인된 멤버가 없어 보내지 않았습니다 (/trust 필요)");
+        chat.say(t("room.none_trusted", &[]));
         return;
     }
     trusted.sort_by(|a, b| a.pk.cmp(&b.pk));
@@ -143,7 +141,7 @@ fn send_text(chat: &Chat, config: &Config, seed: &[u8; 32], room_code: &str, ide
         Ok(()) => {
             chat.say(format!("{} {}: {text}", label(names, me, &own), t("chat.you", &[])));
             if left_out > 0 {
-                chat.say(format!("{left_out}명은 확인되지 않아 제외했습니다 (/trust 필요)")); // shortcut: Korean-only
+                chat.say(t("room.left_out", &[("n", &left_out.to_string())]));
             }
         }
         Err(error) => chat.say(format!("방 메시지 실패: {error}")),
@@ -186,28 +184,26 @@ fn fetch_round(chat: &Chat, config: &Config, seed: &[u8; 32], room_code: &str, i
 fn label(names: &HashMap<String, String>, pk: &str, name: &str) -> String {
     let clash = names.iter().any(|(other, other_name)| other != pk && other_name == name);
     if clash {
-        format!("{name} ({})", &pk[..4])
+        format!("{name} ({})", pk.get(..4).unwrap_or(pk))
     } else {
         name.to_string()
     }
 }
 
 /// One row: shown only when the sender is a member, the Noise key is the member's and trusted, the payload matches the row
-/// (ts, nonce), the 대화명 in it is valid, and the nonce is new. Every failure is silent, as on the LAN.
+/// (ts, nonce), and the nonce is new. The name shown is the one this PC confirmed for that key (the trust list), never the
+/// name the message claims. Every failure is silent, as on the LAN.
 fn show_message(chat: &Chat, identity: &Identity, members: &[Member], names: &mut HashMap<String, String>, cache: &mut NonceCache, row: &Message) {
     let Some(sender) = members.iter().find(|member| member.pk == row.sender_pk) else { return };
     let Some(ciphertext) = store::from_hex(&row.ciphertext) else { return };
     let Ok((payload, remote)) = open(&identity.secret, &ciphertext) else { return };
-    if remote != sender.noise || !chat.trusts(&remote) {
+    if remote != sender.noise {
         return;
     }
+    let Some(trusted) = chat.trusted_name(&remote) else { return };
     let Ok(value) = serde_json::from_slice::<Value>(&payload) else { return };
     let text = value["text"].as_str().unwrap_or("");
-    let name = value["name"].as_str().unwrap_or("");
     if value["v"].as_u64() != Some(1) || value["ts"].as_u64() != Some(row.ts) || value["nonce"].as_str() != Some(row.nonce.as_str()) {
-        return;
-    }
-    if !relay_rest::valid_name(name) {
         return;
     }
     if !cache.accept(&row.nonce, row.ts, unix_now()) {
@@ -217,8 +213,9 @@ fn show_message(chat: &Chat, identity: &Identity, members: &[Member], names: &mu
     if text.trim().is_empty() {
         return;
     }
-    names.insert(row.sender_pk.clone(), name.to_string());
-    chat.say(format!("{}: {text}", label(names, &row.sender_pk, name)));
+    let name = name_key(&trusted);
+    names.insert(row.sender_pk.clone(), name.clone());
+    chat.say(format!("{}: {text}", label(names, &row.sender_pk, &name)));
 }
 
 /// The initiator's Noise message (IK, the payload in message 1): the sender key is proven to the receiver.
@@ -385,7 +382,26 @@ mod tests {
     }
 
     #[test]
-    fn a_shared_name_gets_a_key_suffix_and_a_bad_name_is_dropped() {
+    fn a_claimed_name_is_ignored_and_the_confirmed_name_is_shown() {
+        let (alice_public, alice_secret) = noise_keys();
+        let (bob_public, bob_secret) = noise_keys();
+        let bob = Chat::new(Me { id: "b".into(), name: "Bob".into(), port: 1, key: bob_public.clone(), secret: bob_secret.clone() });
+        bob.trusted.lock().unwrap().push(Trusted { name: "Alice".into(), key: alice_public.clone(), ip: "10.0.0.1".into() });
+        let identity = Identity { public: bob_public.clone(), secret: bob_secret.clone() };
+        let (_, alice_pk) = ed_key(4);
+        let members = vec![Member { pk: alice_pk.clone(), noise: alice_public.clone() }];
+        let ts = unix_now();
+        // Alice's message claims another name: the screen shows the name confirmed for her key.
+        let payload = json!({"v": 1, "ts": ts, "nonce": NONCE, "name": "방장", "text": "hi"}).to_string();
+        let ciphertext = store::to_hex(&seal(&alice_secret, &bob_public, payload.as_bytes()).unwrap());
+        let row = Message { message_id: "ff".repeat(16), sender_pk: alice_pk.clone(), ts, nonce: NONCE.into(), ciphertext, created_at: "2026".into() };
+        show_message(&bob, &identity, &members, &mut HashMap::new(), &mut NonceCache::default(), &row);
+        let shown: Vec<String> = bob.lines().into_iter().map(|line| line.text).collect();
+        assert_eq!(shown, vec!["Alice: hi".to_string()]);
+    }
+
+    #[test]
+    fn a_shared_name_gets_a_key_suffix() {
         let (_, pk) = ed_key(6);
         let (_, other) = ed_key(7);
         let mut names = HashMap::new();
@@ -393,6 +409,6 @@ mod tests {
         assert_eq!(label(&names, &pk, "방장"), "방장", "alone under its name: no suffix");
         names.insert(other.clone(), "방장".to_string());
         assert_eq!(label(&names, &pk, "방장"), format!("방장 ({})", &pk[..4]));
-        assert!(!relay_rest::valid_name(""), "an empty 대화명 is refused by the receiver");
+        assert!(!relay_rest::valid_name(""), "an empty 대화명 is refused");
     }
 }

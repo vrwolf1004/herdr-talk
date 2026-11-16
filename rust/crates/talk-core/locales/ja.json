@@ -39,7 +39,7 @@
   "peer.joined": "* {name} が参加 ({ip})",
   "idle.left": "* 退出: {minutes}分間操作がなかったため",
   "bye": "終了します",
-  "status.line": " herdr-talk  |  {name}  |  相手: {peers}  |  Ctrl+N: 名前変更   /help   Ctrl+C: 終了 ",
+  "status.line": " herdr-talk  |  {name}  |  相手: {peers} ",
   "start.hello": "herdr-talk: あなたの名前は '{name}' です (TCP ポート {port})。/help でコマンドを表示します。",
   "open.no_pane": "herdr-talk open: herdr の pane 内で実行してください (HERDR_PANE_ID が設定されていません)。",
   "dock.agent_name": "talk: 接続 {count}人",
@@ -63,7 +63,6 @@
   "phone.none": "スマホ用アドレスはまだありません: この PC にホストがいません。",
   "phone.new_done": "新しいトークンを作りました。スマホで新しいトークンを入力してください。",
   "usage.phone": "使い方: /phone   または   /phone new",
-  "host.name": "ホスト",
   "host.badge": "[ホスト]",
   "gui.status.starting": "既存のサーバーなし → 自前のサーバーを起動中",
   "gui.status.connected": "独自サーバーに接続済み",
@@ -117,5 +116,12 @@
   "tui.settings.my_id": "this PC's ID (give it to the peer): {id}",
   "tui.settings.my_ed": "this PC's Ed25519 public key: {key}",
   "tui.settings.my_noise": "this PC's Noise key (verify it with /trust): {key}",
-  "tui.settings.no_keys_yet": "this PC's keys: not yet (start a chat once)"
+  "tui.settings.no_keys_yet": "this PC's keys: not yet (start a chat once)",
+  "room.none_trusted": "部屋で確認済みのメンバーがいないため送信しませんでした (/trust が必要)",
+  "room.left_out": "{n}人は確認されていないため除外しました (/trust が必要)",
+  "room.put_taken": "このPCの短いIDは別の鍵で既に使われています (409)。もう一度試してください",
+  "room.put_failed": "このPCの行を公開できませんでした (ネットワークまたはサーバーのエラー)",
+  "net.old_version": "{name} ({ip}): 旧バージョンのため確認できません。両方のPCを新しいビルドに更新してください",
+  "net.other_reveal": "{name}: 別の確認値を受信しました。接続を拒否しました",
+  "peers.code_pending": "(コード待ち)"
 }

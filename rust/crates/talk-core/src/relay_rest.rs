@@ -71,10 +71,10 @@ pub fn valid_pk(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// 1 to 32 characters, no control characters (the same rule the table enforces).
+/// 1 to 32 characters, all printable: no control, bidi-control or zero-width characters (the same rule a LAN name gets).
 pub fn valid_name(text: &str) -> bool {
     let count = text.chars().count();
-    (1..=32).contains(&count) && !text.chars().any(char::is_control)
+    (1..=32).contains(&count) && text.chars().all(crate::text::is_printable)
 }
 
 fn common_headers(config: &Config) -> Vec<(String, String)> {
@@ -701,6 +701,9 @@ pub(crate) mod tests {
     fn name_length_counts_characters() {
         assert!(valid_name(&"가".repeat(32)));
         assert!(!valid_name(&"가".repeat(33)));
+        assert!(!valid_name("a\u{202E}b"), "bidi control is refused");
+        assert!(!valid_name("a\u{200B}b"), "zero-width space is refused");
+        assert!(!valid_name("a\tb"), "control is refused");
     }
 
     #[test]

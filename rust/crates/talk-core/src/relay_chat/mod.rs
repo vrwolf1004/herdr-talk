@@ -79,6 +79,8 @@ pub fn start_with(chat: &Arc<Chat>, state: &Path, settings: Settings) -> Result<
     let (chat, state) = (chat.clone(), state.to_path_buf());
     thread::spawn(move || {
         room_relay::run(&chat, &state, &config, &settings, &rx, &stop);
+        // The thread is over (failed join or stopped): its inbox must not keep taking lines nobody reads.
+        chat.detach_relay(&stop);
     });
     Ok(true)
 }

@@ -3,10 +3,12 @@ import os
 import sys
 import time
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import talk  # noqa: E402
+from relay_form import ACCENT, BACKGROUND, BOLD, BORDER, MUTED, RESET, TEXT, place_row as place  # noqa: E402
 
 
 def make_chat():
@@ -14,37 +16,52 @@ def make_chat():
 
 
 class FrameTest(unittest.TestCase):
-    def frame(self, lines, typed="", cols=30, rows=8):
+    def frame(self, lines, typed="", cols=30, rows=9):
         return talk.screen_frame(lines, "STATUS", typed, cols, rows)
 
-    def test_status_row_is_grey_and_padded_to_the_width(self):
-        frame = self.frame([])
-        self.assertIn("\x1b[1;1H\x1b[100m\x1b[37mSTATUS" + " " * 24 + "\x1b[0m", frame)
+    def test_status_row_is_above_a_footer_row_that_holds_only_made_by_python(self):
+        frame = self.frame([])   # rows=9 is raised to 10: status on row 9, the footer alone on row 10
+        self.assertIn(place(9, ACCENT + "STATUS"), frame)
+        self.assertIn(place(10, " " * 15 + MUTED + "made by Python"), frame)
 
-    def test_messages_start_under_the_status_row_and_stop_above_the_divider(self):
-        frame = self.frame([("a", False), ("b", False)], rows=8)
-        self.assertIn("\x1b[2;1H\x1b[2Ka", frame)
-        self.assertIn("\x1b[3;1H\x1b[2Kb", frame)
-        # rows=8: status row 1, messages rows 2..5, divider row 7, input row 8.
-        self.assertIn("\x1b[7;1H\x1b[90m" + "-" * 30 + "\x1b[0m", frame)
-        self.assertIn("\x1b[8;1H\x1b[2K> ", frame)
+    def test_header_titles_and_mode_are_drawn(self):
+        frame = talk.screen_frame([], "STATUS", "", 60, 12, nodes=["YOU Haruto", "PEER Liam"], mode="BASE STATION")
+        self.assertIn("▣ HERDR-TALK", frame)
+        self.assertIn("SYS.VER 1.0 · BASE STATION", frame)
+        self.assertIn("COMMUNICATION LOG", frame)
+        self.assertIn(f"CONNECTED NODES{RESET}{BACKGROUND}{TEXT}  YOU Haruto · PEER Liam", frame)
+
+    def test_messages_start_under_the_log_title_and_stop_above_the_nodes_row(self):
+        frame = self.frame([("a", False), ("b", False)], rows=12)
+        # rows=12: header 1, divider 2, log title 3, messages 4..6, nodes 7, divider 8, guide 9, input 10, status 11, footer 12.
+        self.assertIn(place(4, "a"), frame)
+        self.assertIn(place(5, "b"), frame)
+        self.assertIn(place(7, f"{ACCENT}CONNECTED NODES{RESET}  "), frame)
+        self.assertIn(place(8, BORDER + "─" * 29), frame)
+        self.assertIn(BACKGROUND + TEXT + "MESSAGE > ", frame)
+        self.assertIn(place(12, " " * 15 + MUTED + "made by Python"), frame)
 
     def test_only_the_newest_lines_fit(self):
         lines = [(f"line{i}", False) for i in range(10)]
-        frame = self.frame(lines, rows=8)   # 8 - 3 = 5 message rows
-        self.assertIn("line5", frame)
+        frame = self.frame(lines, rows=13)   # 13 - 9 = 4 message rows
+        self.assertIn("line6", frame)
         self.assertIn("line9", frame)
-        self.assertNotIn("line4", frame)
+        self.assertNotIn("line5", frame)
 
-    def test_my_lines_are_bold_blue(self):
-        frame = self.frame([("Haruto (you): hi", True), ("Liam: yo", False)])
-        self.assertIn("\x1b[1m\x1b[34mHaruto (you): hi\x1b[0m", frame)
+    def test_my_lines_are_bold_green(self):
+        frame = self.frame([("Haruto (you): hi", True), ("Liam: yo", False)], rows=12)
+        self.assertIn(place(4, BOLD + ACCENT + "Haruto (you): hi"), frame)
         self.assertIn("Liam: yo", frame)
-        self.assertNotIn("\x1b[34mLiam", frame)
+        self.assertNotIn(ACCENT + "Liam", frame)
 
     def test_input_row_shows_the_typed_text_at_the_end(self):
         frame = self.frame([], typed="hello")
-        self.assertTrue(frame.endswith("\x1b[8;1H\x1b[2K> hello\x1b[?25h"))
+        self.assertIn(place(8, "MESSAGE > " + ACCENT + "hello_"), frame)  # rows=9 is raised to 10: the input is row 8
+        self.assertTrue(frame.endswith("\x1b[?25h"))
+
+    def test_empty_input_shows_the_hint_in_muted_text(self):
+        frame = self.frame([])
+        self.assertIn(place(8, "MESSAGE > " + MUTED + talk.t("chat.input_hint")), frame)
 
     def test_long_input_keeps_its_end_visible(self):
         frame = self.frame([], typed="a" * 40 + "END", cols=30)
@@ -53,8 +70,9 @@ class FrameTest(unittest.TestCase):
 
     def test_wide_characters_are_padded_by_display_width(self):
         frame = talk.screen_frame([], "가나", "", 20, 8)
-        # 가나 is 4 columns, so 16 spaces pad the status row to 20.
-        self.assertIn("가나" + " " * 16 + "\x1b[0m", frame)
+        # 가나 is 4 columns and the status row has the whole width to itself, so it is not cut.
+        self.assertIn("가나" + RESET + BACKGROUND + "[K", frame)
+        self.assertIn(place(10, " " * 5 + MUTED + "made by Python"), frame)
 
 
 class KeyTest(unittest.TestCase):
@@ -121,6 +139,19 @@ class KeyTest(unittest.TestCase):
         typed = ["/help"]
         talk.on_key("\r", self.chat, typed)
         self.assertEqual(self.texts(), ["> /help"] + talk.HELP_BOX)
+
+
+class DrawTest(unittest.TestCase):
+    def test_an_unchanged_frame_is_not_written_again(self):
+        import io
+        out = io.StringIO()
+        talk._last_frame = None
+        with unittest.mock.patch.object(talk.sys, "stdout", out):
+            talk._draw("one")
+            talk._draw("one")
+            talk._draw("two")
+        self.assertEqual(out.getvalue(), "onetwo")
+        talk._last_frame = None
 
 
 class FitTest(unittest.TestCase):

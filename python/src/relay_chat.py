@@ -91,8 +91,18 @@ class Relay:
         return False
 
     def _run(self):
-        if relay_rest.valid_name(self.settings["name"]) and not self._publish():
-            self.hooks.set_status("relay: could not publish this PC's row")
+        # The row is written before the join (the room's member rows point at it): until it is, the join is not tried.
+        name = self.settings["name"]
+        if name and not relay_rest.valid_name(name):
+            # A bad name would never get its row, so the join would fail on the missing row: stop here with the reason.
+            self.hooks.set_status("relay: name is not valid; not joined yet")
+            return
+        if relay_rest.valid_name(name):
+            while not self._publish():
+                self.hooks.set_status("relay: could not publish this PC's row; not joined yet")
+                self._wait(WAIT_SECONDS)
+                if self.stop_event.is_set():
+                    return
         self.hooks.set_status(self._join_room())
         while not self.stop_event.is_set():
             self._wait(WAIT_SECONDS)

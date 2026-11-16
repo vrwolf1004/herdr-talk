@@ -1,11 +1,15 @@
+import io
 import json
 import os
+import shutil
 import socket
 import sys
+import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
@@ -134,6 +138,15 @@ class LocaleKeysTest(unittest.TestCase):
             keys = set(json.loads(path.read_text(encoding="utf-8")))
             self.assertEqual(keys, english, path.name)
 
+    def test_every_locale_has_the_chat_guide_and_input_hint(self):
+        locales = Path(talk.__file__).resolve().parent / "locales"
+        for path in sorted(locales.glob("*.json")):
+            messages = json.loads(path.read_text(encoding="utf-8"))
+            for key in ("chat.guide", "chat.input_hint"):
+                self.assertTrue(messages.get(key), f"{path.name} {key}")
+            for shortcut in ("Enter", "Ctrl+N", "Ctrl+R", "Ctrl+C"):
+                self.assertIn(shortcut, messages["chat.guide"], path.name)
+
 
 class ShutdownTest(unittest.TestCase):
     def setUp(self):
@@ -179,12 +192,51 @@ class SharedLinesTest(unittest.TestCase):
 
 
 class StatusLineTest(unittest.TestCase):
-    def test_every_status_line_keeps_the_key_names(self):
+    def test_every_status_line_shows_only_name_and_peers(self):
+        """The key hints are on the chat guide row (chat.guide), so the status line has no key names."""
         locales = Path(talk.__file__).resolve().parent / "locales"
         for path in sorted(locales.glob("*.json")):
             line = json.loads(path.read_text(encoding="utf-8")).get("status.line", "")
-            for key in ("Ctrl+N", "Ctrl+C", "/help"):
-                self.assertIn(key, line, path.name)
+            self.assertIn("{name}", line, path.name)
+            self.assertIn("{peers}", line, path.name)
+            for key in ("Ctrl+", "/help"):
+                self.assertNotIn(key, line, path.name)
+
+
+class HerdrCliTimeoutTest(unittest.TestCase):
+    """A herdr that never answers must stop at the CLI time limit, not hang the pane split."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="herdr-fake-")
+        if os.name == "nt":
+            self.fake = os.path.join(self.dir, "herdr.bat")
+            Path(self.fake).write_text("@echo off\r\nping -n 6 127.0.0.1 >nul\r\n", encoding="ascii")
+        else:
+            self.fake = os.path.join(self.dir, "herdr")
+            Path(self.fake).write_text("#!/bin/sh\nsleep 5\n", encoding="ascii")
+            os.chmod(self.fake, 0o755)
+        self.env = mock.patch.dict(os.environ, {"HERDR_BIN_PATH": self.fake, "HERDR_CLI_TIMEOUT_SECONDS": "0.5",
+                                                "HERDR_PANE_ID": "pane-1"})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_a_silent_herdr_raises_after_the_time_limit(self):
+        started = time.monotonic()
+        with self.assertRaises(talk.herdr_api.HerdrError) as caught:
+            talk.herdr_cli("pane", "split", "pane-1")
+        self.assertLess(time.monotonic() - started, 4, "the call returned near the 0.5 s limit, not after the fake's sleep")
+        self.assertIn("no response", str(caught.exception))
+
+    def test_open_chat_reports_the_timeout_and_returns_1(self):
+        started = time.monotonic()
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            code = talk.open_chat(None)
+        self.assertEqual(code, 1)
+        self.assertIn("no response", err.getvalue())
+        self.assertLess(time.monotonic() - started, 4)
 
 
 if __name__ == "__main__":

@@ -39,7 +39,7 @@
   "peer.joined": "* {name} a rejoint ({ip})",
   "idle.left": "* sorti : aucune activité pendant {minutes} minutes",
   "bye": "au revoir",
-  "status.line": " herdr-talk  |  {name}  |  pairs : {peers}  |  Ctrl+N : nom   /help   Ctrl+C : quitter ",
+  "status.line": " herdr-talk  |  {name}  |  pairs : {peers} ",
   "start.hello": "herdr-talk : vous êtes '{name}' (port TCP {port}). Tapez /help pour les commandes.",
   "open.no_pane": "herdr-talk open : à lancer depuis un pane herdr (HERDR_PANE_ID n'est pas défini).",
   "dock.agent_name": "talk : {count} en ligne",
@@ -63,7 +63,6 @@
   "phone.none": "Pas encore d'adresse : aucun hôte sur ce PC.",
   "phone.new_done": "Nouveau jeton créé. Les téléphones doivent saisir le nouveau.",
   "usage.phone": "usage : /phone   ou   /phone new",
-  "host.name": "Hôte",
   "host.badge": "[hôte]",
   "gui.status.starting": "Aucun serveur trouvé → serveur propre en cours",
   "gui.status.connected": "Connecté au serveur propre",
@@ -117,5 +116,12 @@
   "tui.settings.my_id": "this PC's ID (give it to the peer): {id}",
   "tui.settings.my_ed": "this PC's Ed25519 public key: {key}",
   "tui.settings.my_noise": "this PC's Noise key (verify it with /trust): {key}",
-  "tui.settings.no_keys_yet": "this PC's keys: not yet (start a chat once)"
+  "tui.settings.no_keys_yet": "this PC's keys: not yet (start a chat once)",
+  "room.none_trusted": "Aucun membre confirmé dans la salle, rien n'a été envoyé (/trust nécessaire)",
+  "room.left_out": "{n} membre(s) non confirmé(s), exclu(s) (/trust nécessaire)",
+  "room.put_taken": "L'ID court de ce PC est déjà utilisé par une autre clé (409). Réessayez",
+  "room.put_failed": "Impossible de publier la ligne de ce PC (erreur réseau ou serveur)",
+  "net.old_version": "{name} ({ip}) : ancienne version, impossible à vérifier. Mettez les deux PC à la nouvelle version",
+  "net.other_reveal": "{name} : une autre valeur de vérification est arrivée. Connexion refusée",
+  "peers.code_pending": "(code en attente)"
 }

@@ -8,7 +8,7 @@ use crate::text::{char_width, clean_text};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -107,6 +107,8 @@ pub struct Line {
     pub sender: Option<String>,
     pub text: String,
     pub mine: bool,
+    /// Order of arrival, set by `Chat::add`: two lines with the same text are still two lines.
+    pub seq: u64,
 }
 
 impl Line {
@@ -147,6 +149,7 @@ pub struct Chat {
     pub peers: Mutex<Vec<Peer>>,
     pub stop: Stop,
     lines: Mutex<Vec<Line>>,
+    line_seq: AtomicU64,
     last_activity: Mutex<Instant>,
     dirty: AtomicBool,
     /// Arrival times of recent messages, per sender address.
@@ -204,6 +207,7 @@ impl Chat {
             peers: Mutex::new(Vec::new()),
             stop: Stop::default(),
             lines: Mutex::new(Vec::new()),
+            line_seq: AtomicU64::new(0),
             last_activity: Mutex::new(Instant::now()),
             dirty: AtomicBool::new(true),
             received: Mutex::new(HashMap::new()),
@@ -436,7 +440,10 @@ impl Chat {
     pub(crate) fn add(&self, rows: Vec<Line>) {
         *self.last_activity.lock().unwrap() = Instant::now();
         let mut lines = self.lines.lock().unwrap();
-        lines.extend(rows);
+        lines.extend(rows.into_iter().map(|mut row| {
+            row.seq = self.line_seq.fetch_add(1, Ordering::Relaxed);
+            row
+        }));
         let extra = lines.len().saturating_sub(MAX_LINES);
         lines.drain(..extra);
         self.dirty.store(true, Ordering::Relaxed);
@@ -445,6 +452,14 @@ impl Chat {
     /// Hand a running relay its inbox and stop flag. Replaces nothing: call stop_relay first.
     pub(crate) fn attach_relay(&self, inbox: Sender<String>, stop: Arc<AtomicBool>) {
         *self.relay_inbox.lock().unwrap() = Some((inbox, stop));
+    }
+
+    /// Forget the inbox when the relay thread that owns `stop` has ended. A newer relay's inbox is left alone.
+    pub(crate) fn detach_relay(&self, stop: &Arc<AtomicBool>) {
+        let mut inbox = self.relay_inbox.lock().unwrap();
+        if inbox.as_ref().is_some_and(|(_, current)| Arc::ptr_eq(current, stop)) {
+            *inbox = None;
+        }
     }
 
     /// Stop the running relay thread (it exits at its next check) and forget its inbox.
@@ -481,17 +496,19 @@ impl Chat {
 
     /// Hand one plain message to the running relay. Without a running relay the user is told it was not sent.
     pub fn relay_send(&self, text: &str) {
-        match self.relay_inbox.lock().unwrap().as_ref() {
-            Some((inbox, _)) => {
-                let _ = inbox.send(text.to_string());
-            }
-            None => self.say(t("relay.not_sent", &[])),
+        let sent = match self.relay_inbox.lock().unwrap().as_ref() {
+            Some((inbox, _)) => inbox.send(text.to_string()).is_ok(),
+            None => false,
+        };
+        // A relay whose thread has ended has no receiver left: the user is told instead of losing the line.
+        if !sent {
+            self.say(t("relay.not_sent", &[]));
         }
     }
 
     /// Show one notice line in the chat.
     pub fn say(&self, text: impl Into<String>) {
-        self.add(vec![Line { sender: None, text: text.into(), mine: false }]);
+        self.add(vec![Line { sender: None, text: text.into(), mine: false, seq: 0 }]);
     }
 
     pub fn lines(&self) -> Vec<Line> {
@@ -573,7 +590,7 @@ impl Chat {
                     // The code exists only after the reveal exchange; until then the line says it is pending.
                     (Link::Unverified, Some(key)) => match self.sas_for(key) {
                         Some(code) => t("peers.unverified", &[("code", &code)]),
-                        None => "(code pending)".to_string(), // shortcut: English-only pending text; move it to the locales
+                        None => t("peers.code_pending", &[]),
                     },
                     (Link::Unverified, None) => String::new(),
                 };
@@ -606,9 +623,12 @@ impl Chat {
         }
         let text = text.chars().take(MAX_TEXT_CHARS).collect::<String>().replace('\n', " ");
         if self.is_supabase() {
-            // Supabase mode: the relay is the only path, so the LAN peers get nothing.
-            let name = self.me.lock().unwrap().name.clone();
-            self.add(vec![Line { sender: Some(format!("{name} {}", t("chat.you", &[]))), text: text.clone(), mine: true }]);
+            // Supabase mode: the relay is the only path, so the LAN peers get nothing. A running relay shows the sent line
+            // itself (once, after the post succeeds); without one, the line is shown here so the user sees what was typed.
+            if self.relay_inbox.lock().unwrap().is_none() {
+                let name = self.me.lock().unwrap().name.clone();
+                self.add(vec![Line { sender: Some(format!("{name} {}", t("chat.you", &[]))), text: text.clone(), mine: true, seq: 0 }]);
+            }
             self.relay_send(&text);
             return true;
         }
@@ -649,7 +669,7 @@ impl Chat {
                 self.say(t("peer.unreachable", &[("name", &peer.name)]));
             }
         }
-        self.add(vec![Line { sender: Some(format!("{} {}", me.name, t("chat.you", &[]))), text: text.to_string(), mine: true }]);
+        self.add(vec![Line { sender: Some(format!("{} {}", me.name, t("chat.you", &[]))), text: text.to_string(), mine: true, seq: 0 }]);
         true
     }
 
@@ -1201,5 +1221,41 @@ mod tests {
         chat.set_supabase_mode(true);
         chat.handle_with("hello", |_, _, _| Ok(()));
         assert!(chat.lines().iter().any(|line| line.text == t("relay.not_sent", &[])));
+    }
+
+    #[test]
+    fn in_room_mode_a_typed_message_is_not_echoed_here_and_goes_to_the_relay_once() {
+        let chat = chat(&["a"]);
+        chat.set_supabase_mode(true);
+        let (inbox, received) = std::sync::mpsc::channel();
+        chat.attach_relay(inbox, Arc::new(AtomicBool::new(false)));
+        chat.handle_with("hi", |_, _, _| Ok(()));
+        assert_eq!(received.try_recv().unwrap(), "hi");
+        assert!(!chat.lines().iter().any(|line| line.mine && line.text == "hi"), "the relay's own echo is the only one");
+    }
+
+    #[test]
+    fn a_line_to_a_relay_that_has_ended_is_reported_not_lost() {
+        let chat = chat(&["a"]);
+        let (inbox, received) = std::sync::mpsc::channel::<String>();
+        chat.attach_relay(inbox, Arc::new(AtomicBool::new(false)));
+        drop(received); // the relay thread is gone
+        chat.relay_send("hi");
+        assert!(chat.lines().iter().any(|line| line.text == t("relay.not_sent", &[])));
+    }
+
+    #[test]
+    fn a_finished_relay_thread_detaches_only_its_own_inbox() {
+        let chat = chat(&["a"]);
+        let (old_stop, new_stop) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let (old_inbox, _old_rx) = std::sync::mpsc::channel::<String>();
+        chat.attach_relay(old_inbox, old_stop.clone());
+        let (new_inbox, new_rx) = std::sync::mpsc::channel::<String>();
+        chat.attach_relay(new_inbox, new_stop.clone()); // a newer relay replaced the old one
+        chat.detach_relay(&old_stop);
+        chat.relay_send("still here");
+        assert_eq!(new_rx.try_recv().unwrap(), "still here", "the newer relay keeps its inbox");
+        chat.detach_relay(&new_stop);
+        assert!(chat.relay_inbox.lock().unwrap().is_none());
     }
 }

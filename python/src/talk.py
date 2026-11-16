@@ -28,7 +28,6 @@ import re
 import secrets
 import shutil
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -1110,7 +1109,7 @@ def remove_stale_control_files(state):
             pid = int(name[len("control-"):-len(".json")])
         except ValueError:
             continue
-        if pid == os.getpid() or sessions.process_alive(pid):
+        if pid == os.getpid() or sessions.control_live(state, pid):
             continue
         try:
             os.remove(os.path.join(state, name))
@@ -1130,7 +1129,9 @@ def start_control(chat, state, allow_shutdown=False):
         os.remove(file)  # a leftover file of a reused pid is replaced, not reopened
     except FileNotFoundError:
         pass
-    body = json.dumps({"port": listener.getsockname()[1], "token": token, "pid": os.getpid()})
+    # "started" tells this pid from a later process with the same pid (sessions.control_live); null when unknown.
+    body = json.dumps({"port": listener.getsockname()[1], "token": token, "pid": os.getpid(),
+                       "started": sessions.process_start_time(os.getpid())})
     # The token is a credential: only this user may read the file (0o600 on Unix; on Windows the profile folder's ACL applies).
     with os.fdopen(os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as out:
         out.write(body)
@@ -1178,9 +1179,7 @@ def enable_vt():
         os.system("")
 
 
-def char_width(text):
-    """Terminal columns used by text. East Asian wide characters count as two."""
-    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+char_width = relay_form.char_width  # one width rule for the chat and the forms
 
 
 def read_char():
@@ -1292,37 +1291,62 @@ def tail(text, cols):
     return out
 
 
-def screen_frame(lines, status, typed, cols, rows, overlay=None):
-    """The whole chat screen as one string of ANSI codes, laid out like the Rust edition (screen.rs):
-    a grey status row, the messages, a divider, and the input row at the bottom.
-    Messages go from the top; mine are bold blue. Pure, so tests can check the layout."""
-    cols, rows = max(20, cols), max(5, rows)
-    area = rows - 3
+ACCENT, BORDER, MUTED = relay_form.ACCENT, relay_form.BORDER, relay_form.MUTED
+
+
+def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=""):
+    """The whole chat screen as one string of ANSI codes, in the GUI's retro layout: the header and a divider,
+    COMMUNICATION LOG with the messages, the CONNECTED NODES row, a divider, the keyboard guide, the input row, the status
+    row, and the made-by footer alone on the bottom row (the status text is long, so it must not share that row).
+    Messages go from the top; mine are bold green. `nodes` are the node labels, `mode` the right end of the header.
+    Pure, so tests can check the layout."""
+    cols, rows = max(20, cols), max(10, rows)
+    area = rows - 9   # rows: header, divider, log title, messages, nodes, divider, guide, input, status, footer
     wrapped = [(row, mine) for line, mine in lines for row in wrap_line(line, cols - 1)]
     visible = wrapped[max(0, len(wrapped) - area):]
-    status = fit(status, cols)
-    out = ["\x1b[?25l", f"\x1b[1;1H\x1b[100m\x1b[37m{status}{' ' * (cols - char_width(status))}\x1b[0m"]
+    # Each row is overwritten in place and the rest of it cleared (ESC K); no whole-row blank first, so nothing flickers.
+    out = []
+
+    def put(row, content):
+        out.append(relay_form.place_row(row, content))
+
+    put(1, f"{ACCENT}{fit(relay_form.header(cols, 'SYS.VER 1.0 · ' + (mode or 'SYSTEM READY')), cols - 1)}")
+    put(2, f"{BORDER}{relay_form.divider(cols)}")
+    put(3, f"{ACCENT}COMMUNICATION LOG")
     for index in range(area):
-        out.append(f"\x1b[{index + 2};1H\x1b[2K")
         if index < len(visible):
             row, mine = visible[index]
-            out.append(f"\x1b[1m\x1b[34m{row}\x1b[0m" if mine else row)
+            put(index + 4, f"\x1b[1m{ACCENT}{row}" if mine else row)
+        else:
+            put(index + 4, "")
     # The phone address and token, over the bottom rows of the messages. They are not chat lines.
     shown = (overlay or [])[:area]
     for index, text in enumerate(shown):
-        text = fit(text, cols)
-        out.append(f"\x1b[{area + 2 - len(shown) + index};1H\x1b[42m\x1b[97m{text}{' ' * (cols - char_width(text))}\x1b[0m")
-    out.append(f"\x1b[{rows - 1};1H\x1b[90m{'-' * cols}\x1b[0m")
-    out.append(f"\x1b[{rows};1H\x1b[2K> {tail(typed, cols - 3)}\x1b[?25h")
-    return "".join(out)
+        text = fit(text, cols - 1)
+        put(area + 4 - len(shown) + index, f"{relay_form.OVERLAY}{text}{' ' * (cols - 1 - char_width(text))}")
+    put(rows - 5, f"{ACCENT}CONNECTED NODES\x1b[0m  {fit(' · '.join(nodes), cols - 19)}")
+    put(rows - 4, f"{BORDER}{relay_form.divider(cols)}")
+    put(rows - 3, f"{MUTED}{fit(t('chat.guide'), cols - 1)}")
+    shown_typed = tail(typed, cols - 13)
+    typed_shown = f"{ACCENT}{shown_typed}_" if typed else f"{MUTED}{t('chat.input_hint')}"
+    put(rows - 2, f"MESSAGE > {typed_shown}")
+    put(rows - 1, f"{ACCENT}{fit(status, cols - 1)}")
+    # The bottom row: made by Python on the right, nothing else.
+    footer = fit(relay_form.FOOTER, cols - 1)
+    put(rows, f"{' ' * (cols - 1 - char_width(footer))}{MUTED}{footer}")
+    # The real cursor goes to the `_` on the input line (the frame's last write is the footer row, so it would sit there).
+    cursor_col = 1 + char_width("MESSAGE > ") + char_width(shown_typed)
+    return "".join(out) + f"\x1b[{rows - 2};{cursor_col}H\x1b[?25h"
 
 
 def _enter_screen():
     """Switch to the alternate screen with the cursor hidden. On POSIX also read keys one at a time (raw mode).
     Windows reads keys with msvcrt and needs no mode change. Returns the function that undoes all of it."""
+    global _last_frame
     enable_vt()
     sys.stdout.write("\x1b[?1049h\x1b[?25l")
     sys.stdout.flush()
+    _last_frame = None  # the alternate screen starts blank
     saved = None
     if os.name != "nt":
         import termios
@@ -1345,7 +1369,14 @@ def _enter_screen():
     return leave
 
 
+_last_frame = None  # what is on screen now; a frame equal to it is not written again (no flicker on idle redraws)
+
+
 def _draw(frame):
+    global _last_frame
+    if frame == _last_frame:
+        return
+    _last_frame = frame
     sys.stdout.write(frame)
     sys.stdout.flush()
 
@@ -1449,10 +1480,12 @@ def run_ansi(chat):
             status = f"{t('host.badge')} {status}"
         with chat.lines_lock:
             lines = list(chat.lines)
-        frame = screen_frame(lines, status, typed[0], size.columns, size.lines, chat.phone_overlay())
+        nodes = [f"{'HOST/YOU' if chat.is_host() else 'YOU'} {chat.me['name']}"]
+        nodes += [f"PEER {info['name']}" for info in chat.fresh_peers().values()]
+        mode = "CLOUD SERVICE" if chat.supabase else "BASE STATION"
+        frame = screen_frame(lines, status, typed[0], size.columns, size.lines, chat.phone_overlay(), nodes, mode)
         with screen_lock:
-            sys.stdout.write(frame)
-            sys.stdout.flush()
+            _draw(frame)
 
     def add(line, mine=False):
         chat.add_line(line, mine)
@@ -1494,14 +1527,7 @@ def run_ansi(chat):
 
 
 def herdr_cli(*args):
-    completed = subprocess.run(
-        [os.environ.get("HERDR_BIN_PATH", "herdr"), *args],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
-    if completed.returncode != 0:
-        raise RuntimeError((completed.stdout + completed.stderr).strip() or f"herdr {' '.join(args)} failed")
-    output = completed.stdout.strip().lstrip("﻿")
-    return json.loads(output).get("result", {}) if output else {}
+    return herdr_api.cli(*args)  # raises herdr_api.HerdrError on failure or after the CLI time limit
 
 
 def open_chat(_args):
@@ -1514,7 +1540,7 @@ def open_chat(_args):
     try:
         pane_id = herdr_cli("pane", "split", anchor, "--direction", "down", "--cwd", src_dir)["pane"]["pane_id"]
         herdr_cli("pane", "run", pane_id, sys.executable, "-X", "utf8", os.path.abspath(__file__), "run")
-    except (RuntimeError, ValueError, KeyError) as error:
+    except (herdr_api.HerdrError, ValueError, KeyError) as error:
         print(error, file=sys.stderr)
         return 1
     return 0

@@ -121,11 +121,12 @@ mod tests {
     }
 
     #[test]
-    fn every_status_line_keeps_the_key_names() {
+    fn every_status_line_leaves_the_key_names_to_the_guide() {
+        // The keyboard guide row already shows the keys; the status line shows the app name, name and peer count only.
         for (name, _) in LOCALES {
             let line = load(name)["status.line"].as_str().unwrap().to_string();
-            for key in ["Ctrl+N", "Ctrl+C", "/help"] {
-                assert!(line.contains(key), "{name}");
+            for key in ["Ctrl+", "/help"] {
+                assert!(!line.contains(key), "{name}: {line}");
             }
         }
     }

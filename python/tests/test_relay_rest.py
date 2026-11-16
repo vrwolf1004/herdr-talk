@@ -72,6 +72,12 @@ class RelayRestTest(unittest.TestCase):
         self.assertTrue(relay_rest.valid_name("가" * 32))
         self.assertFalse(relay_rest.valid_name("가" * 33))
 
+    def test_name_refuses_control_format_and_space_separator_characters(self):
+        # The same rule as talk-core's is_printable: bidi and zero-width format characters, tabs and other separators are out.
+        for bad in ["a‮b", "a​b", "a\tb", "a b", "ab"]:
+            self.assertFalse(relay_rest.valid_name(bad), repr(bad))
+        self.assertTrue(relay_rest.valid_name("a b"), "a plain space is kept")
+
     def test_short_id_format(self):
         self.assertTrue(relay_rest.valid_short("AB12CD34"))
         for bad in ("AB12CD3", "AB12CD345", "ab12cd34", "AB12-D34", "", None):

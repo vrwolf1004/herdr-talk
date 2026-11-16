@@ -59,7 +59,13 @@ pub fn serve(chat: Arc<Chat>, state: &Path, allow_shutdown: bool) -> io::Result<
     create_private_dir(state)?;
     remove_stale_files(state);
     let file = control_file(state);
-    write_private(&file, &json!({"port": port, "token": token, "pid": std::process::id()}).to_string())?;
+    let pid = std::process::id();
+    let mut body = json!({"port": port, "token": token, "pid": pid});
+    // The start time tells a later check this process is still the one that wrote the file (a pid can be reused).
+    if let Some(started) = talk_core::store::process_started(pid) {
+        body["started"] = json!(started);
+    }
+    write_private(&file, &body.to_string())?;
     let active = Arc::new(AtomicUsize::new(0));
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {

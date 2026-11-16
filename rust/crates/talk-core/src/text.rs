@@ -4,7 +4,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Same idea as Python's str.isprintable(): controls, format and private characters a peer
 /// must not put on screen are out, and the plain space is the only space kept.
-fn is_printable(ch: char) -> bool {
+pub(crate) fn is_printable(ch: char) -> bool {
     if ch == ' ' {
         return true;
     }
@@ -46,6 +46,11 @@ pub fn squeeze_spaces(value: &str) -> String {
 pub fn sender_name(value: &str) -> String {
     let name = squeeze_spaces(&clean_text(value, 32)).trim().to_string();
     if name.is_empty() { "unknown".to_string() } else { name }
+}
+
+/// A 대화명 in the form names are compared in: runs of spaces squeezed, outer spaces trimmed.
+pub fn name_key(value: &str) -> String {
+    squeeze_spaces(value).trim().to_string()
 }
 
 /// The sender of a plain message. Colons are removed, so the name cannot pass for the start of the text.

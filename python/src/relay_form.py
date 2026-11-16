@@ -1,15 +1,16 @@
 """The two relay screens of the Python edition as plain state machines (the terminal loop is in talk.py):
 
   FirstRun      the connection mode choice shown before the chat when no mode was ever chosen (30-second default)
-  SettingsForm  Ctrl+R: the connection mode and the four Supabase settings on one screen
+  SettingsForm  Ctrl+R: the four Supabase settings on one screen (the mode comes from the first-run choice)
 
 Same rules as rust/crates/herdr-talk/src/first_run.rs and settings_form.rs. A key value is never drawn: only its length.
-Keys arrive as single characters from read_char(): arrow keys are not available, so Tab moves, Space changes the mode.
+Keys arrive as single characters from read_char(): arrow keys are not available, so Tab moves between the fields.
 """
 
 import queue
 import threading
 import time
+import unicodedata
 
 import relay_key
 import relay_rest
@@ -23,12 +24,69 @@ KEY_FIELD = 1
 ROOM_FIELD = 3
 
 
-def _row(row, text, style=""):
-    return f"\x1b[{row};1H\x1b[2K{style}{text}\x1b[0m"
+# The classic terminal palette of docs/ui-style.md section 3, as 24-bit colours (the same values as the Rust edition).
+RESET = "\x1b[0m"
+BACKGROUND = "\x1b[48;2;5;10;8m"      # #050A08 every row
+TEXT = "\x1b[38;2;180;220;190m"       # #B4DCBE body text
+ACCENT = "\x1b[38;2;70;255;130m"      # #46FF82 titles, my lines
+BORDER = "\x1b[38;2;65;125;85m"       # #417D55 dividers
+MUTED = "\x1b[38;2;125;154;132m"      # #7D9A84 hints (lifted from #526B59 for readability, as in Rust)
+WARN = "\x1b[38;2;255;184;77m"        # #FFB84D messages
+ALERT = "\x1b[38;2;255;85;85m"        # #FF5555 errors
+OVERLAY = "\x1b[38;2;5;10;8m\x1b[48;2;65;125;85m"  # the phone address: background text on the border green
+BOLD = "\x1b[1m"
+APP_NAME = "▣ HERDR-TALK"
+
+
+def place_row(row, text, style=""):
+    """Place the cursor, paint the row's background, write the text, clear the rest of the row with the background.
+    A reset inside the text puts the background and body colour back. No whole-screen clear: that is what flickered."""
+    body = text.replace(RESET, RESET + BACKGROUND + TEXT)
+    return f"\x1b[{row};1H{BACKGROUND}{style or TEXT}{body}{RESET}{BACKGROUND}\x1b[K"
+
+
+FOOTER = "made by Python"
+TAG = "[SYSTEM READY]"
+FIELD_WIDTH = 24  # the width of a blank input line
+
+
+def _frame(lines, cols, rows):
+    """The whole screen as one string: body rows overwrite the old ones and the bottom row carries the footer.
+    Rows left over from the last frame are blanked, so nothing stale stays."""
+    shown = [(_cut(text, cols - 1), style) for text, style in lines[: rows - 1]]
+    shown += [("", "")] * (rows - 1 - len(shown))
+    footer = _cut(FOOTER, cols - 1 - char_width(TAG))
+    gap = " " * max(0, cols - 1 - char_width(TAG) - char_width(footer))
+    shown.append((f"{ACCENT}{TAG}\x1b[0m{gap}{MUTED}{footer}", ""))  # status tag left, footer right, on the bottom row
+    return "".join(place_row(index + 1, text, style) for index, (text, style) in enumerate(shown))
+
+
+def char_width(text):
+    """Terminal columns used by text. East Asian wide characters count as two."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
 
 
 def _cut(text, cols):
-    return text if len(text) <= cols else text[: max(0, cols - 1)] + "…"
+    """The start of text that fits in cols terminal columns, ending with … when it was cut."""
+    if char_width(text) <= cols:
+        return text
+    out, width = "", 0
+    for ch in text:
+        width += char_width(ch)
+        if width > cols - 1:
+            break
+        out += ch
+    return out + "…"
+
+
+def header(cols, right):
+    """The top row: the app name on the left, `right` (version and state) on the right, cut to the width."""
+    gap = cols - 1 - len(APP_NAME) - len(right)
+    return _cut(APP_NAME + " " * max(2, gap) + right, cols - 1)
+
+
+def divider(cols):
+    return "─" * max(0, cols - 1)
 
 
 class FirstRun:
@@ -71,23 +129,29 @@ class FirstRun:
         return None
 
     def render(self, cols, rows):
-        mark = [">", " "] if self.selected == 0 else [" ", ">"]
         lines = [
-            (t("mode.first_run_title"), "\x1b[1m"),
+            (header(cols, "SYS.VER 1.0"), ACCENT),
+            (divider(cols), BORDER),
+            (t("mode.first_run_title"), ACCENT + BOLD),
             ("", ""),
-            (f"{mark[0]} 1. {t('mode.local')}", "\x1b[1m" if self.selected == 0 else ""),
-            (f"      {t('mode.hint_local')}", "\x1b[90m"),
-            (f"{mark[1]} 2. {t('mode.supabase')}", "\x1b[1m" if self.selected == 1 else ""),
-            (f"      {t('mode.hint_supabase')}", "\x1b[90m"),
+            *_menu_item(self.selected == 0, "01. LOCAL NETWORK", t("mode.hint_local")),
             ("", ""),
-            ("1 / 2, or Tab then Enter · Esc: quit", "\x1b[90m"),
+            *_menu_item(self.selected == 1, "02. SUPABASE CLOUD", t("mode.hint_supabase")),
+            ("", ""),
         ]
         left = self.remaining()
         if left is not None:
-            lines.append((t("mode.timeout_hint", n=left), ""))
-        out = ["\x1b[?25l\x1b[2J"]
-        out += [_row(index + 1, _cut(text, cols - 1), style) for index, (text, style) in enumerate(lines[: rows - 1])]
-        return "".join(out)
+            lines.append((t("mode.timeout_hint", n=left), MUTED))
+        lines += [(divider(cols), BORDER), ("1 / 2, or Tab then Enter · Esc: quit", MUTED)]
+        return _frame(lines, cols, rows)
+
+
+def _menu_item(selected, title, hint):
+    """A text-menu entry: ▶ and the highlight on the selected one only, the hint under it in muted text."""
+    return [
+        (f"{'▶ ' if selected else '  '}{title}", ACCENT + BOLD if selected else ""),
+        (f"     {hint}", MUTED),
+    ]
 
 
 def publish_failure(status):
@@ -102,7 +166,7 @@ def publish_failure(status):
 
 
 class SettingsForm:
-    """Mode row, then the four fields. Enter moves down and saves on the last row; Esc leaves without saving.
+    """The four fields. Enter moves down and saves on the last row; Esc leaves without saving.
     Ctrl+N asks the relay for a new room and puts its code in the room field (saved with Enter)."""
 
     def __init__(self, state, mine=None):
@@ -111,7 +175,7 @@ class SettingsForm:
         self.mode = saved["mode"]
         self.fields = [saved[name] for name in FIELD_NAMES]
         self.from_env = relay_settings.from_environment()
-        self.focus = 0
+        self.focus = 0  # index into fields
         self.message = ""
         self.mine = mine if mine is not None else self._own_keys(state)
         self._room_result = None  # a queue of the running create-room request, None when none runs
@@ -128,13 +192,10 @@ class SettingsForm:
     def open_supabase(self):
         """Start on the first field with Supabase selected (the choice made on the first-run screen)."""
         self.mode = relay_settings.SUPABASE
-        self.focus = 1
+        self.focus = 0
 
     def settings(self):
         return {"mode": self.mode, **dict(zip(FIELD_NAMES, self.fields))}
-
-    def toggle_mode(self):
-        self.mode = relay_settings.LOCAL if self.mode == relay_settings.SUPABASE else relay_settings.SUPABASE
 
     def save(self):
         """Write relay.json. True when saved; otherwise the message says what is missing or wrong."""
@@ -157,25 +218,21 @@ class SettingsForm:
         """None while editing, "saved" after a successful save, "cancel" for Esc."""
         if not ch:
             return None
-        on_mode = self.focus == 0
         if ch == "\x1b":
             return "cancel"
         if ch == "\t":
-            self.focus = (self.focus + 1) % (len(FIELD_NAMES) + 1)
-        elif ch == " " and on_mode:
-            self.toggle_mode()
+            self.focus = (self.focus + 1) % len(FIELD_NAMES)
         elif ch in ("\r", "\n"):
-            if self.focus < len(FIELD_NAMES):
+            if self.focus < len(FIELD_NAMES) - 1:
                 self.focus += 1
             elif self.save():
                 return "saved"
         elif ch == "\x0e":
             self.create_room()
         elif ch in ("\x08", "\x7f"):
-            if not on_mode:
-                self.fields[self.focus - 1] = self.fields[self.focus - 1][:-1]
-        elif ch.isprintable() and not on_mode:
-            self.fields[self.focus - 1] += ch
+            self.fields[self.focus] = self.fields[self.focus][:-1]
+        elif ch.isprintable():
+            self.fields[self.focus] += ch
         return None
 
     def create_room(self):
@@ -243,23 +300,26 @@ class SettingsForm:
 
     def render(self, cols, rows):
         local = self.mode != relay_settings.SUPABASE
-        choice = f"[{t('mode.local')}]  {t('mode.supabase')}" if local else f"{t('mode.local')}  [{t('mode.supabase')}]"
         lines = [
-            (f"{t('settings.mode_row')}", "\x1b[1m"),
-            (f"{'>' if self.focus == 0 else ' '} {choice}", ""),
-            (f"    {t('mode.hint_local') if local else t('mode.hint_supabase')}", "\x1b[90m"),
+            (header(cols, "SYS.VER 1.0"), ACCENT),
+            (divider(cols), BORDER),
+            ("SUPABASE SETTINGS", ACCENT + BOLD),
             ("", ""),
         ]
         for index, label in enumerate(FIELD_LABELS):
-            marker = ">" if self.focus == index + 1 else " "
-            lines.append((f"{marker} {label}: {self._shown(index)}", "\x1b[90m" if local else ""))
+            value = self._shown(index)
+            fill = "_" * max(0, FIELD_WIDTH - char_width(value))  # the blank input, as an underscore line
+            selected = self.focus == index
+            lines.append((f"{'▶ ' if selected else '  '}{label:<22} : [{value}{fill}]", ACCENT if selected else (MUTED if local else "")))
         lines.append(("", ""))
+        lines.append(("DEVICE IDENTITY", ACCENT))
         if self.mine:
-            lines.append((f"This PC, Ed25519 key: {self.mine[0]}", ""))
-            lines.append((f"This PC, Noise key:   {self.mine[1]}", ""))
-        lines.append((self.message, ""))
+            lines.append((f"  Ed25519 public key: {self.mine[0]}", MUTED))
+            lines.append((f"  Noise public key:   {self.mine[1]}", MUTED))
+        else:
+            lines.append(("  (no keys yet)", MUTED))
         lines.append(("", ""))
-        lines.append(("Tab: next · Space: change mode · Enter: next / save · Ctrl+N: create room · Esc: leave without saving", "\x1b[90m"))
-        out = ["\x1b[?25l\x1b[2J"]
-        out += [_row(index + 1, _cut(text, cols - 1), style) for index, (text, style) in enumerate(lines[: rows - 1])]
-        return "".join(out)
+        lines.append((self.message, WARN))
+        lines.append((divider(cols), BORDER))
+        lines.append(("Tab: next · Enter: next / save · Ctrl+N: create room · Esc: CANCEL", MUTED))
+        return _frame(lines, cols, rows)

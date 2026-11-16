@@ -84,6 +84,26 @@ class RoomThreadTests(unittest.TestCase):
         with mock.patch.object(relay_rest, "_send", return_value=(410, '{"error":"x"}')):
             self.assertEqual(relay._join_room(), "relay: room join failed: 방 기한 만료")
 
+    def test_a_failed_row_write_stops_the_join_and_says_so(self):
+        hooks = Hooks()
+        relay = rc.Relay(hooks, None, self.config, settings(), self.session)
+        # The first write fails: no join is tried, and the status says why. The retry (after the wait) stops the thread.
+        with mock.patch.object(relay, "_publish", return_value=False), \
+                mock.patch.object(relay, "_wait", side_effect=lambda seconds: relay.stop_event.set()), \
+                mock.patch.object(relay_rest, "join_room") as join:
+            relay._run()
+        join.assert_not_called()
+        self.assertEqual(hooks.status, "relay: could not publish this PC's row; not joined yet")
+
+    def test_a_bad_name_is_not_published_or_joined_and_the_reason_is_shown(self):
+        hooks = Hooks()
+        relay = rc.Relay(hooks, None, self.config, settings(name="a​b"), self.session)
+        with mock.patch.object(relay, "_publish") as publish, mock.patch.object(relay_rest, "join_room") as join:
+            relay._run()
+        publish.assert_not_called()
+        join.assert_not_called()
+        self.assertEqual(hooks.status, "relay: name is not valid; not joined yet")
+
     def test_typed_texts_are_not_sent_and_the_user_is_told(self):
         hooks = Hooks()
         relay = rc.Relay(hooks, None, self.config, settings(), self.session)

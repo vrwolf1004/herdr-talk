@@ -1,9 +1,12 @@
-//! Full-screen chat: a status row, messages, a divider, and the input line at the bottom.
+//! Full-screen chat in the classic terminal layout: header, divider, title, messages, divider, keyboard guide and the
+//! status line. The first-run and settings screens use the same frame (`classic`). Rows are drawn one by one, and a frame
+//! that is the same as the last one is not drawn again.
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor};
+use crossterm::style::Print;
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute, queue};
+use std::collections::HashMap;
 use std::io::{self, Stdout, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,9 +14,149 @@ use talk_core::text::{char_width, wrap_line};
 use crate::first_run::{self, Chooser, Step};
 use crate::settings_form::{self, Form};
 use talk_core::relay_settings::Mode;
-use talk_core::{t, Chat, Line, IDLE_LIMIT};
+use talk_core::{t, Chat, Line, Peer, IDLE_LIMIT};
 
 const POLL: Duration = Duration::from_millis(100);
+
+/// A colour as red, green and blue.
+type Rgb = (u8, u8, u8);
+
+// The classic terminal palette (design spec): background, primary green, body text, muted text, warning, error.
+pub(crate) const BACKGROUND: Rgb = (5, 10, 8);
+pub(crate) const MAIN: Rgb = (70, 255, 130);
+const TEXT: Rgb = (180, 220, 190);
+// #526B59 was too dark on the background; lifted so hints and secondary text stay readable.
+const DIM: Rgb = (125, 154, 132);
+const WARN: Rgb = (255, 184, 77);
+const ALERT: Rgb = (255, 85, 85);
+const BORDER: Rgb = (65, 125, 85);
+
+/// The ANSI sequence for a 24-bit foreground or background colour. Written out by hand: the colours must reach the console
+/// as 38;2 and 48;2 codes, which the crossterm colour commands did not produce here.
+fn fore((r, g, b): Rgb) -> String {
+    format!("\x1b[38;2;{r};{g};{b}m")
+}
+
+fn back((r, g, b): Rgb) -> String {
+    format!("\x1b[48;2;{r};{g};{b}m")
+}
+
+/// What a piece of text is for: it sets the colour and weight.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Tone {
+    /// Primary green, bold: titles, the selected item, names.
+    Title,
+    /// Ordinary body text.
+    Text,
+    /// Hints, the keyboard guide, system notes.
+    Dim,
+    /// A waiting state (status tag).
+    Warn,
+    /// An error state (status tag).
+    Alert,
+    /// The phone address over the messages: dark text on the border green.
+    Overlay,
+}
+
+/// Print text in a tone on the background colour.
+pub(crate) fn print_tone(out: &mut Stdout, text: &str, tone: Tone) -> io::Result<()> {
+    let (fore_color, back_color, bold) = match tone {
+        Tone::Title => (MAIN, BACKGROUND, true),
+        Tone::Text => (TEXT, BACKGROUND, false),
+        Tone::Dim => (DIM, BACKGROUND, false),
+        Tone::Warn => (WARN, BACKGROUND, true),
+        Tone::Alert => (ALERT, BACKGROUND, true),
+        Tone::Overlay => (BACKGROUND, BORDER, false),
+    };
+    let bold = if bold { "\x1b[1m" } else { "" };
+    queue!(out, Print(format!("{}{}{bold}{text}\x1b[0m", back(back_color), fore(fore_color))))
+}
+
+/// One screen row: pieces of text, each with its tone.
+pub(crate) type Row = Vec<(String, Tone)>;
+
+/// Print a row, cut to the width.
+fn print_row(out: &mut Stdout, row: &Row, width: usize) -> io::Result<()> {
+    let mut used = 0;
+    for (text, tone) in row {
+        let text = fit(text, width.saturating_sub(used));
+        used += char_width(&text);
+        print_tone(out, &text, *tone)?;
+    }
+    Ok(())
+}
+
+/// Clear one screen row to the background colour.
+pub(crate) fn clear_row(out: &mut Stdout, row: u16) -> io::Result<()> {
+    queue!(out, cursor::MoveTo(0, row), Print(back(BACKGROUND)), Clear(ClearType::CurrentLine))
+}
+
+/// A row of dashes across the width.
+fn dash(width: usize) -> Row {
+    vec![("-".repeat(width), Tone::Dim)]
+}
+
+/// A row with a left part and a right part, cut to the width so they never overlap.
+fn split(left: &str, left_tone: Tone, right: &str, right_tone: Tone, width: usize) -> Row {
+    let left = fit(left, width);
+    let right = fit(right, width.saturating_sub(char_width(&left)).saturating_sub(1));
+    let gap = width.saturating_sub(char_width(&left) + char_width(&right));
+    vec![(left, left_tone), (" ".repeat(gap), Tone::Text), (right, right_tone)]
+}
+
+/// The last frame drawn by `paint`: its size and rows. An equal frame is not drawn again.
+#[derive(Default, PartialEq)]
+pub(crate) struct Frame {
+    size: (usize, usize),
+    body: Vec<Row>,
+}
+
+/// Draw a whole screen of rows. Each row is cleared on its own, not the whole screen, and nothing is written when the frame
+/// is the same as the last one.
+pub(crate) fn paint(out: &mut Stdout, width: usize, rows: usize, body: Vec<Row>, drawn: &mut Frame) -> io::Result<()> {
+    let frame = Frame { size: (width, rows), body };
+    if *drawn == frame {
+        return Ok(());
+    }
+    queue!(out, cursor::Hide)?;
+    for row in 0..rows {
+        clear_row(out, row as u16)?;
+        if let Some(cells) = frame.body.get(row) {
+            print_row(out, cells, width)?;
+        }
+    }
+    queue!(out, cursor::Show)?;
+    out.flush()?;
+    *drawn = frame;
+    Ok(())
+}
+
+/// The status tag for the relay state: [SYSTEM READY] without a relay, otherwise the state the relay text names.
+// shortcut: the state is read from the relay's status text; a clear state value from talk-core would replace this guess.
+pub(crate) fn status_tag(relay: &str) -> (&'static str, Tone) {
+    if relay.is_empty() {
+        ("[SYSTEM READY]", Tone::Title)
+    } else if ["failed", "could not", "no identity", "incomplete", "invalid"].iter().any(|word| relay.contains(word)) {
+        ("[ERROR]", Tone::Alert)
+    } else if relay.contains("room joined") {
+        ("[CONNECTED]", Tone::Title)
+    } else {
+        ("[CONNECTING...]", Tone::Warn)
+    }
+}
+
+/// A classic screen: header, divider, the body (its first row is the title), divider, keyboard guide and the status line.
+pub(crate) fn classic(body: Vec<Row>, guide: &str, relay: &str, width: usize, rows: usize) -> Vec<Row> {
+    let (tag, tone) = status_tag(relay);
+    let mut frame = vec![split("HERDR-TALK", Tone::Title, "SYS.VER 1.0", Tone::Dim, width), dash(width)];
+    let room = rows.saturating_sub(frame.len() + 3);
+    frame.extend(body.into_iter().take(room));
+    frame.resize_with(rows.saturating_sub(3), Vec::new);
+    frame.push(dash(width));
+    frame.push(vec![(guide.to_string(), Tone::Dim)]);
+    frame.push(split(tag, tone, "made by Rust", Tone::Text, width));
+    frame
+}
 
 /// Puts the terminal back on every way out, panics included.
 struct Terminal(Stdout);
@@ -51,66 +194,133 @@ fn tail(text: &str, cols: usize) -> String {
     fits(text.chars().rev(), cols).into_iter().rev().collect()
 }
 
-/// Screen rows of one chat line. A received message repeats its sender on every wrapped row,
-/// so a continuation row cannot pass for another sender. A sender too long to leave room for text is not repeated.
-fn rows_of(line: &Line, cols: usize) -> Vec<String> {
-    let Some(sender) = line.sender.as_ref().filter(|_| !line.mine) else {
-        return wrap_line(&line.render(), cols);
-    };
-    let prefix = format!("{sender}: ");
-    let room = cols.saturating_sub(char_width(&prefix));
-    if room < 8 {
-        return wrap_line(&line.render(), cols);
+#[cfg(windows)]
+fn clock_text() -> String {
+    #[repr(C)]
+    #[derive(Default)]
+    struct LocalTime {
+        year: u16,
+        month: u16,
+        weekday: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        millis: u16,
     }
-    wrap_line(&line.text, room).into_iter().map(|row| format!("{prefix}{row}")).collect()
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLocalTime(time: *mut LocalTime);
+    }
+    let mut now = LocalTime::default();
+    // SAFETY: GetLocalTime writes one SYSTEMTIME (eight u16 fields, the same layout as LocalTime) into the buffer it is given.
+    unsafe { GetLocalTime(&mut now) };
+    format!("{:02}:{:02}:{:02}", now.hour, now.minute, now.second)
 }
 
-fn render(out: &mut Stdout, chat: &Chat, input: &str) -> io::Result<()> {
-    let (cols, rows) = terminal::size()?;
-    let (cols, rows) = (cols.max(20), rows.max(5));
-    let width = usize::from(cols);
-    let area = rows - 3;
-    let mut wrapped = Vec::new();
-    for line in chat.lines() {
-        wrapped.extend(rows_of(&line, width - 1).into_iter().map(|row| (row, line.mine)));
-    }
-    let visible = &wrapped[wrapped.len().saturating_sub(usize::from(area))..];
+#[cfg(not(windows))]
+fn clock_text() -> String {
+    // shortcut: UTC here, because this crate has no local-time library; use the local time once one is added.
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_secs()) % 86_400;
+    format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+}
 
-    let name = chat.me.lock().unwrap().name.clone();
-    let peers = chat.fresh_peers().len().to_string();
-    let badge = if chat.is_host() { format!("{} ", t("host.badge", &[])) } else { String::new() };
-    let mode = t(if chat.is_supabase() { "mode.supabase" } else { "mode.local" }, &[]);
-    let relay = chat.relay_status();
-    let relay = if relay.is_empty() { String::new() } else { format!(" · {relay}") };
-    let relay = format!(" · {}{relay}", t("mode.status", &[("mode", &mode)]));
-    let status = fit(&format!("{badge}{}{relay}", t("status.line", &[("name", &name), ("peers", &peers)])), width);
-    let padding = " ".repeat(width - char_width(&status));
-    queue!(out, cursor::Hide, cursor::MoveTo(0, 0), SetBackgroundColor(Color::DarkGrey), SetForegroundColor(Color::White),
-        Print(status), Print(padding), ResetColor)?;
-    for row in 0..area {
-        queue!(out, cursor::MoveTo(0, row + 1), Clear(ClearType::CurrentLine))?;
-        if let Some((text, mine)) = visible.get(usize::from(row)) {
-            if *mine {
-                queue!(out, SetAttribute(Attribute::Bold), SetForegroundColor(Color::Blue), Print(text),
-                    SetAttribute(Attribute::Reset), ResetColor)?;
+/// The time shown in front of each chat line: the time the line was first shown, kept for as long as the line is shown.
+/// Keyed by the line's `seq`, so equal texts keep their own times.
+#[derive(Default)]
+pub(crate) struct Stamps(HashMap<u64, String>);
+
+impl Stamps {
+    fn times(&mut self, lines: &[Line]) -> Vec<String> {
+        let now = clock_text();
+        let times: Vec<String> = lines.iter().map(|line| self.0.get(&line.seq).cloned().unwrap_or_else(|| now.clone())).collect();
+        // Only the lines still shown are kept: a line dropped from the top takes its time with it.
+        self.0 = lines.iter().zip(&times).map(|(line, time)| (line.seq, time.clone())).collect();
+        times
+    }
+}
+
+/// The rows of one chat line: "[time] name > text", the text wrapped under the start of the text. A notice has no name.
+fn message_rows(line: &Line, time: &str, cols: usize) -> Vec<Row> {
+    let Some(sender) = line.sender.as_ref() else {
+        return wrap_line(&line.render(), cols).into_iter().map(|row| vec![(row, Tone::Dim)]).collect();
+    };
+    let text_tone = if line.mine { Tone::Title } else { Tone::Text };
+    let lead = format!("[{time}] ");
+    let head = format!("{lead}{sender} > ");
+    let room = cols.saturating_sub(char_width(&head));
+    if room < 8 {
+        return wrap_line(&line.render(), cols).into_iter().map(|row| vec![(row, text_tone)]).collect();
+    }
+    wrap_line(&line.text, room)
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            if index == 0 {
+                vec![(lead.clone(), Tone::Dim), (sender.clone(), Tone::Title), (" > ".to_string(), Tone::Dim), (row, text_tone)]
             } else {
-                queue!(out, Print(text))?;
+                vec![(" ".repeat(char_width(&head)), Tone::Dim), (row, text_tone)]
             }
-        }
-    }
-    // The phone address and token, on this screen only, over the bottom rows of the messages. They are not chat lines.
+        })
+        .collect()
+}
+
+/// The input row and the column of the cursor on it.
+fn input_row(input: &str, width: usize) -> (Row, usize) {
+    const PROMPT: &str = "MESSAGE > ";
+    let room = width.saturating_sub(char_width(PROMPT) + 1);
+    let shown = tail(input, room);
+    let cursor = char_width(PROMPT) + char_width(&shown);
+    // shortcut: the input hint is Korean-only like the other screen texts; move it to the locales with them.
+    let typed = if input.is_empty() { ("메시지를 입력하세요...".to_string(), Tone::Dim) } else { (shown, Tone::Title) };
+    (vec![(PROMPT.to_string(), Tone::Title), typed], cursor)
+}
+
+/// The CONNECTED NODES row text: you first (HOST/YOU on the host), then each fresh peer.
+fn nodes_text(me: &str, host: bool, peers: &[Peer]) -> String {
+    let you = if host { "HOST/YOU" } else { "YOU" };
+    let mut nodes = vec![format!("{you} {me}")];
+    nodes.extend(peers.iter().map(|peer| format!("PEER {}", peer.name)));
+    nodes.join(" · ")
+}
+
+/// The chat screen: the messages fill the middle, the phone address (when shown) sits over their last rows.
+fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows: usize) -> (Vec<Row>, usize) {
+    let lines = chat.lines();
+    let times = stamps.times(&lines);
+    let messages: Vec<Row> = lines.iter().zip(times).flat_map(|(line, time)| message_rows(line, &time, width - 1)).collect();
+    let name = chat.me.lock().unwrap().name.clone();
+    let fresh = chat.fresh_peers();
+    let area = rows - 8;
+    let mut body: Vec<Row> = messages[messages.len().saturating_sub(area)..].to_vec();
+    // Fill the message area first: with few messages the overlay rows must still sit inside it.
+    body.resize_with(area, Vec::new);
     if let Some(overlay) = chat.phone_overlay() {
-        let count = overlay.len().min(usize::from(area));
-        for (index, text) in overlay.iter().take(count).enumerate() {
+        let count = overlay.len().min(area);
+        for (slot, text) in body[area - count..].iter_mut().zip(&overlay) {
             let text = fit(text, width);
-            queue!(out, cursor::MoveTo(0, area + 1 - count as u16 + index as u16), SetBackgroundColor(Color::DarkGreen), SetForegroundColor(Color::White),
-                Print(&text), Print(" ".repeat(width - char_width(&text))), ResetColor)?;
+            let pad = " ".repeat(width - char_width(&text));
+            *slot = vec![(format!("{text}{pad}"), Tone::Overlay)];
         }
     }
-    let shown = tail(input, width - 3);
-    queue!(out, cursor::MoveTo(0, rows - 2), SetForegroundColor(Color::DarkGrey), Print("-".repeat(width)), ResetColor,
-        cursor::MoveTo(0, rows - 1), Clear(ClearType::CurrentLine), Print("> "), Print(&shown), cursor::Show)?;
-    out.flush()
+
+    let peers = fresh.len().to_string();
+    let badge = if chat.is_host() { format!("{} ", t("host.badge", &[])) } else { String::new() };
+    let info = format!("{badge}{}", t("status.line", &[("name", &name), ("peers", &peers)]));
+    let relay = chat.relay_status();
+    let (input, cursor) = input_row(input, width);
+    let nodes = vec![("CONNECTED NODES  ".to_string(), Tone::Title), (nodes_text(&name, chat.is_host(), &fresh), Tone::Text)];
+
+    let mut frame = vec![split("HERDR-TALK", Tone::Title, "SYS.VER 1.0", Tone::Dim, width), dash(width), split("COMMUNICATION LOG", Tone::Title, &info, Tone::Dim, width)];
+    frame.extend(body);
+    frame.push(nodes);
+    frame.push(input);
+    frame.push(dash(width));
+    // shortcut: the keyboard guide is English-only like the other Ctrl key notes; move it to the locales with them.
+    frame.push(vec![("Enter: SEND · /help: COMMANDS · Ctrl+N: NAME · Ctrl+P: PHONE · Ctrl+R: SETTINGS · Ctrl+C: QUIT".to_string(), Tone::Dim)]);
+    let (tag, tone) = status_tag(&relay);
+    frame.push(split(tag, tone, "made by Rust", Tone::Text, width));
+    (frame, cursor)
 }
 
 /// Apply one key. Return false to leave the chat.
@@ -160,7 +370,7 @@ pub fn choose_mode(chat: &Arc<Chat>) -> io::Result<Choice> {
         let remaining = first_run::remaining(&chooser, now);
         if shown != Some(remaining) {
             let (cols, rows) = terminal::size()?;
-            first_run::render(&mut terminal.0, &chooser, remaining, usize::from(cols), usize::from(rows))?;
+            first_run::render(&mut terminal.0, &mut chooser, remaining, usize::from(cols), usize::from(rows))?;
             shown = Some(remaining);
         }
         if !event::poll(POLL)? {
@@ -183,7 +393,7 @@ pub fn choose_mode(chat: &Arc<Chat>) -> io::Result<Choice> {
                 loop {
                     form.poll(); // a create-room answer that has come back
                     let (cols, rows) = terminal::size()?;
-                    settings_form::render(&mut terminal.0, &form, usize::from(cols), usize::from(rows))?;
+                    settings_form::render(&mut terminal.0, &mut form, usize::from(cols), usize::from(rows))?;
                     if !event::poll(POLL)? {
                         continue;
                     }
@@ -210,7 +420,9 @@ pub fn run(chat: &Arc<Chat>) -> io::Result<()> {
     let mut input = String::new();
     let mut last_status = String::new();
     let mut form: Option<Form> = None;
-    render(&mut terminal.0, chat, &input)?;
+    let mut stamps = Stamps::default();
+    let mut drawn = Frame::default();
+    render(&mut terminal.0, chat, &input, &mut stamps, &mut drawn)?;
     loop {
         chat.phone_visible(); // hides the phone address when its time is up, and asks for a redraw
         let mut redraw = chat.take_dirty();
@@ -225,6 +437,8 @@ pub fn run(chat: &Arc<Chat>) -> io::Result<()> {
                             form = None;
                             chat.say(t("settings.cancel_discard", &[]));
                         }
+                        // The chat frame drawn before the settings screen is no longer on the screen.
+                        drawn = Frame::default();
                     } else if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
                         form = Some(Form::open(&talk_core::store::state_dir()));
                     } else if !on_key(key, chat, &mut input) {
@@ -243,12 +457,12 @@ pub fn run(chat: &Arc<Chat>) -> io::Result<()> {
         let status = format!("{}/{}/{}/{}", chat.me.lock().unwrap().name, chat.fresh_peers().len(), chat.is_host(), chat.relay_status());
         if redraw || status != last_status {
             last_status = status;
-            match &form {
+            match &mut form {
                 Some(open) => {
                     let (cols, rows) = terminal::size()?;
                     settings_form::render(&mut terminal.0, open, usize::from(cols), usize::from(rows))?;
                 }
-                None => render(&mut terminal.0, chat, &input)?,
+                None => render(&mut terminal.0, chat, &input, &mut stamps, &mut drawn)?,
             }
         }
         if chat.idle_for() >= IDLE_LIMIT {
@@ -262,18 +476,34 @@ pub fn run(chat: &Arc<Chat>) -> io::Result<()> {
     Ok(())
 }
 
+fn render(out: &mut Stdout, chat: &Chat, input: &str, stamps: &mut Stamps, drawn: &mut Frame) -> io::Result<()> {
+    let (cols, rows) = terminal::size()?;
+    let (cols, rows) = (cols.max(20), rows.max(10));
+    let width = usize::from(cols);
+    let (frame, cursor) = chat_frame(chat, input, stamps, width, usize::from(rows));
+    paint(out, width, usize::from(rows), frame, drawn)?;
+    // The cursor goes back to the end of the typed text on the input row (the row above the divider and guide).
+    queue!(out, cursor::MoveTo(cursor as u16, rows - 4), cursor::Show)?;
+    out.flush()
+}
+
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn wrapped_rows_of_a_received_message_all_carry_the_sender() {
-        let line = Line { sender: Some("Bob (plain)".into()), text: "aaaa bbbb Alice: cccc dddd".into(), mine: false };
-        let rows = rows_of(&line, 24);
-        assert!(rows.len() > 1);
-        assert!(rows.iter().all(|row| row.starts_with("Bob (plain): ") && char_width(row) <= 24));
-    }
-
     use super::*;
     use talk_core::Me;
+
+    fn text_of(row: &Row) -> String {
+        row.iter().map(|(text, _)| text.as_str()).collect()
+    }
+
+    #[test]
+    fn wrapped_rows_of_a_received_message_all_carry_the_indent_and_fit() {
+        let line = Line { sender: Some("Bob (plain)".into()), text: "aaaa bbbb Alice: cccc dddd".into(), mine: false, seq: 0 };
+        let rows: Vec<String> = message_rows(&line, "12:30:21", 40).iter().map(text_of).collect();
+        assert!(rows.len() > 1);
+        assert!(rows[0].starts_with("[12:30:21] Bob (plain) > "), "{}", rows[0]);
+        assert!(rows[1..].iter().all(|row| row.starts_with("  ") && char_width(row) <= 40));
+    }
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
@@ -317,6 +547,49 @@ mod tests {
         on_key(key(KeyCode::Char('a'), KeyModifiers::NONE), &chat, &mut input);
         assert!(!chat.phone_visible());
         assert_eq!(input, "a");
+    }
+
+    #[test]
+    fn the_status_tag_follows_the_relay_text() {
+        assert_eq!(status_tag("").0, "[SYSTEM READY]");
+        assert_eq!(status_tag("relay: room joined (2 members)").0, "[CONNECTED]");
+        assert_eq!(status_tag("relay: room join failed: offline").0, "[ERROR]");
+        assert_eq!(status_tag("relay: settings incomplete").0, "[ERROR]");
+        assert_eq!(status_tag("relay: room code missing or invalid (8 uppercase letters or digits)").0, "[ERROR]");
+        assert_eq!(status_tag("relay: not joined yet").0, "[CONNECTING...]");
+    }
+
+    #[test]
+    fn the_stamp_of_a_line_stays_while_the_line_is_shown() {
+        let line = |seq: u64, text: &str| Line { sender: None, text: text.into(), mine: false, seq };
+        let mut stamps = Stamps::default();
+        let first = vec![line(0, "a")];
+        assert_eq!(stamps.times(&first).len(), 1);
+        stamps.0.insert(0, "00:00:01".into());
+        let more = vec![line(0, "a"), line(1, "b")];
+        assert_eq!(stamps.times(&more)[0], "00:00:01", "the first line keeps its time");
+        stamps.0.insert(1, "00:00:02".into());
+        // The first line is dropped from the top: the second one keeps its time.
+        assert_eq!(stamps.times(&more[1..]), vec!["00:00:02".to_string()]);
+    }
+
+    #[test]
+    fn equal_texts_keep_their_own_times_when_the_first_is_dropped() {
+        let same = |seq: u64| Line { sender: None, text: "same".into(), mine: false, seq };
+        let mut stamps = Stamps::default();
+        stamps.times(&[same(0), same(1), same(2)]);
+        stamps.0.insert(0, "00:00:01".into());
+        stamps.0.insert(1, "00:00:02".into());
+        stamps.0.insert(2, "00:00:03".into());
+        // Line 0 is cut from the top: the lines that stay keep 00:00:02 and 00:00:03, not the times of the first match.
+        assert_eq!(stamps.times(&[same(1), same(2)]), vec!["00:00:02".to_string(), "00:00:03".to_string()]);
+    }
+
+    #[test]
+    fn the_nodes_row_lists_you_then_the_peers() {
+        let peer = |name: &str| Peer { id: name.into(), name: name.into(), ip: String::new(), port: 1, seen: Instant::now(), key: None };
+        assert_eq!(nodes_text("Ann", false, &[]), "YOU Ann");
+        assert_eq!(nodes_text("Ann", true, &[peer("Bob"), peer("Cy")]), "HOST/YOU Ann · PEER Bob · PEER Cy");
     }
 
     #[test]

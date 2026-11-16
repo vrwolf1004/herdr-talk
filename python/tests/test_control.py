@@ -10,6 +10,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 os.environ.setdefault("HERDR_TALK_LANG", "en")
 
+import sessions  # noqa: E402
 import talk  # noqa: E402
 
 
@@ -50,7 +51,8 @@ class ControlTest(unittest.TestCase):
 
     def test_file_has_port_token_pid_and_goes_away(self):
         self.assertEqual(os.path.basename(self.control.file), f"control-{os.getpid()}.json")
-        self.assertEqual(set(self.info), {"port", "token", "pid"})
+        self.assertEqual(set(self.info), {"port", "token", "pid", "started"})
+        self.assertEqual(self.info["started"], sessions.process_start_time(os.getpid()))
         self.assertEqual(len(self.info["token"]), 64)
         self.control.close()
         self.assertFalse(os.path.exists(self.control.file))

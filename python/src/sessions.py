@@ -5,6 +5,7 @@ HERDR_PLUGIN_STATE_DIR), with its own keys, short ID, trusted list and relay.jso
 folder; "default" is the base folder itself (the state of earlier versions, never changed here).
 """
 
+import json
 import os
 import shutil
 
@@ -60,17 +61,25 @@ def choose_session(requested=None):
     return _chosen
 
 
+def _open_for_query(pid):
+    """A handle to query a Windows process (PROCESS_QUERY_LIMITED_INFORMATION). Returns (kernel32, handle, error)."""
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(0x1000, False, pid)
+    return kernel32, handle, ctypes.get_last_error()
+
+
 def process_alive(pid):
     """Whether a process with this pid exists. Windows asks the OS; elsewhere os.kill(pid, 0) (which only probes on POSIX)."""
     if os.name == "nt":
         import ctypes
         from ctypes import wintypes
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        kernel32, handle, error = _open_for_query(pid)
         if not handle:
-            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists, but belongs to someone else
+            return error == 5  # ERROR_ACCESS_DENIED: it exists, but belongs to someone else
         try:
             code = wintypes.DWORD()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
@@ -85,6 +94,46 @@ def process_alive(pid):
     except OSError:
         return True
     return True
+
+
+def process_start_time(pid):
+    """Tells a process from a later one with the same pid, as the control file's "started" (same rule as Rust): Windows
+    creation time in Unix seconds; Linux field 22 of /proc/<pid>/stat (clock ticks since boot). None when it cannot be read."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel32, handle, _ = _open_for_query(pid)
+        if not handle:
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]  # creation, exit, kernel, user
+            if not kernel32.GetProcessTimes(handle, *(ctypes.byref(time) for time in times)):
+                return None
+            created = times[0]
+            filetime = created.dwHighDateTime << 32 | created.dwLowDateTime  # 100 ns ticks since 1601-01-01
+            return filetime // 10**7 - 11644473600  # Unix seconds (1601 to 1970 is 11644473600 s)
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
+            return int(stat.read().rsplit(")", 1)[1].split()[19])  # after the name in parentheses; field 3 is the first here
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def control_live(folder, pid, alive=None):
+    """Whether control-<pid>.json in folder belongs to a live node: the pid is alive and, when the file records "started"
+    (see talk.start_control), the process with that pid still has that start time. Without the field: the pid alone decides."""
+    alive = process_alive if alive is None else alive
+    if not alive(pid):
+        return False
+    try:
+        with open(os.path.join(folder, f"control-{pid}.json"), encoding="utf-8") as control:
+            recorded = json.load(control).get("started")
+    except (OSError, ValueError, AttributeError):
+        return True
+    current = process_start_time(pid)
+    return recorded is None or current is None or recorded == current
 
 
 def remove_dead_sessions(base, alive=None, remove=None, leave=None):
@@ -154,7 +203,7 @@ def _has_live_node(folder, alive, except_pid):
     pids = _control_pids(folder)
     if pids is None:
         return True
-    return any(pid != except_pid and alive(pid) for pid in pids)
+    return any(pid != except_pid and control_live(folder, pid, alive) for pid in pids)
 
 
 def state_dir():

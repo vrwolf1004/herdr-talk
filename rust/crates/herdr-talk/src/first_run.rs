@@ -3,14 +3,12 @@
 //! Esc quits. Local is saved at once. Supabase opens the settings screen, and only a saved, complete setting starts the chat.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor};
-use crossterm::terminal::{Clear, ClearType};
-use crossterm::{cursor, queue};
 use std::io::{self, Stdout};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use talk_core::relay_settings::{self, Mode};
 use talk_core::t;
+use crate::screen::{classic, paint, Frame, Row, Tone};
 
 /// Without a choice within this time the chat starts in Local mode, and nothing is saved.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
@@ -19,11 +17,13 @@ pub struct Chooser {
     pub selected: Mode,
     /// When the default starts. None once a key was pressed: then the user chooses.
     deadline: Option<Instant>,
+    /// The last frame drawn, so an unchanged screen is not drawn again.
+    drawn: Frame,
 }
 
 impl Chooser {
     pub fn new(now: Instant) -> Chooser {
-        Chooser { selected: Mode::Local, deadline: Some(now + TIMEOUT) }
+        Chooser { selected: Mode::Local, deadline: Some(now + TIMEOUT), drawn: Frame::default() }
     }
 }
 
@@ -70,31 +70,25 @@ pub fn save_local(state: &Path) -> Result<(), String> {
     relay_settings::save(state, &settings)
 }
 
-pub fn render(out: &mut Stdout, chooser: &Chooser, remaining: Option<u64>, width: usize, rows: usize) -> io::Result<()> {
-    let option = |mode: Mode, number: u8, name: String, hint: String| {
-        let marker = if chooser.selected == mode { ">" } else { " " };
-        vec![format!("{marker} {number}. {name}"), format!("      {hint}")]
+pub fn render(out: &mut Stdout, chooser: &mut Chooser, remaining: Option<u64>, width: usize, rows: usize) -> io::Result<()> {
+    // A text menu: the selected item is bright and marked with ▶; the other item is body text.
+    let item = |mode: Mode, number: u8, name: &str, hint: &str| -> Vec<Row> {
+        let selected = chooser.selected == mode;
+        let marker = if selected { "▶" } else { " " };
+        let tone = if selected { Tone::Title } else { Tone::Text };
+        vec![vec![(format!("  {marker} {number:02}. {name}"), tone)], vec![(format!("       {hint}"), Tone::Dim)]]
     };
-    let mut lines = vec![t("mode.first_run_title", &[]), String::new()];
-    lines.extend(option(Mode::Local, 1, t("mode.local", &[]), t("mode.hint_local", &[])));
-    lines.push(String::new());
-    lines.extend(option(Mode::Supabase, 2, t("mode.supabase", &[]), t("mode.hint_supabase", &[])));
-    lines.push(String::new());
+    // shortcut: the menu names and hints are English-only like the classic screen texts; move them to the locales with the room label.
+    let mut body: Vec<Row> = vec![vec![(t("mode.first_run_title", &[]), Tone::Title)], vec![]];
+    body.extend(item(Mode::Local, 1, "LOCAL NETWORK", "LAN DIRECT COMMUNICATION"));
+    body.push(vec![]);
+    body.extend(item(Mode::Supabase, 2, "SUPABASE CLOUD", "REMOTE COMMUNICATION"));
+    body.push(vec![]);
     if let Some(seconds) = remaining {
-        lines.push(t("mode.timeout_hint", &[("n", &seconds.to_string())]));
+        body.push(vec![(t("mode.timeout_hint", &[("n", &seconds.to_string())]), Tone::Dim)]);
     }
-    lines.push(t("tui.first_run.keys", &[]));
-    queue!(out, cursor::Hide, Clear(ClearType::All))?;
-    for (row, text) in lines.iter().take(rows).enumerate() {
-        let text: String = text.chars().take(width).collect();
-        queue!(out, cursor::MoveTo(0, row as u16))?;
-        if row == 0 {
-            queue!(out, SetAttribute(Attribute::Bold), SetBackgroundColor(Color::DarkGrey), SetForegroundColor(Color::White), Print(text), ResetColor, SetAttribute(Attribute::Reset))?;
-        } else {
-            queue!(out, Print(text))?;
-        }
-    }
-    queue!(out, cursor::Show)
+    let frame = classic(body, &t("tui.first_run.keys", &[]), "", width, rows);
+    paint(out, width, rows, frame, &mut chooser.drawn)
 }
 
 #[cfg(test)]

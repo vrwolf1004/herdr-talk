@@ -219,6 +219,58 @@ pub fn process_alive(_pid: u32) -> bool {
     true // unknown system: keep the folder
 }
 
+/// When the process with this pid started, in a form that is the same for that process for as long as it lives:
+/// Windows gives Unix seconds, Linux gives the start time from /proc (clock ticks since boot). None where neither can be
+/// read; the check is then skipped. The control file records it as "started", and the Python edition writes the same value.
+#[cfg(windows)]
+pub fn process_started(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: the handle is checked before use and closed once; the FILETIME pointers are locals.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let known = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0;
+        CloseHandle(handle);
+        if !known {
+            return None;
+        }
+        let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+        // FILETIME counts 100 ns from 1601-01-01; Unix time counts seconds from 1970-01-01.
+        (ticks / 10_000_000).checked_sub(11_644_473_600)
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn process_started(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name is in parentheses and may contain spaces: the fields after the last ')' start with state (field 3).
+    let after = stat.rsplit_once(')')?.1;
+    // starttime is field 22, the 20th field after the ')'.
+    after.split_whitespace().nth(19)?.parse().ok()
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn process_started(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// The start time a control file recorded for its process, if it has one (files of older builds do not).
+fn recorded_start(dir: &Path, pid: u32) -> Option<u64> {
+    let text = fs::read_to_string(dir.join(format!("control-{pid}.json"))).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?.get("started")?.as_u64()
+}
+
+/// Whether a control file belongs to a live node: its process is alive, and when both start times are known they are the
+/// same. A file without a recorded start time, or a process whose start time cannot be read, keeps the plain alive check.
+pub(crate) fn live_node(alive: bool, recorded: Option<u64>, actual: Option<u64>) -> bool {
+    alive && !matches!((recorded, actual), (Some(recorded), Some(actual)) if recorded != actual)
+}
+
 /// Remove the node folders under base whose node has ended without cleaning up: each has control files, and every one of
 /// them is for a process that has ended. A folder without a control file is kept, since its node may still be starting.
 /// This process's own session is kept: with --session it may be such a folder, about to be used again.
@@ -296,7 +348,7 @@ fn control_pids(dir: &Path) -> Option<Vec<u32>> {
 fn has_live_node(dir: &Path, alive: &dyn Fn(u32) -> bool, except: Option<u32>) -> bool {
     match control_pids(dir) {
         None => true,
-        Some(pids) => pids.into_iter().any(|pid| Some(pid) != except && alive(pid)),
+        Some(pids) => pids.into_iter().any(|pid| Some(pid) != except && live_node(alive(pid), recorded_start(dir, pid), process_started(pid))),
     }
 }
 
@@ -494,6 +546,40 @@ mod tests {
             fs::write(dir.join(format!("control-{pid}.json")), b"{}").unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn a_reused_pid_is_not_a_live_node_when_the_start_times_differ() {
+        assert!(live_node(true, None, None), "no record: the plain alive check");
+        assert!(live_node(true, Some(5), None), "the start time cannot be read: keep the plain check");
+        assert!(live_node(true, None, Some(5)), "an old file without a start time: keep the plain check");
+        assert!(live_node(true, Some(5), Some(5)), "the same process");
+        assert!(!live_node(true, Some(5), Some(6)), "another process took the pid");
+        assert!(!live_node(false, Some(5), Some(5)), "a process that ended is not live");
+    }
+
+    #[test]
+    fn the_recorded_start_is_read_from_the_control_file() {
+        let base = scratch("recorded-start");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("control-4242.json"), r#"{"port": 1, "token": "x", "pid": 4242, "started": 1700000000}"#).unwrap();
+        fs::write(base.join("control-4243.json"), r#"{"port": 1, "token": "x", "pid": 4243}"#).unwrap();
+        assert_eq!(recorded_start(&base, 4242), Some(1_700_000_000));
+        assert_eq!(recorded_start(&base, 4243), None, "an older file has no start time");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_control_file_of_another_process_start_is_not_live() {
+        let base = scratch("start-mismatch");
+        fs::create_dir_all(&base).unwrap();
+        let pid = std::process::id();
+        // A control file that names this pid but records a start time this process cannot have: the pid was reused.
+        fs::write(base.join(format!("control-{pid}.json")), r#"{"started": 1}"#).unwrap();
+        let actual = process_started(pid);
+        let expected_live = actual.is_none();
+        assert_eq!(has_live_node(&base, &|_| true, None), expected_live, "a known start time that differs is not live");
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

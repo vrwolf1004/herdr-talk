@@ -1,14 +1,11 @@
-//! The relay settings screen (Ctrl+R). First row: the connection mode (Local or Supabase, one of the two, never both).
-//! Then four fields: project URL, publishable key, display name and the room ID (8 characters). Tab or Up/Down moves between
-//! rows; Left/Right or Space toggles the mode; Enter goes on, and saves on the last field; Esc leaves without saving.
+//! The relay settings screen (Ctrl+R). The connection mode is not on this screen (the first-run choice sets it).
+//! Four fields: project URL, publishable key, display name (a read-only code) and the room ID (8 characters). Tab or Up/Down
+//! moves between rows; Enter goes on, and saves on the last field; Esc leaves without saving.
 //! Ctrl+N asks the relay for a new room (Supabase mode) and puts its code in the room ID field; it still needs a save.
 //! The key is never drawn: only its length. Environment variables win over the saved values, and the screen says so.
 //! Saving in Local mode keeps the typed fields; saving in Supabase mode checks them all (talk-core validate).
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor};
-use crossterm::terminal::{Clear, ClearType};
-use crossterm::{cursor, queue};
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
@@ -17,6 +14,8 @@ use talk_core::relay_key;
 use talk_core::relay_rest::{self, Request};
 use talk_core::relay_settings::{self, Mode, Settings};
 use talk_core::{relay_chat, t, Chat};
+use crate::screen::{classic, paint, Frame, Row, Tone};
+use talk_core::text::char_width;
 
 /// The four field labels, in field order.
 /// shortcut: the room ID label is written here because locales have no key for it; move it to talk-core/locales when those may change.
@@ -29,8 +28,10 @@ fn labels() -> [String; 4] {
     ]
 }
 const KEY_FIELD: usize = 1;
-/// Rows: 0 is the mode, 1 to 4 are the four fields.
-const ROWS: usize = 5;
+/// The display name is a read-only code made here (as in the GUI), so typing does not change it.
+const NAME_FIELD: usize = 2;
+/// The fields, numbered 1 to 4. The mode has no row: the first-run choice sets it, and focus never rests on a row that is not drawn.
+const FIELDS: usize = 4;
 
 pub struct Form {
     mode: Mode,
@@ -46,6 +47,8 @@ pub struct Form {
     saved: bool,
     /// A create-room request running in the background: its answer (the code, or the reason it failed).
     creating: Option<mpsc::Receiver<Result<String, String>>>,
+    /// The last frame drawn, so an unchanged screen is not drawn again.
+    drawn: Frame,
 }
 
 pub enum Action {
@@ -58,11 +61,19 @@ impl Form {
         let saved = relay_settings::load_saved(state);
         let mine = relay_chat::my_keys(state).ok();
         let short_id = relay_key::short_id(state).unwrap_or_default();
-        let message = if mine.is_none() { t("tui.settings.no_keys", &[]) } else { String::new() };
+        let mut message = if mine.is_none() { t("tui.settings.no_keys", &[]) } else { String::new() };
+        let mut fields = [saved.url, saved.key, saved.name, saved.room_code];
+        // The same code the GUI makes when no name is saved: 8 characters of a random value, upper case.
+        if fields[NAME_FIELD].trim().is_empty() {
+            match relay_rest::random_nonce() {
+                Ok(nonce) => fields[NAME_FIELD] = nonce.chars().take(8).collect::<String>().to_ascii_uppercase(),
+                Err(error) => message = format!("표시 이름을 만들 수 없습니다: {error}"),
+            }
+        }
         Form {
             mode: saved.mode,
-            fields: [saved.url, saved.key, saved.name, saved.room_code],
-            focus: 0,
+            fields,
+            focus: 1,
             message,
             from_env: relay_settings::from_environment(),
             mine,
@@ -70,6 +81,7 @@ impl Form {
             state: state.to_path_buf(),
             saved: false,
             creating: None,
+            drawn: Frame::default(),
         }
     }
 
@@ -122,13 +134,6 @@ impl Form {
                 chat.say(text);
             }
         }
-    }
-
-    fn toggle_mode(&mut self) {
-        self.mode = match self.mode {
-            Mode::Local => Mode::Supabase,
-            Mode::Supabase => Mode::Local,
-        };
     }
 
     /// Ctrl+N: ask the relay for a new room with this PC's key and put the code in the room ID field (saved with Enter).
@@ -253,20 +258,18 @@ fn read_room_code(status: u16, text: &str) -> Result<String, String> {
 
 /// One key for the form.
 pub fn on_key(form: &mut Form, key: KeyEvent, chat: &Arc<Chat>) -> Action {
-    let on_mode_row = form.focus == 0;
     match key.code {
         KeyCode::Esc => return Action::Leave,
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => form.create_room(),
-        KeyCode::Tab | KeyCode::Down => form.focus = (form.focus + 1) % ROWS,
-        KeyCode::Up => form.focus = (form.focus + ROWS - 1) % ROWS,
-        KeyCode::Left | KeyCode::Right if on_mode_row => form.toggle_mode(),
-        KeyCode::Char(' ') if on_mode_row => form.toggle_mode(),
-        KeyCode::Enter if form.focus + 1 < ROWS => form.focus += 1,
+        // Focus cycles over the drawn fields only (1 to FIELDS).
+        KeyCode::Tab | KeyCode::Down => form.focus = form.focus % FIELDS + 1,
+        KeyCode::Up => form.focus = (form.focus + FIELDS - 2) % FIELDS + 1,
+        KeyCode::Enter if form.focus < FIELDS => form.focus += 1,
         KeyCode::Enter => form.save(chat),
-        KeyCode::Backspace if !on_mode_row => {
+        KeyCode::Backspace if form.focus - 1 != NAME_FIELD => {
             form.fields[form.focus - 1].pop();
         }
-        KeyCode::Char(ch) if !on_mode_row && !key.modifiers.contains(KeyModifiers::CONTROL) => form.fields[form.focus - 1].push(ch),
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) && form.focus - 1 != NAME_FIELD => form.fields[form.focus - 1].push(ch),
         _ => {}
     }
     Action::Stay
@@ -285,69 +288,64 @@ fn shown(form: &Form, index: usize) -> String {
     }
 }
 
-fn mode_row(mode: Mode) -> String {
-    let local = t("mode.local", &[]);
-    let supabase = t("mode.supabase", &[]);
-    let label = t("settings.mode_row", &[]);
-    match mode {
-        Mode::Local => format!("{label}: [{local}]  {supabase}"),
-        Mode::Supabase => format!("{label}:  {local}  [{supabase}]"),
-    }
-}
-
-/// The lines of the settings screen: the text, and whether it is dimmed.
-fn lines(form: &Form) -> Vec<(String, bool)> {
-    let hint = match form.mode {
-        Mode::Local => t("mode.hint_local", &[]),
-        Mode::Supabase => t("mode.hint_supabase", &[]),
-    };
+/// The lines of the settings screen: the text and its tone. Three sections: the Supabase connection, the room settings,
+/// and this PC's identity. The connection mode is not named on this screen (it is chosen at the start).
+// shortcut: the screen title, section names and key hints are English-only like the other Ctrl key notes; move them to the locales with the room label.
+fn lines(form: &Form) -> Vec<(String, Tone)> {
     let marker = |row: usize| if form.focus == row { ">" } else { " " };
-    let mut lines: Vec<(String, bool)> = vec![
-        (t("tui.settings.help", &[]), false),
-        (String::new(), false),
-        (format!("{} {}", marker(0), mode_row(form.mode)), false),
-        (format!("  {hint}"), false),
-        (String::new(), false),
-    ];
     // In Local mode the fields are kept but not used: they are drawn dimmed.
-    let dimmed = form.mode == Mode::Local;
-    for (index, label) in labels().iter().enumerate() {
-        lines.push((format!("{} {label}: {}", marker(index + 1), shown(form, index)), dimmed));
-    }
-    // shortcut: this hint is English-only like the other Ctrl key notes; move it to the locales with the room label.
-    lines.push(("Ctrl+N: create room (Supabase mode, needs the URL, key and name)".to_string(), dimmed));
-    lines.push((String::new(), false));
+    let field_tone = if form.mode == Mode::Local { Tone::Dim } else { Tone::Text };
+    // "LABEL : [value____]": the value is filled with underscores to the input width; the focused field is the bright one.
+    let field = |index: usize| {
+        let value = shown(form, index);
+        let blanks = FIELD_WIDTH.saturating_sub(char_width(&value));
+        let text = format!("{} {} : [{value}{}]", marker(index + 1), pad_to(&labels()[index], LABEL_WIDTH), "_".repeat(blanks));
+        (text, if form.focus == index + 1 { Tone::Title } else { field_tone })
+    };
+    let mut lines: Vec<(String, Tone)> = vec![
+        ("SUPABASE SETTINGS".to_string(), Tone::Title),
+        (String::new(), Tone::Text),
+        ("[01] SUPABASE CONNECTION".to_string(), Tone::Title),
+        field(0),
+        field(1),
+        (String::new(), Tone::Text),
+        ("[02] ROOM SETTINGS".to_string(), Tone::Title),
+        field(2),
+        field(3),
+        ("Ctrl+N: create room (Supabase mode, needs the URL, key and name)".to_string(), Tone::Dim),
+        (String::new(), Tone::Text),
+        ("[03] DEVICE IDENTITY".to_string(), Tone::Title),
+    ];
     // The short ID is this PC's room row ID: shown only in Supabase mode (not on the LAN screen).
     if form.mode == Mode::Supabase && !form.short_id.is_empty() {
-        lines.push((t("tui.settings.my_id", &[("id", &form.short_id)]), false));
+        lines.push((t("tui.settings.my_id", &[("id", &form.short_id)]), Tone::Dim));
     }
     match &form.mine {
         Some((ed, noise)) => {
-            lines.push((t("tui.settings.my_ed", &[("key", ed)]), false));
-            lines.push((t("tui.settings.my_noise", &[("key", noise)]), false));
+            lines.push((t("tui.settings.my_ed", &[("key", ed)]), Tone::Dim));
+            lines.push((t("tui.settings.my_noise", &[("key", noise)]), Tone::Dim));
         }
-        None => lines.push((t("tui.settings.no_keys_yet", &[]), false)),
+        None => lines.push((t("tui.settings.no_keys_yet", &[]), Tone::Dim)),
     }
-    lines.push((String::new(), false));
-    lines.push((form.message.clone(), false));
+    lines.push((String::new(), Tone::Text));
+    lines.push((form.message.clone(), Tone::Text));
     lines
 }
 
-pub fn render(out: &mut Stdout, form: &Form, width: usize, rows: usize) -> io::Result<()> {
-    let lines = lines(form);
-    queue!(out, cursor::Hide, Clear(ClearType::All))?;
-    for (row, (text, dim)) in lines.iter().take(rows).enumerate() {
-        let text: String = text.chars().take(width).collect();
-        queue!(out, cursor::MoveTo(0, row as u16))?;
-        if row == 0 {
-            queue!(out, SetAttribute(Attribute::Bold), SetBackgroundColor(Color::DarkGrey), SetForegroundColor(Color::White), Print(text), ResetColor, SetAttribute(Attribute::Reset))?;
-        } else if *dim {
-            queue!(out, SetForegroundColor(Color::DarkGrey), Print(text), ResetColor)?;
-        } else {
-            queue!(out, Print(text))?;
-        }
-    }
-    queue!(out, cursor::Show)
+/// Columns of the label and of the input brackets in the field rows.
+const LABEL_WIDTH: usize = 18;
+const FIELD_WIDTH: usize = 24;
+
+/// `text` padded with spaces to `cols` columns.
+fn pad_to(text: &str, cols: usize) -> String {
+    format!("{text}{}", " ".repeat(cols.saturating_sub(char_width(text))))
+}
+
+pub fn render(out: &mut Stdout, form: &mut Form, width: usize, rows: usize) -> io::Result<()> {
+    let body: Vec<Row> = lines(form).into_iter().map(|(text, tone)| vec![(text, tone)]).collect();
+    // shortcut: the key hint is English-only like the other key notes; move it to the locales with them.
+    let frame = classic(body, "Esc: CANCEL · Enter: SAVE SETTINGS · Tab/Up/Down: MOVE", "", width, rows);
+    paint(out, width, rows, frame, &mut form.drawn)
 }
 
 #[cfg(test)]
@@ -363,7 +361,7 @@ mod tests {
         Form {
             mode: Mode::Local,
             fields: Default::default(),
-            focus: 0,
+            focus: 1,
             message: String::new(),
             from_env: (false, false),
             mine: None,
@@ -371,6 +369,7 @@ mod tests {
             state: state.to_path_buf(),
             saved: false,
             creating: None,
+            drawn: Frame::default(),
         }
     }
 
@@ -385,21 +384,47 @@ mod tests {
     }
 
     #[test]
-    fn left_and_right_switch_the_mode_on_the_mode_row_only() {
-        let (chat, mut form) = (chat(), form_at(&folder("switch")));
-        press(&mut form, &chat, KeyCode::Right);
-        assert_eq!(form.mode, Mode::Supabase);
-        press(&mut form, &chat, KeyCode::Left);
-        assert_eq!(form.mode, Mode::Local);
-        press(&mut form, &chat, KeyCode::Tab);
-        press(&mut form, &chat, KeyCode::Right);
-        assert_eq!(form.mode, Mode::Local, "on a field row Right does not switch the mode");
+    fn focus_starts_on_a_drawn_field_and_cycles_over_the_fields_only() {
+        let (chat, mut form) = (chat(), form_at(&folder("cycle")));
+        assert_eq!(form.focus, 1, "the first key goes to a field that is drawn");
+        let visited: Vec<usize> = (0..FIELDS + 1)
+            .map(|_| {
+                press(&mut form, &chat, KeyCode::Tab);
+                form.focus
+            })
+            .collect();
+        assert_eq!(visited, vec![2, 3, 4, 1, 2], "Tab wraps from the last field to the first, never to 0");
+        press(&mut form, &chat, KeyCode::Up);
+        assert_eq!(form.focus, 1);
+        press(&mut form, &chat, KeyCode::Up);
+        assert_eq!(form.focus, 4, "Up wraps from the first field to the last");
+    }
+
+    #[test]
+    fn the_display_name_is_a_generated_read_only_code() {
+        let dir = folder("name-code");
+        let form = Form::open(&dir);
+        assert_eq!(form.fields[NAME_FIELD].len(), 8);
+        assert!(form.fields[NAME_FIELD].chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_lowercase()), "{}", form.fields[NAME_FIELD]);
+        let (chat, mut form) = (chat(), form);
+        let code = form.fields[NAME_FIELD].clone();
+        form.focus = NAME_FIELD + 1;
+        press(&mut form, &chat, KeyCode::Char('x'));
+        press(&mut form, &chat, KeyCode::Backspace);
+        assert_eq!(form.fields[NAME_FIELD], code, "typing does not change the code");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn letters_typed_on_the_first_screen_reach_a_field() {
+        let (chat, mut form) = (chat(), form_at(&folder("first-key")));
+        press(&mut form, &chat, KeyCode::Char('h'));
+        assert_eq!(form.fields[0], "h");
     }
 
     #[test]
     fn typing_goes_to_the_focused_field_and_enter_moves_on() {
         let (chat, mut form) = (chat(), form_at(&folder("typing")));
-        press(&mut form, &chat, KeyCode::Tab);
         for ch in "https://x.example".chars() {
             press(&mut form, &chat, KeyCode::Char(ch));
         }
@@ -466,6 +491,18 @@ mod tests {
         form.focus = 4;
         press(&mut form, &chat, KeyCode::Enter);
         assert!(form.message.starts_with(&t("tui.settings.not_saved", &[("error", "")])), "{}", form.message);
+    }
+
+    #[test]
+    fn the_screen_has_three_sections_and_does_not_name_the_connection_mode() {
+        let form = form_at(&folder("sections"));
+        let texts: Vec<String> = lines(&form).into_iter().map(|(text, _)| text).collect();
+        assert_eq!(texts[0], "SUPABASE SETTINGS");
+        for section in ["[01] SUPABASE CONNECTION", "[02] ROOM SETTINGS", "[03] DEVICE IDENTITY"] {
+            assert!(texts.iter().any(|text| text == section), "{section}");
+        }
+        // The mode choice (its name and hints) is not on this screen; the Ctrl+N note still says it needs Supabase mode.
+        assert!(!texts.iter().any(|text| text.contains(&t("mode.local", &[])) || text.contains(&t("mode.hint_local", &[]))));
     }
 
     #[test]

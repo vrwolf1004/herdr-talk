@@ -231,8 +231,7 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
             // The code is shown only after both nonces are known (see reveal_later), never from the announce alone.
             chat.request_reveal(&key, &ip, port);
         } else if info.get("commits").is_none() {
-            // shortcut: a Korean-only notice; move it to the locales when the wording is settled.
-            chat.say(format!("{name} ({ip}): 구버전이라 확인할 수 없습니다. 양쪽 PC 를 새 판으로 올리세요"));
+            chat.say(t("net.old_version", &[("name", &name), ("ip", &ip)]));
         }
         // Commits present but not for us yet (first contact): the next announce carries ours, so say nothing.
     }
@@ -412,7 +411,7 @@ fn receive_encrypted(conn: &mut (impl Read + Write), first: u8, chat: &Chat) -> 
     if chat.reveal_of(&sender).is_some_and(|known| known != nonce) {
         // A second, different reveal from the same peer: refuse the connection, with one line of warning (as Python does).
         let (name, _ip) = chat.peer_by_key(&sender).unwrap_or_else(|| ("?".to_string(), "?".to_string()));
-        chat.say(format!("{name}: 다른 확인 값이 왔습니다. 연결을 거부했습니다")); // shortcut: Korean-only, as the other notices
+        chat.say(t("net.other_reveal", &[("name", &name)]));
         return Err(invalid("a different reveal from this peer was already given"));
     }
     if chat.set_reveal(&sender, nonce) {
@@ -547,11 +546,11 @@ fn deliver(data: &[u8], key: Option<&[u8]>, chat: &Chat) {
     }
     let lines = match key {
         // Verified: the name the user verified, not the one the message claims. One line, as before.
-        Some(key) => vec![Line { sender: Some(chat.trusted_name(key).unwrap_or_else(|| sender_name(sender))), text: squeeze_spaces(&rows.join(" ")), mine: false }],
+        Some(key) => vec![Line { sender: Some(chat.trusted_name(key).unwrap_or_else(|| sender_name(sender))), text: squeeze_spaces(&rows.join(" ")), mine: false, seq: 0 }],
         // Plain: no key to check. Every row carries the plain sender's label, so no row can pass for another sender.
         None => {
             let label = format!("{} ({})", plain_sender(sender), t("chat.plain", &[]));
-            rows.into_iter().map(|row| Line { sender: Some(label.clone()), text: row, mine: false }).collect()
+            rows.into_iter().map(|row| Line { sender: Some(label.clone()), text: row, mine: false, seq: 0 }).collect()
         }
     };
     chat.add(lines);

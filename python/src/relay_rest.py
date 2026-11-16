@@ -70,10 +70,15 @@ def valid_room_code(text):
 
 
 def valid_name(text):
-    """1 to 32 characters, no control characters (category Cc, the same rule the table enforces)."""
+    """1 to 32 characters, all printable: no control, format (bidi, zero-width), private-use or space-separator characters
+    except the plain space. The same rule as talk-core's is_printable, so both editions accept the same names.
+    shortcut: unassigned and noncharacter code points are not refused here (Rust refuses some of them); add them if it matters."""
     if not isinstance(text, str) or not 1 <= len(text) <= 32:
         return False
-    return not any(unicodedata.category(ch) == "Cc" for ch in text)
+    return all(ch == " " or unicodedata.category(ch) not in NAME_BLOCKED for ch in text)
+
+
+NAME_BLOCKED = {"Cc", "Cf", "Co", "Cs", "Zl", "Zp", "Zs"}
 
 
 def _common_headers(config):

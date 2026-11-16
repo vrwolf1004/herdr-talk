@@ -39,7 +39,7 @@
   "peer.joined": "* {name} 입장 ({ip})",
   "idle.left": "* 나감: {minutes}분 동안 활동이 없었습니다",
   "bye": "종료합니다",
-  "status.line": " herdr-talk  |  {name}  |  상대: {peers}  |  Ctrl+N: 이름 변경   /help   Ctrl+C: 종료 ",
+  "status.line": " herdr-talk  |  {name}  |  상대: {peers} ",
   "start.hello": "herdr-talk: 당신의 이름은 '{name}'입니다 (TCP 포트 {port}). 명령어는 /help를 입력하세요.",
   "open.no_pane": "herdr-talk open: herdr 패널 안에서 실행하세요 (HERDR_PANE_ID 가 없습니다).",
   "dock.agent_name": "talk: 접속 {count}명",
@@ -63,7 +63,6 @@
   "phone.none": "아직 폰 주소가 없습니다: 이 PC 에 방장이 없습니다.",
   "phone.new_done": "새 토큰을 만들었습니다. 폰에서 새 토큰을 다시 입력하세요.",
   "usage.phone": "사용법: /phone   또는   /phone new",
-  "host.name": "방장",
   "host.badge": "[방장]",
   "gui.status.starting": "기존 서버 없음 → 자체 서버 실행 중",
   "gui.status.connected": "자체 서버 연결됨",
@@ -117,5 +116,12 @@
   "tui.settings.my_id": "이 PC의 ID (상대에게 알려 준다): {id}",
   "tui.settings.my_ed": "이 PC의 Ed25519 공개키: {key}",
   "tui.settings.my_noise": "이 PC의 Noise 키 (/trust 로 확인한다): {key}",
-  "tui.settings.no_keys_yet": "이 PC의 키: 아직 없음 (채팅을 한 번 시작)"
+  "tui.settings.no_keys_yet": "이 PC의 키: 아직 없음 (채팅을 한 번 시작)",
+  "room.none_trusted": "방에 확인된 멤버가 없어 보내지 않았습니다 (/trust 필요)",
+  "room.left_out": "{n}명은 확인되지 않아 제외했습니다 (/trust 필요)",
+  "room.put_taken": "이 PC의 짧은 ID 가 다른 키에 이미 있습니다 (409). 다시 시도하세요",
+  "room.put_failed": "이 PC 의 행을 게시하지 못했습니다 (네트워크나 서버 오류)",
+  "net.old_version": "{name} ({ip}): 구버전이라 확인할 수 없습니다. 양쪽 PC 를 새 판으로 올리세요",
+  "net.other_reveal": "{name}: 다른 확인 값이 왔습니다. 연결을 거부했습니다",
+  "peers.code_pending": "(코드 대기 중)"
 }

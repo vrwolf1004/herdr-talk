@@ -39,7 +39,7 @@
   "peer.joined": "* {name} ist beigetreten ({ip})",
   "idle.left": "* verlassen: {minutes} Minuten ohne Aktivität",
   "bye": "tschüss",
-  "status.line": " herdr-talk  |  {name}  |  Peers: {peers}  |  Ctrl+N: Name   /help   Ctrl+C: beenden ",
+  "status.line": " herdr-talk  |  {name}  |  Peers: {peers} ",
   "start.hello": "herdr-talk: du bist '{name}' (TCP-Port {port}). Gib /help für die Befehle ein.",
   "open.no_pane": "herdr-talk open: Bitte in einem herdr-Pane ausführen (HERDR_PANE_ID ist nicht gesetzt).",
   "dock.agent_name": "talk: {count} online",
@@ -63,7 +63,6 @@
   "phone.none": "Noch keine Handy-Adresse: kein Host auf diesem PC.",
   "phone.new_done": "Neuer Token erzeugt. Handys müssen den neuen eingeben.",
   "usage.phone": "Verwendung: /phone   oder   /phone new",
-  "host.name": "Gastgeber",
   "host.badge": "[Gastgeber]",
   "gui.status.starting": "Kein Server gefunden → eigener Server läuft",
   "gui.status.connected": "Mit eigenem Server verbunden",
@@ -117,5 +116,12 @@
   "tui.settings.my_id": "this PC's ID (give it to the peer): {id}",
   "tui.settings.my_ed": "this PC's Ed25519 public key: {key}",
   "tui.settings.my_noise": "this PC's Noise key (verify it with /trust): {key}",
-  "tui.settings.no_keys_yet": "this PC's keys: not yet (start a chat once)"
+  "tui.settings.no_keys_yet": "this PC's keys: not yet (start a chat once)",
+  "room.none_trusted": "Kein bestätigtes Mitglied im Raum, daher nichts gesendet (/trust nötig)",
+  "room.left_out": "{n} Mitglied(er) nicht bestätigt und ausgelassen (/trust nötig)",
+  "room.put_taken": "Die kurze ID dieses PCs ist bereits einem anderen Schlüssel zugeordnet (409). Erneut versuchen",
+  "room.put_failed": "Die Zeile dieses PCs konnte nicht veröffentlicht werden (Netzwerk- oder Serverfehler)",
+  "net.old_version": "{name} ({ip}): alte Version, kann nicht geprüft werden. Beide PCs auf die neue Version bringen",
+  "net.other_reveal": "{name}: ein anderer Prüfwert ist eingetroffen. Verbindung abgelehnt",
+  "peers.code_pending": "(Code ausstehend)"
 }

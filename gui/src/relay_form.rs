@@ -446,6 +446,7 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                         .stroke(egui::Stroke::new(1.0_f32, palette.border))
                         .inner_margin(egui::Margin::same(20))
                         .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
                             ui.colored_label(palette.accent, egui::RichText::new("SECTION 03  DEVICE IDENTITY  /  READ ONLY").monospace());
                             ui.add_space(14.0);
                             if enabled && !form.short_id.is_empty() {

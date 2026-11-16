@@ -185,10 +185,11 @@ class ChatPhoneTest(Base):
         host.release_host()
 
     def test_screen_frame_draws_the_overlay_over_the_bottom_rows_only(self):
-        frame = talk.screen_frame([("hello", False)], "status", "", 40, 10, ["PHONE-ROW-1", "PHONE-ROW-2"])
-        self.assertIn("PHONE-ROW-1", frame)
-        self.assertIn("PHONE-ROW-2", frame)
-        self.assertNotIn("PHONE-ROW", talk.screen_frame([("hello", False)], "status", "", 40, 10))
+        # rows=12: the message rows are 4..6, so the two overlay rows are 5 and 6.
+        frame = talk.screen_frame([("hello", False)], "status", "", 40, 12, ["PHONE-ROW-1", "PHONE-ROW-2"])
+        self.assertIn(talk.relay_form.OVERLAY + "PHONE-ROW-1", frame)
+        self.assertIn(talk.relay_form.OVERLAY + "PHONE-ROW-2", frame)
+        self.assertNotIn("PHONE-ROW", talk.screen_frame([("hello", False)], "status", "", 40, 12))
 
     def test_the_first_node_is_the_host_named_so_unless_it_has_a_name(self):
         import types

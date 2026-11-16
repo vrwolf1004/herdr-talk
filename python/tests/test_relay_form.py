@@ -83,8 +83,8 @@ class FirstRunTests(unittest.TestCase):
 
     def test_screen_shows_both_choices_and_the_countdown(self):
         text = _plain(relay_form.FirstRun().render(80, 24))
-        self.assertIn("1. Local (LAN)", text)
-        self.assertIn("2. Supabase", text)
+        self.assertIn("01. LOCAL NETWORK", text)
+        self.assertIn("02. SUPABASE CLOUD", text)
         self.assertIn("Starting in local mode in 30s", text)
 
 
@@ -115,9 +115,8 @@ class SettingsFormTests(unittest.TestCase):
 
     def test_local_save_keeps_whatever_was_typed(self):
         form = self._form()
-        form.on_key("\t")
         self._type(form, "https://x.supabase.co")
-        form.focus = 4
+        form.focus = 3
         self.assertEqual(form.on_key("\r"), "saved")
         saved = relay_settings.load_saved(self.dir)
         self.assertEqual((saved["mode"], saved["url"]), ("local", "https://x.supabase.co"))
@@ -125,9 +124,9 @@ class SettingsFormTests(unittest.TestCase):
 
     def test_supabase_with_missing_fields_is_refused_and_names_them(self):
         form = self._form()
-        form.on_key(" ")
+        form.open_supabase()
         self.assertEqual(form.mode, "supabase")
-        form.focus = 4
+        form.focus = 3
         self.assertIsNone(form.on_key("\r"))
         self.assertIn("Not saved. Missing: Project URL", form.message)
         self.assertIn("Room id (8 characters)", form.message)
@@ -136,7 +135,7 @@ class SettingsFormTests(unittest.TestCase):
     def test_a_complete_supabase_save(self):
         form = self._form()
         form.open_supabase()
-        self.assertEqual(form.focus, 1)
+        self.assertEqual(form.focus, 0)
         for value in ("https://x.supabase.co", "dummy-test-key", "Alice"):
             self._type(form, value)
             form.on_key("\r")
@@ -230,14 +229,18 @@ class SettingsFormTests(unittest.TestCase):
         self.assertEqual(form.on_key("\x1b"), "cancel")
         self.assertFalse(os.path.exists(os.path.join(self.dir, relay_settings.FILE)))
 
-    def test_backspace_edits_and_the_mode_row_takes_no_text(self):
+    def test_backspace_edits_the_focused_field_and_tab_cycles_the_four(self):
         form = self._form()
-        self._type(form, "zzz")
-        self.assertEqual(form.fields, ["", "", "", ""])
-        form.on_key("\t")
-        self._type(form, "ab")
+        self._type(form, "abc")
         form.on_key("\x7f")
-        self.assertEqual(form.fields[0], "a")
+        self.assertEqual(form.fields, ["ab", "", "", ""])
+        for _ in range(4):
+            form.on_key("\t")
+        self.assertEqual(form.focus, 0, "Tab wraps after the four fields; there is no mode row")
+        form.on_key("\t")
+        self._type(form, "xy")
+        form.on_key("\x7f")
+        self.assertEqual(form.fields, ["ab", "x", "", ""])
 
     def test_the_key_is_drawn_as_a_length_never_as_a_value(self):
         form = self._form()
@@ -247,13 +250,22 @@ class SettingsFormTests(unittest.TestCase):
         self.assertNotIn("dummy-test-key", text)
         self.assertIn("aa" * 32, text)
 
-    def test_saved_values_are_loaded_and_the_mode_row_shows_the_mode(self):
+    def test_saved_values_are_loaded_and_no_mode_row_is_drawn(self):
         relay_settings.save(self.dir, {"mode": "supabase", "url": "https://x.supabase.co", "key": "k", "name": "Alice", "room_code": "ABCD1234"})
         form = self._form()
         self.assertEqual(form.mode, "supabase")
-        self.assertIn("[Supabase]", _plain(form.render(100, 30)))
-        form.toggle_mode()
-        self.assertIn("[Local (LAN)]", _plain(form.render(100, 30)))
+        text = _plain(form.render(100, 30))
+        self.assertNotIn("MODE", text)
+        self.assertIn("▶ Project URL", text)
+
+    def test_a_frame_overwrites_rows_in_place_without_clearing_the_screen(self):
+        frame = self._form().render(100, 30)
+        self.assertNotIn("\x1b[2J", frame)
+        self.assertIn(relay_form.place_row(3, "SUPABASE SETTINGS", relay_form.ACCENT + relay_form.BOLD), frame)
+        self.assertIn(relay_form.place_row(29, ""), frame)   # an unused row is blanked, so nothing from an older frame stays
+        self.assertIn("\x1b[30;1H", frame)   # the status line is the bottom row
+        self.assertIn("[SYSTEM READY]", frame)
+        self.assertIn("made by Python" + relay_form.RESET + relay_form.BACKGROUND + "\x1b[K", frame)
 
     def test_environment_values_are_marked(self):
         os.environ["HERDR_TALK_RELAY_URL"] = "https://env.supabase.co"
@@ -261,7 +273,8 @@ class SettingsFormTests(unittest.TestCase):
             text = _plain(self._form().render(100, 30))
         finally:
             del os.environ["HERDR_TALK_RELAY_URL"]
-        self.assertIn("Project URL: (environment)", text)
+        self.assertIn("Project URL", text)
+        self.assertIn("[(environment)", text)
 
 
 if __name__ == "__main__":

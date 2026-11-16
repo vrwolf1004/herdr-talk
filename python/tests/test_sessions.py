@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import sys
@@ -121,6 +122,20 @@ class SessionsTest(unittest.TestCase):
     def test_the_default_folder_is_never_removed_on_stop(self):
         self.assertIsNone(sessions._remove_session_folder(sessions.DEFAULT_SESSION, self.base, 1, alive=lambda pid: False))
         self.assertTrue(os.path.isdir(self.base))
+
+    def test_a_pid_with_another_started_time_is_not_live(self):
+        folder = self._node("ABCD2348")
+        start = sessions.process_start_time(os.getpid())
+        if start is None:
+            self.skipTest("this system does not report process start times")
+        control = os.path.join(folder, f"control-{os.getpid()}.json")
+        for recorded, live in ((start + 1, False), (start, True), (None, True)):
+            with open(control, "w", encoding="utf-8") as out:
+                json.dump({"port": 1, "started": recorded}, out)
+            self.assertIs(sessions._has_live_node(folder, lambda pid: True, None), live, recorded)
+        with open(control, "w", encoding="utf-8") as out:
+            json.dump({"port": 1}, out)  # a file from before "started" was written: the pid alone counts
+        self.assertTrue(sessions._has_live_node(folder, lambda pid: True, None))
 
     def test_list_is_empty_before_any_session(self):
         self.assertEqual(sessions.list_sessions(self.base), [])
