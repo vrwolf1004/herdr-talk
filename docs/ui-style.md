@@ -9,7 +9,7 @@ herdr-talk 의 화면은 두 종류로 나눈다. 같은 색 팔레트를 쓰되
 - 선택 화면: `BASE STATION` 이 메인 (`[PRIMARY] BASE STATION`, `CONNECT`), Supabase 는 보조 텍스트 링크 (`ALTERNATIVE CONNECTION` 아래 밑줄 링크).
 - 설정 화면 (Supabase 전용): 제목 `SUPABASE SETTINGS` 가운데 정렬, 콘텐츠 최대 680px 가운데 열, 가운데 스크롤 영역, 하단 고정 버튼 (`CANCEL`, `SAVE SETTINGS`, 오른쪽 정렬).
   - 섹션: `SECTION 01 SUPABASE CONNECTION` (URL, publishable 키), `SECTION 02 ROOM SETTINGS` (표시 이름 = 읽기 전용 고유 코드, 방 ID 8자리, `CREATE ROOM`), `SECTION 03 DEVICE IDENTITY` (DEVICE ID 와 COPY 버튼, 공개키는 작은 흐린 글씨).
-  - 로컬/자체, 연결 방식 선택, 안내 문구는 설정 화면에 두지 않는다.
+  - BASE STATION / CLOUD SERVICE 선택, 안내 문구는 설정 화면에 두지 않는다.
 - 채팅 화면: `BASE STATION : CONNECTED`, `COMMUNICATION LOG`, `CONNECTED NODES`, `SEND` 버튼.
 - 하단 상태 줄: 왼쪽 시스템 상태 (또는 릴레이 상태 문구), 오른쪽 `BASE STATION`.
 - 푸터: 없음 (GUI 는 창 하단 상태 줄 사용).
@@ -32,7 +32,7 @@ KEYBOARD GUIDE
 [SYSTEM STATUS]                          made by Rust / Python   <- 맨 아래 줄 오른쪽 끝
 ```
 
-- 메뉴: 버튼 대신 텍스트 메뉴. 선택 항목은 `▶ 01. LOCAL NETWORK`, 설명은 다음 줄. 선택 항목만 주 녹색.
+- 메뉴: 버튼 대신 텍스트 메뉴. 선택 항목은 `▶ 01. BASE STATION`, 설명은 다음 줄. 선택 항목만 주 녹색.
 - 입력: 박스 반복 없이 `DISPLAY NAME : [USER NAME________]` 형태. 포커스는 커서나 강조색.
 - 채팅: `[12:30:21] USER_A > Hello.` 형식, 하단 `MESSAGE > _`.
 - 상태 태그: `[SYSTEM READY]`, `[CONNECTING...]`, `[CONNECTED]`, `[DISCONNECTED]`, `[ERROR]`. 정상 녹색, 대기 노란색, 오류 빨간색.

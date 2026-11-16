@@ -53,8 +53,8 @@
   "phone.new_done": "Новый токен создан. Телефонам нужно ввести новый.",
   "usage.phone": "использование: /phone   или   /phone new",
   "host.badge": "[хост]",
-  "mode.local": "Локально (LAN)",
-  "mode.supabase": "Supabase",
+  "mode.local": "BASE STATION",
+  "mode.supabase": "CLOUD SERVICE",
   "mode.hint_local": "Чат только по LAN. Ничего не отправляется в Supabase.",
   "mode.hint_supabase": "Чат только через Supabase. Сообщения не идут по LAN.",
   "mode.status": "режим: {mode}",
@@ -69,5 +69,7 @@
   "settings.cancel_discard": "Настройки закрыты без сохранения.",
   "peer.old_version": "{name} ({ip}): старая версия, проверить нельзя. Обновите оба ПК до новой версии",
   "trust.wrong_code": "{name}: пришло другое значение подтверждения. Соединение отклонено",
-  "relay.room_not_sent": "relay: сообщения комнаты пока не отправляются, сообщение не отправлено"
+  "room.none_trusted": "Нет подтверждённых участников комнаты, ничего не отправлено (нужен /trust)",
+  "room.left_out": "Пропущено неподтверждённых участников: {n} (нужен /trust)",
+  "room.send_failed": "Сообщение в комнату не отправлено: {error}"
 }

@@ -53,8 +53,8 @@
   "phone.new_done": "New token made. Phones must enter the new one.",
   "usage.phone": "usage: /phone   or   /phone new",
   "host.badge": "[host]",
-  "mode.local": "Local (LAN)",
-  "mode.supabase": "Supabase",
+  "mode.local": "BASE STATION",
+  "mode.supabase": "CLOUD SERVICE",
   "mode.hint_local": "Chat over the LAN only. Nothing is sent to Supabase.",
   "mode.hint_supabase": "Chat through Supabase only. Messages do not go over the LAN.",
   "mode.status": "mode: {mode}",
@@ -69,5 +69,7 @@
   "settings.cancel_discard": "Left the settings without saving.",
   "peer.old_version": "{name} ({ip}): this is an old version, so it cannot be verified. Update both PCs to the new version",
   "trust.wrong_code": "{name}: a different confirmation value arrived. The connection was refused",
-  "relay.room_not_sent": "relay: room messages are not sent yet, the message was not sent"
+  "room.none_trusted": "No confirmed member in the room, so nothing was sent (/trust needed)",
+  "room.left_out": "{n} member(s) not confirmed and left out (/trust needed)",
+  "room.send_failed": "Room message failed: {error}"
 }

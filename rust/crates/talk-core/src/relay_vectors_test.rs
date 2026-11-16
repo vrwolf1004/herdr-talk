@@ -102,3 +102,59 @@ fn rust_signs_the_v3_row_like_the_javascript_side() {
     assert_eq!(store::to_hex(&signature.to_bytes()), text(outputs, "rowSignature"));
     assert!(signing.verifying_key().verify(row_message.as_bytes(), &signature).is_ok());
 }
+
+// Room messages (relay_chat/room_relay.rs, relay_rest.rs). The values come from the Python side (core/room.py,
+// core/relay_rest.py); Rust computes the signatures and the digest again and reads the Noise ciphertext itself.
+#[test]
+fn rust_computes_the_room_message_values_like_the_python_side() {
+    let file = vector_file();
+    let inputs = &file["inputs"];
+    let outputs = &file["outputs"];
+    let room_code = text(inputs, "roomCode");
+    let ts = inputs["roomTs"].as_u64().unwrap();
+    let nonce = text(inputs, "roomNonce");
+    let message_id = text(inputs, "roomMessageId");
+
+    let sender_seed: [u8; 32] = bytes(inputs, "roomSenderSeed").try_into().unwrap();
+    let sender = SigningKey::from_bytes(&sender_seed);
+    let sender_pk = store::to_hex(&sender.verifying_key().to_bytes());
+    assert_eq!(sender_pk, text(outputs, "roomSenderPublic"));
+
+    let recipient_pk = text(outputs, "roomRecipientPublic");
+    let ciphertext = text(outputs, "roomCiphertext");
+    let digest = relay_rest::deliveries_digest(&[relay_rest::Delivery { recipient_pk: recipient_pk.clone(), ciphertext: ciphertext.clone() }]);
+    assert_eq!(digest, text(outputs, "roomDeliveriesDigest"));
+
+    let post_lines = [relay_rest::POST_TAG, "post", &room_code, &sender_pk, &message_id, &ts.to_string(), &nonce, &digest].join("\n");
+    assert_eq!(post_lines, text(outputs, "roomPostSignedText"));
+    assert_eq!(store::to_hex(&sender.sign(post_lines.as_bytes()).to_bytes()), text(outputs, "roomPostSig"));
+
+    let recipient_seed: [u8; 32] = bytes(inputs, "roomRecipientSeed").try_into().unwrap();
+    let recipient = SigningKey::from_bytes(&recipient_seed);
+    assert_eq!(store::to_hex(&recipient.verifying_key().to_bytes()), recipient_pk);
+    let fetch_lines = [relay_rest::FETCH_TAG, "fetch", &room_code, &recipient_pk, &ts.to_string(), &nonce].join("\n");
+    assert_eq!(fetch_lines, text(outputs, "roomFetchSignedText"));
+    assert_eq!(store::to_hex(&recipient.sign(fetch_lines.as_bytes()).to_bytes()), text(outputs, "roomFetchSig"));
+
+    // The Python ciphertext opens with the recipient's Noise key, to the payload and the sender's Noise key.
+    let mut responder = crate::net::noise_builder()
+        .local_private_key(&bytes(inputs, "roomRecipientNoisePrivate"))
+        .and_then(|builder| builder.build_responder())
+        .unwrap();
+    let mut buffer = vec![0u8; 65535];
+    let n = responder.read_message(&store::from_hex(&ciphertext).unwrap(), &mut buffer).unwrap();
+    assert_eq!(&buffer[..n], text(outputs, "roomPayloadJson").as_bytes());
+    assert_eq!(responder.get_remote_static().unwrap(), bytes(outputs, "roomSenderNoisePublic").as_slice());
+
+    // The Python fetch answer reads into the same row.
+    let rows = relay_rest::read_fetch_response(200, &text(outputs, "roomFetchAnswer")).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].message_id, message_id);
+    assert_eq!(rows[0].ciphertext, ciphertext);
+    assert_eq!(rows[0].ts, ts);
+
+    // The replay cache: the first accept is true, the same nonce again is refused.
+    let mut cache = crate::relay_replay::NonceCache::default();
+    assert_eq!(cache.accept(&nonce, ts, ts), text(outputs, "roomNonceFirstAccept") == "true");
+    assert_eq!(cache.accept(&nonce, ts, ts), text(outputs, "roomNonceSecondAccept") == "true");
+}

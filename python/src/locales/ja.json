@@ -53,8 +53,8 @@
   "phone.new_done": "新しいトークンを作りました。スマホで新しいトークンを入力してください。",
   "usage.phone": "使い方: /phone   または   /phone new",
   "host.badge": "[ホスト]",
-  "mode.local": "ローカル (LAN)",
-  "mode.supabase": "Supabase",
+  "mode.local": "BASE STATION",
+  "mode.supabase": "CLOUD SERVICE",
   "mode.hint_local": "LAN だけでチャットします。Supabase には何も送りません。",
   "mode.hint_supabase": "Supabase だけでチャットします。メッセージは LAN を通りません。",
   "mode.status": "方式: {mode}",
@@ -69,5 +69,7 @@
   "settings.cancel_discard": "保存せずに設定を閉じました。",
   "peer.old_version": "{name} ({ip}): 旧バージョンのため確認できません。両方のPCを新しいバージョンに更新してください",
   "trust.wrong_code": "{name}: 別の確認値が届きました。接続を拒否しました",
-  "relay.room_not_sent": "relay: ルームメッセージはまだ送信できません。メッセージは送信されませんでした"
+  "room.none_trusted": "確認済みのルームメンバーがいないため送信しませんでした（/trust が必要）",
+  "room.left_out": "未確認のメンバー{n}人を除いて送信しました（/trust が必要）",
+  "room.send_failed": "ルームメッセージの送信に失敗: {error}"
 }
