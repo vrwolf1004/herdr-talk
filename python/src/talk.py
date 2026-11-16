@@ -387,8 +387,7 @@ class Chat:
         if self.relay is None:
             self.emit(Notice("relay.not_sent"))
             return True
-        self.relay.send(text)
-        self.emit(Line(f"{self.me['name']} {t('chat.you')}: {text}", mine=True))
+        self.relay.send(text)  # the relay thread shows the line once it is sent (Message, as on the LAN)
         return True
 
     def handle(self, text):
@@ -504,6 +503,15 @@ class RelayHooks:
             self.chat.relay_status = event.text  # the status row reads it at the next redraw
         else:
             self.chat.emit(event)
+
+    def trusts(self, noise_key):
+        return self.chat.trusts(noise_key)
+
+    def trusted_name(self, noise_key):
+        return self.chat.trusted_name(noise_key)
+
+    def my_name(self):
+        return self.chat.me["name"]
 
 
 

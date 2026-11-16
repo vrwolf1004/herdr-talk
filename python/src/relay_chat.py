@@ -12,25 +12,27 @@ import queue
 import threading
 import time
 
-from core import relay_key
-from core.events import Notice, Status
-from core import relay_rest
+from core import ed25519, relay_key, relay_rest, room, store
+from core.events import Message, Notice, Status
 import relay_settings
 
 SLICE_SECONDS = 0.2
 WAIT_SECONDS = 30
+POLL_SECONDS = 2         # how often the inbox is asked (Rust room_relay.rs POLL)
+MEMBERS_SECONDS = 10     # how often the room is joined again for its members (Rust MEMBERS_EVERY)
 DEAD_LEAVE_SECONDS = 3  # shorter than a normal request: several dead folders may wait in line
 
 
 class Session:
-    """The Ed25519 seed of this PC (row signing and the room join)."""
+    """This PC's keys: the Ed25519 seed (row signing, the room join) and the Noise secret (room messages)."""
 
-    def __init__(self, seed):
+    def __init__(self, seed, noise_secret=None):
         self.seed = seed
+        self.noise_secret = noise_secret
 
 
 def make_session(state):
-    return Session(relay_key.load_or_create(state))
+    return Session(relay_key.load_or_create(state), store.load_or_create_identity(state)[1])
 
 
 class Relay:
@@ -45,6 +47,11 @@ class Relay:
         self.outbox = queue.Queue()
         self.stop_event = threading.Event()
         self.thread = None
+        self.members = {}  # pk hex -> Noise public key bytes, from the last join
+        self.names = {}    # pk hex -> the 대화명 it was shown under (a clash gets the key's first 4 characters)
+        self.since = None
+        self.own_pk = None  # this PC's Ed25519 key hex, set when the relay starts
+        self.cache = room.NonceCache()
 
     def start(self):
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -54,19 +61,64 @@ class Relay:
         self.stop_event.set()
 
     def send(self, text):
-        """Queue a typed text. Room messages are not sent yet, so the relay thread only tells the user."""
+        """Queue a typed text for the room (the relay thread sends it)."""
         self.outbox.put(text)
 
+    def _send_text(self, text):
+        """One text to every trusted member, one Noise message each in one post. Untrusted members are left out and
+        the user is told how many. Mirrors Rust room_relay.rs send_text."""
+        others = [(pk, noise) for pk, noise in self.members.items() if pk != self.own_pk]
+        trusted = [(pk, noise) for pk, noise in others if self.hooks.trusts(noise)]
+        if not trusted:
+            self.hooks.emit(Notice("room.none_trusted"))
+            return
+        try:
+            ok = room.post_text(self.config, self.session.seed, self.settings["room_code"], self.session.noise_secret,
+                                trusted, self.hooks.my_name(), text)
+        except (OSError, ValueError) as error:
+            self.hooks.emit(Notice("room.send_failed", {"error": str(error)}))
+            return
+        if not ok:
+            self.hooks.emit(Notice("room.send_failed", {"error": "server"}))
+            return
+        self.hooks.emit(Message(self.hooks.my_name(), text, mine=True))
+        left_out = len(others) - len(trusted)
+        if left_out:
+            self.hooks.emit(Notice("room.left_out", {"n": left_out}))
+
+    def _fetch(self):
+        """Show the inbox rows that check out (Rust fetch_round + show_message)."""
+        rows = room.fetch_rows(self.config, self.session.seed, self.settings["room_code"], self.since)
+        for row in rows:
+            self.since = row["created_at"]
+            shown = room.check_row(row, self.members, self.session.noise_secret, self.hooks.trusted_name, self.cache, int(time.time()))
+            if shown is None:
+                continue
+            name, text = shown
+            self.names[row["sender_pk"]] = name
+            self.hooks.emit(Message(room.display_name(self.names, row["sender_pk"], name), text))
+
+    def _load_members(self):
+        """Read the room's member keys and their Noise keys (the peers table)."""
+        info = relay_rest.join_room(self.config, self.session.seed, self.settings["room_code"], self.settings["name"])
+        pks = [pk for pk in info["members"] if pk != self.own_pk]
+        noise_keys = {}
+        if pks:
+            status, body = relay_rest._send(relay_rest.members_noise_request(self.config, pks))
+            noise_keys = {pk: bytes.fromhex(noise) for pk, noise in relay_rest.read_members_noise(status, body)}
+        self.members = {pk: noise_keys[pk] for pk in pks if pk in noise_keys}
+        return info
+
     def _wait(self, seconds):
-        """Sleep in slices so a stop is seen. Texts typed meanwhile are not sent: a notice says so."""
+        """Sleep in slices so a stop is seen. Sends queued meanwhile are sent in the slice."""
         until = time.monotonic() + seconds
         while time.monotonic() < until and not self.stop_event.is_set():
             while True:
                 try:
-                    self.outbox.get_nowait()
+                    text = self.outbox.get_nowait()
                 except queue.Empty:
                     break
-                self.hooks.emit(Notice("relay.room_not_sent"))
+                self._send_text(text)
             time.sleep(SLICE_SECONDS)
 
     def _join_room(self):
@@ -104,10 +156,28 @@ class Relay:
                 self._wait(WAIT_SECONDS)
                 if self.stop_event.is_set():
                     return
-        self.hooks.emit(Status(self._join_room()))
+        self.own_pk = ed25519.public_key(self.session.seed).hex()
+        joined = False
+        next_members = next_fetch = 0.0
         while not self.stop_event.is_set():
-            self._wait(WAIT_SECONDS)
-
+            now = time.monotonic()
+            if now >= next_members:
+                next_members = now + MEMBERS_SECONDS
+                try:
+                    info = self._load_members()
+                    joined = True
+                    self.hooks.emit(Status(f"relay: 방 참가 (멤버 {len(info['members'])}명)"))
+                except (OSError, ValueError) as error:
+                    joined = False
+                    self.hooks.emit(Status(f"relay: room join failed: {error}"))
+            if joined and now >= next_fetch:
+                next_fetch = now + POLL_SECONDS
+                try:
+                    self._fetch()
+                except (OSError, ValueError) as error:
+                    if joined:
+                        self.hooks.emit(Status(f"relay: {error}"))
+            self._wait(SLICE_SECONDS)
 
 def start(hooks, state, settings):
     """Start the room relay for `settings`. Returns (Relay or None, status text). None: the relay is off (local mode, or

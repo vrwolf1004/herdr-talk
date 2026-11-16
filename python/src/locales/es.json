@@ -69,5 +69,7 @@
   "settings.cancel_discard": "Salido de los ajustes sin guardar.",
   "peer.old_version": "{name} ({ip}): versión antigua, no se puede verificar. Actualice ambos PC a la nueva versión",
   "trust.wrong_code": "{name}: llegó otro valor de confirmación. Conexión rechazada",
-  "relay.room_not_sent": "relay: los mensajes de sala aún no se envían, el mensaje no se envió"
+  "room.none_trusted": "Ningún miembro confirmado en la sala, no se envió nada (hace falta /trust)",
+  "room.left_out": "{n} miembro(s) sin confirmar, omitido(s) (hace falta /trust)",
+  "room.send_failed": "El mensaje de sala falló: {error}"
 }

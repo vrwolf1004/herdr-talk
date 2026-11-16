@@ -6,6 +6,7 @@ The key is the publishable key; the secret key is never read or stored here.
 Row writes are signed (format v3). The signed text carries the short id (8 characters, [A-Z0-9]) of this PC. The short id is unique on the server; a write that takes an id owned by another key gets 409.
 """
 
+import hashlib
 import json
 import re
 import secrets
@@ -21,6 +22,10 @@ URL_VARIABLE = "HERDR_TALK_RELAY_URL"
 KEY_VARIABLE = "HERDR_TALK_RELAY_KEY"
 PUT_TAG = "herdr-talk-put-v3"
 DELETE_TAG = "herdr-talk-del-v1"
+POST_TAG = "herdr-talk-msg-v1"
+FETCH_TAG = "herdr-talk-fetch-v1"
+MAX_DELIVERIES = 8
+MAX_CIPHERTEXT_HEX = 32768
 TIMEOUT_SECONDS = 5
 
 _PK_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -83,6 +88,10 @@ NAME_BLOCKED = {"Cc", "Cf", "Co", "Cs", "Zl", "Zp", "Zs"}
 
 def _common_headers(config):
     return {"apikey": config.key, "Authorization": f"Bearer {config.key}"}
+
+
+def _valid_ciphertext(text):
+    return isinstance(text, str) and 0 < len(text) <= MAX_CIPHERTEXT_HEX and len(text) % 2 == 0 and re.fullmatch(r"[0-9a-f]+", text) is not None
 
 
 def put_message(pk, noise_pk, short_id, name, ts, nonce):
@@ -264,3 +273,114 @@ def create_room(config, seed, name, timeout=TIMEOUT_SECONDS):
 def join_room(config, seed, room_code, name, timeout=TIMEOUT_SECONDS):
     """Join a room by code; returns the room info from read_join_room."""
     return read_join_room(*_send(join_room_request(config, seed, room_code, name), timeout))
+
+
+# Room messages (Rust relay_rest.rs post_message_body, fetch_message_body, read_fetch_response, members_noise_keys).
+def deliveries_digest(deliveries):
+    """SHA-256 (hex) over the deliveries in the order given: one "recipient ciphertext" line each."""
+    text = chr(10).join(f"{row['recipient_pk']} {row['ciphertext']}" for row in deliveries)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def post_message_body(seed, room_code, message_id, ts, nonce, deliveries):
+    """The JSON body of a post-message request. Recipients must be unique and ascending (the signed digest depends on
+    it). Raises ValueError for bad input before any signature is made."""
+    if not valid_room_code(room_code) or not re.fullmatch(r"[0-9a-f]{32}", message_id or "") or not _NONCE_PATTERN.match(nonce or ""):
+        raise ValueError("room code, message id and nonce must have their fixed shapes")
+    if not 1 <= len(deliveries) <= MAX_DELIVERIES:
+        raise ValueError("a message goes to 1 to 8 recipients")
+    for index, row in enumerate(deliveries):
+        if not valid_pk(row["recipient_pk"]) or not _valid_ciphertext(row["ciphertext"]):
+            raise ValueError("recipient key or ciphertext is not valid")
+        if index > 0 and row["recipient_pk"] <= deliveries[index - 1]["recipient_pk"]:
+            raise ValueError("recipients must be unique and in ascending order")
+    sender_pk = ed25519.public_key(seed).hex()
+    lines = [POST_TAG, "post", room_code, sender_pk, message_id, str(ts), nonce, deliveries_digest(deliveries)]
+    sig = ed25519.sign(seed, chr(10).join(lines).encode("utf-8")).hex()
+    return json.dumps({"room_code": room_code, "sender_pk": sender_pk, "message_id": message_id, "ts": ts, "nonce": nonce,
+                       "deliveries": deliveries, "sig": sig}, ensure_ascii=False)
+
+
+def fetch_message_body(seed, room_code, since, ts, nonce):
+    """The JSON body of a fetch-messages request: this recipient's inbox for the room, after `since` (a filter only)."""
+    if not valid_room_code(room_code) or not _NONCE_PATTERN.match(nonce or ""):
+        raise ValueError("room code and nonce must have their fixed shapes")
+    recipient_pk = ed25519.public_key(seed).hex()
+    lines = [FETCH_TAG, "fetch", room_code, recipient_pk, str(ts), nonce]
+    body = {"room_code": room_code, "recipient_pk": recipient_pk, "ts": ts, "nonce": nonce,
+            "sig": ed25519.sign(seed, chr(10).join(lines).encode("utf-8")).hex()}
+    if since is not None:
+        body["since"] = since
+    return json.dumps(body, ensure_ascii=False)
+
+
+def _function_request(config, name, body):
+    headers = _common_headers(config)
+    headers["Content-Type"] = "application/json"
+    return {"method": "POST", "url": f"{config.url}/functions/v1/{name}", "headers": headers, "body": body}
+
+
+def post_message_request(config, body):
+    return _function_request(config, "post-message", body)
+
+
+def fetch_messages_request(config, body):
+    return _function_request(config, "fetch-messages", body)
+
+
+def read_fetch_response(status, body):
+    """The message rows for this recipient. Anything malformed raises ValueError (the whole answer is dropped)."""
+    if status != 200:
+        raise ValueError(f"status {status}")
+    try:
+        value = json.loads(body)
+    except ValueError as error:
+        raise ValueError("answer is not JSON") from error
+    rows = value.get("messages") if isinstance(value, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("answer has no messages list")
+    out = []
+    for row in rows:
+        if not re.fullmatch(r"[0-9a-f]{32}", str(row.get("message_id", ""))):
+            raise ValueError("message id is not valid")
+        if not valid_pk(row.get("sender_pk")):
+            raise ValueError("sender key is not valid")
+        if not isinstance(row.get("ts"), int) or isinstance(row.get("ts"), bool):
+            raise ValueError("message ts is not a number")
+        if not _NONCE_PATTERN.match(str(row.get("nonce", ""))):
+            raise ValueError("message nonce is not valid")
+        if not _valid_ciphertext(row.get("ciphertext")):
+            raise ValueError("ciphertext is not valid")
+        if not isinstance(row.get("created_at"), str):
+            raise ValueError("message time is missing")
+        out.append({"message_id": row["message_id"], "sender_pk": row["sender_pk"], "ts": row["ts"], "nonce": row["nonce"],
+                    "ciphertext": row["ciphertext"], "created_at": row["created_at"]})
+    return out
+
+
+def members_noise_request(config, member_pks):
+    """GET the Noise keys of the members (peers table): pk=in.(...)&select=pk,noise_pk. Empty list: no request."""
+    if any(not valid_pk(pk) for pk in member_pks):
+        raise ValueError("member key is not valid")
+    headers = _common_headers(config)
+    headers["Accept"] = "application/json"
+    return {"method": "GET", "url": f"{config.url}/rest/v1/peers?pk=in.({','.join(member_pks)})&select=pk,noise_pk",
+            "headers": headers, "body": None}
+
+
+def read_members_noise(status, body):
+    """(pk, noise_pk) pairs from the peers answer. ValueError when the answer is not a list of valid rows."""
+    if status != 200:
+        raise ValueError(f"status {status}")
+    try:
+        rows = json.loads(body)
+    except ValueError as error:
+        raise ValueError("answer is not JSON") from error
+    if not isinstance(rows, list):
+        raise ValueError("answer is not a list")
+    out = []
+    for row in rows:
+        if not valid_pk(row.get("pk")) or not valid_pk(row.get("noise_pk")):
+            raise ValueError("row key is not valid")
+        out.append((row["pk"], row["noise_pk"]))
+    return out

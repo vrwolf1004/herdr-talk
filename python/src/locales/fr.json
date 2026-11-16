@@ -69,5 +69,7 @@
   "settings.cancel_discard": "Paramètres quittés sans enregistrer.",
   "peer.old_version": "{name} ({ip}) : ancienne version, vérification impossible. Mettez les deux PC à la nouvelle version",
   "trust.wrong_code": "{name} : une autre valeur de confirmation est arrivée. Connexion refusée",
-  "relay.room_not_sent": "relay : les messages de salon ne sont pas encore envoyés, le message n'a pas été envoyé"
+  "room.none_trusted": "Aucun membre confirmé dans le salon, rien n'a été envoyé (/trust requis)",
+  "room.left_out": "{n} membre(s) non confirmé(s) laissé(s) de côté (/trust requis)",
+  "room.send_failed": "Échec du message de salon : {error}"
 }

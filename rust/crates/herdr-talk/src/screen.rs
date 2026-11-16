@@ -148,16 +148,26 @@ pub(crate) fn status_tag(relay: &str) -> (&'static str, Tone) {
     }
 }
 
-/// A classic screen: header, divider, the body (its first row is the title), divider, keyboard guide and the status line.
+/// The app name at the top left, with its icon (as the Python edition shows it).
+const APP_NAME: &str = "▣ HERDR-TALK";
+
+/// The maker line: alone on the bottom row, at the right end.
+fn footer(width: usize) -> Row {
+    split("", Tone::Dim, "made by Rust", Tone::Dim, width)
+}
+
+/// A classic screen: header, divider, the body (its first row is the title), divider, keyboard guide, the status line and
+/// the maker line alone on the bottom row.
 pub(crate) fn classic(body: Vec<Row>, guide: &str, relay: &str, width: usize, rows: usize) -> Vec<Row> {
     let (tag, tone) = status_tag(relay);
-    let mut frame = vec![split("HERDR-TALK", Tone::Title, "SYS.VER 1.0", Tone::Dim, width), dash(width)];
-    let room = rows.saturating_sub(frame.len() + 3);
+    let mut frame = vec![split(APP_NAME, Tone::Title, "SYS.VER 1.0", Tone::Dim, width), dash(width)];
+    let room = rows.saturating_sub(frame.len() + 4);
     frame.extend(body.into_iter().take(room));
-    frame.resize_with(rows.saturating_sub(3), Vec::new);
+    frame.resize_with(rows.saturating_sub(4), Vec::new);
     frame.push(dash(width));
     frame.push(vec![(guide.to_string(), Tone::Dim)]);
-    frame.push(split(tag, tone, "made by Rust", Tone::Text, width));
+    frame.push(vec![(tag.to_string(), tone)]);
+    frame.push(footer(width));
     frame
 }
 
@@ -293,7 +303,7 @@ fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows:
     let messages: Vec<Row> = lines.iter().zip(times).flat_map(|(line, time)| message_rows(line, &time, width - 1)).collect();
     let name = chat.me.lock().unwrap().name.clone();
     let fresh = chat.fresh_peers();
-    let area = rows - 8;
+    let area = rows - 9;
     let mut body: Vec<Row> = messages[messages.len().saturating_sub(area)..].to_vec();
     // Fill the message area first: with few messages the overlay rows must still sit inside it.
     body.resize_with(area, Vec::new);
@@ -313,15 +323,17 @@ fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows:
     let (input, cursor) = input_row(input, width);
     let nodes = vec![("CONNECTED NODES  ".to_string(), Tone::Title), (nodes_text(&name, chat.is_host(), &fresh), Tone::Text)];
 
-    let mut frame = vec![split("HERDR-TALK", Tone::Title, "SYS.VER 1.0", Tone::Dim, width), dash(width), split("COMMUNICATION LOG", Tone::Title, &info, Tone::Dim, width)];
+    let mut frame = vec![split(APP_NAME, Tone::Title, "SYS.VER 1.0", Tone::Dim, width), dash(width), vec![("COMMUNICATION LOG".to_string(), Tone::Title)]];
     frame.extend(body);
     frame.push(nodes);
-    frame.push(input);
     frame.push(dash(width));
     // shortcut: the keyboard guide is English-only like the other Ctrl key notes; move it to the locales with them.
     frame.push(vec![("Enter: SEND · /help: COMMANDS · Ctrl+N: NAME · Ctrl+P: PHONE · Ctrl+R: SETTINGS · Ctrl+C: QUIT".to_string(), Tone::Dim)]);
+    frame.push(input);
+    // The status line sits above the maker line, as in the Python edition: the connection tag, then the app name, name and peers.
     let (tag, tone) = status_tag(&relay);
-    frame.push(split(tag, tone, "made by Rust", Tone::Text, width));
+    frame.push(vec![(format!("{tag}  "), tone), (info, Tone::Dim)]);
+    frame.push(footer(width));
     (frame, cursor)
 }
 
@@ -485,7 +497,7 @@ fn render(out: &mut Stdout, chat: &Chat, input: &str, stamps: &mut Stamps, drawn
     let (frame, cursor) = chat_frame(chat, input, stamps, width, usize::from(rows));
     paint(out, width, usize::from(rows), frame, drawn)?;
     // The cursor goes back to the end of the typed text on the input row (the row above the divider and guide).
-    queue!(out, cursor::MoveTo(cursor as u16, rows - 4), cursor::Show)?;
+    queue!(out, cursor::MoveTo(cursor as u16, rows - 3), cursor::Show)?;
     out.flush()
 }
 
@@ -592,6 +604,20 @@ mod tests {
         let peer = |name: &str| Peer { id: name.into(), name: name.into(), ip: String::new(), port: 1, seen: Instant::now(), key: None };
         assert_eq!(nodes_text("Ann", false, &[]), "YOU Ann");
         assert_eq!(nodes_text("Ann", true, &[peer("Bob"), peer("Cy")]), "HOST/YOU Ann · PEER Bob · PEER Cy");
+    }
+
+    #[test]
+    fn the_chat_rows_follow_the_python_order_with_the_maker_alone_at_the_bottom() {
+        let (frame, _) = chat_frame(&chat(), "", &mut Stamps::default(), 60, 20);
+        let texts: Vec<String> = frame.iter().map(text_of).collect();
+        assert_eq!(texts.len(), 20);
+        assert!(texts[0].starts_with("▣ HERDR-TALK"), "{}", texts[0]);
+        assert!(texts[2].starts_with("COMMUNICATION LOG"), "{}", texts[2]);
+        assert!(texts[16].starts_with("Enter: SEND"), "the guide: {}", texts[16]);
+        assert!(texts[17].starts_with("MESSAGE > "), "the input: {}", texts[17]);
+        assert!(texts[18].starts_with("[SYSTEM READY]  "), "the status line: {}", texts[18]);
+        assert_eq!(texts[19].trim(), "made by Rust", "the bottom row holds only the maker");
+        assert!(texts[19].starts_with(' '), "the maker is at the right end");
     }
 
     #[test]

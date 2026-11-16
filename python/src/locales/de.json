@@ -69,5 +69,7 @@
   "settings.cancel_discard": "Einstellungen ohne Speichern verlassen.",
   "peer.old_version": "{name} ({ip}): alte Version, Überprüfung nicht möglich. Beide PCs auf die neue Version aktualisieren",
   "trust.wrong_code": "{name}: Anderer Bestätigungswert empfangen. Verbindung abgelehnt",
-  "relay.room_not_sent": "relay: Raumnachrichten werden noch nicht gesendet, die Nachricht wurde nicht gesendet"
+  "room.none_trusted": "Kein bestätigtes Raummitglied, daher nichts gesendet (/trust nötig)",
+  "room.left_out": "{n} unbestätigte(s) Mitglied(er) ausgelassen (/trust nötig)",
+  "room.send_failed": "Raumnachricht fehlgeschlagen: {error}"
 }

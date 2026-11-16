@@ -79,7 +79,7 @@ class ModeTest(unittest.TestCase):
             self.assertTrue(self.chat.handle("hello"))
         send_to.assert_not_called()
         self.assertEqual(self.chat.relay.sent, ["hello"])
-        self.assertTrue(any(mine and "hello" in line for line, mine in self.lines))
+        self.assertEqual(self.lines, [], "the relay thread shows the sent line, not the chat")
 
     def test_supabase_mode_without_a_running_relay_says_so(self):
         self.chat.supabase = True
