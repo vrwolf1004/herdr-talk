@@ -1320,7 +1320,9 @@ def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=
     shown_typed = tail(typed, cols - 13)
     typed_shown = f"{ACCENT}{shown_typed}_" if typed else f"{MUTED}{t('chat.input_hint')}"
     put(rows - 2, f"MESSAGE > {typed_shown}")
-    put(rows - 1, f"{ACCENT}{fit(status, cols - 1)}")
+    # The status tag sits at the right end of the status row, as on the Rust screen (the text before it is cut to fit).
+    tag = relay_form.TAG
+    put(rows - 1, f"{ACCENT}{fit(status, cols - 1 - char_width(tag) - 1)}{' ' * max(0, cols - 1 - char_width(tag) - char_width(fit(status, cols - 1 - char_width(tag) - 1)))}{tag}")
     # The bottom row: made by Python on the right, nothing else.
     footer = fit(relay_form.FOOTER, cols - 1)
     put(rows, f"{' ' * (cols - 1 - char_width(footer))}{MUTED}{footer}")

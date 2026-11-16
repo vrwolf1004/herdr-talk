@@ -172,6 +172,9 @@ Found by reading the relay, node-folder and CLI code after commit `222aee8`. Not
 - [x] **[낮음] Python 채팅 화면 커서 위치**: `python/src/talk.py` `screen_frame` 이 실제 커서를 입력 줄의 `_` 위치에 둔다 (마지막 쓰기 뒤에 `ESC[줄;칸H`). 디자인의 `_` 글자는 그대로 둔다.
 
 - [x] **코어 알림 문구 로케일화 (2026-11-16)**: `room_relay.rs`(방 게시 실패, 확인된 멤버 없음, 제외 인원), `net.rs`(구버전, 다른 확인 값), `chat.rs`(코드 대기) 의 한국어 고정 문구를 키 `room.*`, `net.*`, `peers.code_pending` 로 옮기고 7개 언어에 넣음. talk-core 테스트 통과.
+- [x] **모드 명칭 통일 (2026-11-16)**: LAN = BASE STATION, Supabase = CLOUD SERVICE. 7개 언어 mode.local / mode.supabase, 첫 메뉴 (Rust, Python), GUI 링크, 사용자 문서 (usage.ko.md, readme-extras.ko.md, ui-style.md) 를 맞춤.
+- [x] **상태 태그 위치 (2026-11-16)**: Rust 와 Python 모두 상태 줄 맨 끝 [SYSTEM READY]. Python 과 Rust 캡처 비교는 워커가 진행 중.
+- [ ] **방 행 시작 시각 검사 (2026-11-16, 보안 보완 중)**: 이 노드가 시작하기 전 ts 의 행은 버림 (Python core/room.py, Rust talk-core). 프로토콜은 그대로. 방 코드와 받는 사람 바인딩은 프로토콜 변경이라 나중 결정.
 - [x] **구분선 색과 입력 힌트 (Rust, 2026-11-16)**: 구분선을 테두리 녹색 #417D55 로, 입력 힌트는 talk-core chat.input_hint (7개 언어) 로 읽음. HERDR_TALK_LANG=en 에서 확인.
 - [x] **LAN 대화 줄 형식 (Python)** (2026-11-16: `[시각] 이름 > 내용` 으로 바꿈, Rust 와 같음)
 - [ ] **Python 방 메시지**: Rust 와 같은 방식으로 구현 중 (벡터, REST, 코어 완료 2026-11-16). 남음: relay 스레드 연결, 송신 줄과 알림 화면 연결, 실제 두 노드 (Rust+Python) 상호운용 확인 (Supabase 설정 필요).

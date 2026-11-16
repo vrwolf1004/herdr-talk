@@ -327,7 +327,7 @@ pub fn choose(ctx: &egui::Context, palette: &Palette, remaining: Option<u64>) ->
             }
             ui.add_space(18.0);
             ui.colored_label(palette.muted, egui::RichText::new("ALTERNATIVE CONNECTION").monospace().size(13.0));
-            if ui.link(egui::RichText::new("SUPABASE CLOUD").monospace().size(14.0).color(palette.muted).underline()).clicked() {
+            if ui.link(egui::RichText::new("CLOUD SERVICE").monospace().size(14.0).color(palette.muted).underline()).clicked() {
                 picked = Some(Pick::Supabase);
             }
             ui.add_space(20.0);

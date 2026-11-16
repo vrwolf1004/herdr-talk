@@ -15,13 +15,22 @@ def make_chat():
     return talk.Chat({"id": "me", "name": "Haruto", "port": 52311})
 
 
+def place_text(frame, row):
+    """The text written on one screen row: from its cursor move to the next one, without the escape codes."""
+    import re
+    segment = frame.split(f"[{row};1H", 1)[1]
+    segment = re.split(r"\[\d+;1H", segment, maxsplit=1)[0]
+    return re.sub(r"\[[0-9;]*[A-Za-z]", "", segment)
+
+
 class FrameTest(unittest.TestCase):
     def frame(self, lines, typed="", cols=30, rows=9):
         return talk.screen_frame(lines, "STATUS", typed, cols, rows)
 
     def test_status_row_is_above_a_footer_row_that_holds_only_made_by_python(self):
         frame = self.frame([])   # rows=9 is raised to 10: status on row 9, the footer alone on row 10
-        self.assertIn(place(9, ACCENT + "STATUS"), frame)
+        self.assertIn("STATUS", place_text(frame, 9))
+        self.assertTrue(place_text(frame, 9).rstrip().endswith("[SYSTEM READY]"))
         self.assertIn(place(10, " " * 15 + MUTED + "made by Python"), frame)
 
     def test_header_titles_and_mode_are_drawn(self):
@@ -40,6 +49,14 @@ class FrameTest(unittest.TestCase):
         self.assertIn(place(8, BORDER + "─" * 29), frame)
         self.assertIn(BACKGROUND + TEXT + "MESSAGE > ", frame)
         self.assertIn(place(12, " " * 15 + MUTED + "made by Python"), frame)
+
+    def test_the_status_tag_is_at_the_right_end_of_the_status_row(self):
+        frame = talk.screen_frame([], "herdr-talk | py-test", "", 60, 12)
+        self.assertIn("[11;1H", frame)
+        row = frame.split("[11;1H", 1)[1].split("[12;1H", 1)[0]
+        self.assertIn("herdr-talk | py-test", row)
+        self.assertTrue(row.rstrip("[0m[K").endswith("[SYSTEM READY]") or "[SYSTEM READY]" in row)
+        self.assertNotIn("[SYSTEM READY]", frame.split("[2;1H", 1)[0].split("[1;1H", 1)[1])
 
     def test_only_the_newest_lines_fit(self):
         lines = [(f"line{i}", False) for i in range(10)]
@@ -70,7 +87,7 @@ class FrameTest(unittest.TestCase):
     def test_wide_characters_are_padded_by_display_width(self):
         frame = talk.screen_frame([], "가나", "", 20, 8)
         # 가나 is 4 columns and the status row has the whole width to itself, so it is not cut.
-        self.assertIn("가나" + RESET + BACKGROUND + "[K", frame)
+        self.assertIn("가나", place_text(frame, 9))
         self.assertIn(place(10, " " * 5 + MUTED + "made by Python"), frame)
 
 

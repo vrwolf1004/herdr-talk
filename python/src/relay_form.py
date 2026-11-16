@@ -134,9 +134,9 @@ class FirstRun:
             (divider(cols), BORDER),
             (t("mode.first_run_title"), ACCENT + BOLD),
             ("", ""),
-            *_menu_item(self.selected == 0, "01. LOCAL NETWORK", t("mode.hint_local")),
+            *_menu_item(self.selected == 0, "01. BASE STATION", t("mode.hint_local")),
             ("", ""),
-            *_menu_item(self.selected == 1, "02. SUPABASE CLOUD", t("mode.hint_supabase")),
+            *_menu_item(self.selected == 1, "02. CLOUD SERVICE", t("mode.hint_supabase")),
             ("", ""),
         ]
         left = self.remaining()

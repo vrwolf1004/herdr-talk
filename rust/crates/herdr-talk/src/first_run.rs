@@ -80,9 +80,9 @@ pub fn render(out: &mut Stdout, chooser: &mut Chooser, remaining: Option<u64>, w
     };
     // shortcut: the menu names and hints are English-only like the classic screen texts; move them to the locales with the room label.
     let mut body: Vec<Row> = vec![vec![(t("mode.first_run_title", &[]), Tone::Title)], vec![]];
-    body.extend(item(Mode::Local, 1, "LOCAL NETWORK", "LAN DIRECT COMMUNICATION"));
+    body.extend(item(Mode::Local, 1, "BASE STATION", "LAN DIRECT COMMUNICATION"));
     body.push(vec![]);
-    body.extend(item(Mode::Supabase, 2, "SUPABASE CLOUD", "REMOTE COMMUNICATION"));
+    body.extend(item(Mode::Supabase, 2, "CLOUD SERVICE", "REMOTE COMMUNICATION"));
     body.push(vec![]);
     if let Some(seconds) = remaining {
         body.push(vec![(t("mode.timeout_hint", &[("n", &seconds.to_string())]), Tone::Dim)]);

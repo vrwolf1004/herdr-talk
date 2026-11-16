@@ -49,6 +49,8 @@ pub(crate) fn run(chat: &Chat, state: &Path, config: &Config, settings: &Setting
 
 fn listen(chat: &Chat, state: &Path, config: &Config, settings: &Settings, seed: &[u8; 32], identity: &Identity, me: &str, rx: &Receiver<String>, stop: &AtomicBool) -> Result<(), String> {
     let mut cache = NonceCache::default();
+    // Rows sent before this relay started are not shown (kept in memory only, one time per start).
+    let started = unix_now();
     let mut members: Vec<Member> = Vec::new();
     let mut since: Option<String> = None;
     // This PC's row is published once, before the first join (the room's member rows point at it: a foreign key).
@@ -86,7 +88,7 @@ fn listen(chat: &Chat, state: &Path, config: &Config, settings: &Settings, seed:
         }
         if Instant::now() >= next_fetch {
             next_fetch = Instant::now() + POLL;
-            if let Err(error) = fetch_round(chat, config, seed, &settings.room_code, identity, &members, &mut names, &mut since, &mut cache) {
+            if let Err(error) = fetch_round(chat, config, seed, &settings.room_code, identity, &members, &mut names, &mut since, &mut cache, started) {
                 if joined {
                     chat.set_relay_status(&format!("relay: {error}"));
                 }
@@ -169,15 +171,22 @@ fn post_to(config: &Config, seed: &[u8; 32], room_code: &str, identity: &Identit
 
 /// Ask for this PC's inbox since the last row seen, and show each message that checks out.
 #[allow(clippy::too_many_arguments)]
-fn fetch_round(chat: &Chat, config: &Config, seed: &[u8; 32], room_code: &str, identity: &Identity, members: &[Member], names: &mut HashMap<String, String>, since: &mut Option<String>, cache: &mut NonceCache) -> Result<(), String> {
+fn fetch_round(chat: &Chat, config: &Config, seed: &[u8; 32], room_code: &str, identity: &Identity, members: &[Member], names: &mut HashMap<String, String>, since: &mut Option<String>, cache: &mut NonceCache, started: u64) -> Result<(), String> {
     let nonce = random_hex(16)?;
     let body = relay_rest::fetch_message_body(seed, room_code, since.as_deref(), unix_now(), &nonce)?;
     let (status, answer) = relay_rest::http_post(&relay_rest::fetch_messages_request(config, body))?;
     for row in relay_rest::read_fetch_response(status, &answer)? {
         *since = Some(row.created_at.clone());
-        show_message(chat, identity, members, names, cache, &row);
+        if after_start(&row, started) {
+            show_message(chat, identity, members, names, cache, &row);
+        }
     }
     Ok(())
+}
+
+/// A row sent before this relay started is not shown: the join shows only what comes after it.
+fn after_start(row: &Message, started: u64) -> bool {
+    row.ts >= started
 }
 
 /// The label for a sender: the 대화명, plus the first 4 characters of the key when another known key has the same 대화명.
@@ -379,6 +388,15 @@ mod tests {
         let untrusted_members = vec![Member { pk: alice_pk.clone(), noise: noise_keys().0 }];
         show_message(&bob, &identity, &untrusted_members, &mut names, &mut NonceCache::default(), &row);
         assert_eq!(bob.lines().len(), 1, "nothing else is shown");
+    }
+
+    #[test]
+    fn rows_sent_before_the_relay_started_are_refused_and_later_ones_pass() {
+        let row = |ts| Message { message_id: "ff".repeat(16), sender_pk: String::new(), ts, nonce: NONCE.into(), ciphertext: String::new(), created_at: "2026".into() };
+        let started = 1_000;
+        assert!(!after_start(&row(999), started), "a row from before the start is refused");
+        assert!(after_start(&row(1_000), started), "a row from the start second passes");
+        assert!(after_start(&row(1_001), started), "a row after the start passes");
     }
 
     #[test]

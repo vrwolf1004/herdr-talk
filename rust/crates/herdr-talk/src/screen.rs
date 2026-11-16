@@ -318,7 +318,8 @@ fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows:
 
     let peers = fresh.len().to_string();
     let badge = if chat.is_host() { format!("{} ", t("host.badge", &[])) } else { String::new() };
-    let info = format!("{badge}{}", t("status.line", &[("name", &name), ("peers", &peers)]));
+    let mode = if chat.is_supabase() { t("mode.supabase", &[]) } else { t("mode.local", &[]) };
+    let info = format!("{badge}{} · {}", t("status.line", &[("name", &name), ("peers", &peers)]).trim(), t("mode.status", &[("mode", &mode)]));
     let relay = chat.relay_status();
     let (input, cursor) = input_row(input, width);
     let nodes = vec![("CONNECTED NODES  ".to_string(), Tone::Title), (nodes_text(&name, chat.is_host(), &fresh), Tone::Text)];
@@ -330,9 +331,10 @@ fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows:
     // shortcut: the keyboard guide is English-only like the other Ctrl key notes; move it to the locales with them.
     frame.push(vec![("Enter: SEND · /help: COMMANDS · Ctrl+N: NAME · Ctrl+P: PHONE · Ctrl+R: SETTINGS · Ctrl+C: QUIT".to_string(), Tone::Dim)]);
     frame.push(input);
-    // The status line sits above the maker line, as in the Python edition: the connection tag, then the app name, name and peers.
+    // The status line sits above the maker line, as in the Python edition: the app name, name, peers and mode, then the
+    // connection tag at the end (Python appends the relay text there).
     let (tag, tone) = status_tag(&relay);
-    frame.push(vec![(format!("{tag}  "), tone), (info, Tone::Dim)]);
+    frame.push(vec![(format!("{info}  "), Tone::Dim), (tag.to_string(), tone)]);
     frame.push(footer(width));
     (frame, cursor)
 }
@@ -615,7 +617,8 @@ mod tests {
         assert!(texts[2].starts_with("COMMUNICATION LOG"), "{}", texts[2]);
         assert!(texts[16].starts_with("Enter: SEND"), "the guide: {}", texts[16]);
         assert!(texts[17].starts_with("MESSAGE > "), "the input: {}", texts[17]);
-        assert!(texts[18].starts_with("[SYSTEM READY]  "), "the status line: {}", texts[18]);
+        assert!(texts[18].ends_with("[SYSTEM READY]"), "the connection tag comes last on the status line: {}", texts[18]);
+        assert!(texts[18].contains(&t("mode.status", &[("mode", &t("mode.local", &[]))])), "the mode is on the status line: {}", texts[18]);
         assert_eq!(texts[19].trim(), "made by Rust", "the bottom row holds only the maker");
         assert!(texts[19].starts_with(' '), "the maker is at the right end");
     }

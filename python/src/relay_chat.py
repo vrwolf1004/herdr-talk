@@ -51,6 +51,7 @@ class Relay:
         self.names = {}    # pk hex -> the 대화명 it was shown under (a clash gets the key's first 4 characters)
         self.since = None
         self.own_pk = None  # this PC's Ed25519 key hex, set when the relay starts
+        self.started = 0    # seconds when this node's relay started (memory only): older room rows are not shown
         self.cache = room.NonceCache()
 
     def start(self):
@@ -91,7 +92,8 @@ class Relay:
         rows = room.fetch_rows(self.config, self.session.seed, self.settings["room_code"], self.since)
         for row in rows:
             self.since = row["created_at"]
-            shown = room.check_row(row, self.members, self.session.noise_secret, self.hooks.trusted_name, self.cache, int(time.time()))
+            shown = room.check_row(row, self.members, self.session.noise_secret, self.hooks.trusted_name, self.cache, int(time.time()),
+                                   not_before=self.started)
             if shown is None:
                 continue
             name, text = shown
@@ -144,6 +146,7 @@ class Relay:
         return False
 
     def _run(self):
+        self.started = int(time.time())  # rows older than this node's start are not shown
         # The row is written before the join (the room's member rows point at it): until it is, the join is not tried.
         name = self.settings["name"]
         if name and not relay_rest.valid_name(name):

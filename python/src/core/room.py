@@ -60,10 +60,13 @@ def open_message(secret, ciphertext):
     return payload, responder.remote_static
 
 
-def check_row(row, members, secret, trusted_name, cache, now):
+def check_row(row, members, secret, trusted_name, cache, now, not_before=0):
     """The (name, text) to show for one fetched row, or None when it must not be shown (every failure is silent).
 
-    members: {sender_pk: noise_pk bytes} of the room. trusted_name(noise_pk) -> the name this PC verified, or None."""
+    members: {sender_pk: noise_pk bytes} of the room. trusted_name(noise_pk) -> the name this PC verified, or None.
+    not_before: a row sent before this time (seconds) is dropped: the node takes only what came after it started."""
+    if row["ts"] < not_before:
+        return None
     sender_noise = members.get(row["sender_pk"])
     if sender_noise is None:
         return None

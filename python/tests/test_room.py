@@ -104,6 +104,15 @@ class CheckRowTest(unittest.TestCase):
     def test_a_row_outside_the_window_is_dropped(self):
         self.assertIsNone(self.check(self.row(ts=NOW - room.WINDOW_SECONDS - 5), now=NOW))
 
+    def test_a_row_sent_before_this_node_started_is_dropped(self):
+        started = NOW
+        before = self.row(ts=started - 1)
+        self.assertIsNone(room.check_row(before, self.members, self.me["noise_secret"], self.trusted.get,
+                                         room.NonceCache(), started, not_before=started))
+        after = self.row(ts=started + 1)
+        self.assertIsNotNone(room.check_row(after, self.members, self.me["noise_secret"], self.trusted.get,
+                                            room.NonceCache(), started + 1, not_before=started))
+
     def test_an_empty_text_is_dropped(self):
         self.assertIsNone(self.check(self.row("   ")))
 

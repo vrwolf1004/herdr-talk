@@ -83,8 +83,8 @@ class FirstRunTests(unittest.TestCase):
 
     def test_screen_shows_both_choices_and_the_countdown(self):
         text = _plain(relay_form.FirstRun().render(80, 24))
-        self.assertIn("01. LOCAL NETWORK", text)
-        self.assertIn("02. SUPABASE CLOUD", text)
+        self.assertIn("01. BASE STATION", text)
+        self.assertIn("02. CLOUD SERVICE", text)
         self.assertIn("Starting in local mode in 30s", text)
 
 
