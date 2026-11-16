@@ -201,8 +201,7 @@ class ChatPhoneTest(Base):
                 started.append((server, chat, folder))
             (_, first, _), (_, second, _), (_, named, other) = started
             self.assertTrue(first.is_host() and not second.is_host() and named.is_host())
-            self.assertEqual(first.me["name"], talk.t("host.name"))
-            self.assertNotEqual(second.me["name"], talk.t("host.name"))
+            self.assertIn(first.me["name"], [n for _, names in talk.NAMES_BY_LANGUAGE.values() for n in names], "the host gets a random country name too")
             self.assertEqual(named.me["name"], "Zed")
             kept = second.me["name"]
             first.release_host()

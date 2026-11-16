@@ -3,6 +3,7 @@
 //! talk-core yet; see the reply that added this module.) Same rules as python/src/relay_rest.py.
 
 use ed25519_dalek::{Signer, SigningKey};
+use sha2::{Digest, Sha256};
 
 /// The tag of the room requests (create and join), in front of the signed bytes.
 pub const ROOM_TAG: &str = "herdr-talk-room-v1";
@@ -375,6 +376,181 @@ pub fn http_post(request: &Request) -> Result<(u16, String), String> {
     }
     let body = request.body.clone().unwrap_or_default();
     let mut response = builder.send(body.as_str()).map_err(|e| format!("HTTP error: {e}"))?;
+    let status = response.status().as_u16();
+    let response_body = response.body_mut().read_to_string().map_err(|e| format!("Failed to read response: {e}"))?;
+    Ok((status, response_body))
+}
+
+// ---- room messages: post-message and fetch-messages (supabase/functions/*/checks.ts) ----
+
+/// The tag of a post signature and of a fetch signature.
+pub const POST_TAG: &str = "herdr-talk-msg-v1";
+pub const FETCH_TAG: &str = "herdr-talk-fetch-v1";
+pub const MAX_DELIVERIES: usize = 8;
+pub const MAX_CIPHERTEXT_HEX: usize = 32768;
+
+/// One ciphertext for one recipient (hex).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivery {
+    pub recipient_pk: String,
+    pub ciphertext: String,
+}
+
+/// One message row as the fetch answer gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub message_id: String,
+    pub sender_pk: String,
+    pub ts: u64,
+    pub nonce: String,
+    pub ciphertext: String,
+    pub created_at: String,
+}
+
+fn newline() -> String {
+    char::from(10).to_string()
+}
+
+/// SHA-256 (hex) over the deliveries in the order given: one "recipient ciphertext" line each.
+pub fn deliveries_digest(deliveries: &[Delivery]) -> String {
+    let text = deliveries.iter().map(|delivery| format!("{} {}", delivery.recipient_pk, delivery.ciphertext)).collect::<Vec<_>>().join(&newline());
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    to_hex(&hasher.finalize())
+}
+
+fn valid_ciphertext(text: &str) -> bool {
+    !text.is_empty() && text.len() % 2 == 0 && text.len() <= MAX_CIPHERTEXT_HEX && text.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// The JSON body of a post-message request. Recipients must be unique and ascending (the signed digest depends on it).
+/// Refuses bad input before any signature is made.
+pub fn post_message_body(seed: &[u8; 32], room_code: &str, message_id: &str, ts: u64, nonce: &str, deliveries: &[Delivery]) -> Result<String, String> {
+    if !valid_room_code(room_code) || !valid_hex(message_id, 32) || !valid_hex(nonce, 32) {
+        return Err("room code, message id and nonce must have their fixed shapes".to_string());
+    }
+    if deliveries.is_empty() || deliveries.len() > MAX_DELIVERIES {
+        return Err("a message goes to 1 to 8 recipients".to_string());
+    }
+    for (index, delivery) in deliveries.iter().enumerate() {
+        if !valid_pk(&delivery.recipient_pk) || !valid_ciphertext(&delivery.ciphertext) {
+            return Err("recipient key or ciphertext is not valid".to_string());
+        }
+        if index > 0 && delivery.recipient_pk <= deliveries[index - 1].recipient_pk {
+            return Err("recipients must be unique and in ascending order".to_string());
+        }
+    }
+    let signing = SigningKey::from_bytes(seed);
+    let sender_pk = to_hex(&signing.verifying_key().to_bytes());
+    let lines = [POST_TAG, "post", room_code, &sender_pk, message_id, &ts.to_string(), nonce, &deliveries_digest(deliveries)];
+    let sig = to_hex(&signing.sign(lines.join(&newline()).as_bytes()).to_bytes());
+    let rows: Vec<Value> = deliveries.iter().map(|delivery| serde_json::json!({"recipient_pk": delivery.recipient_pk, "ciphertext": delivery.ciphertext})).collect();
+    Ok(serde_json::json!({"room_code": room_code, "sender_pk": sender_pk, "message_id": message_id, "ts": ts, "nonce": nonce, "deliveries": rows, "sig": sig}).to_string())
+}
+
+/// The JSON body of a fetch-messages request: this recipient's inbox for the room, after `since` (an ISO time, a filter only).
+pub fn fetch_message_body(seed: &[u8; 32], room_code: &str, since: Option<&str>, ts: u64, nonce: &str) -> Result<String, String> {
+    if !valid_room_code(room_code) || !valid_hex(nonce, 32) {
+        return Err("room code and nonce must have their fixed shapes".to_string());
+    }
+    let signing = SigningKey::from_bytes(seed);
+    let recipient_pk = to_hex(&signing.verifying_key().to_bytes());
+    let lines = [FETCH_TAG, "fetch", room_code, &recipient_pk, &ts.to_string(), nonce];
+    let sig = to_hex(&signing.sign(lines.join(&newline()).as_bytes()).to_bytes());
+    let mut body = serde_json::Map::new();
+    body.insert("room_code".to_string(), Value::String(room_code.to_string()));
+    body.insert("recipient_pk".to_string(), Value::String(recipient_pk));
+    if let Some(since) = since {
+        body.insert("since".to_string(), Value::String(since.to_string()));
+    }
+    body.insert("ts".to_string(), Value::from(ts));
+    body.insert("nonce".to_string(), Value::String(nonce.to_string()));
+    body.insert("sig".to_string(), Value::String(sig));
+    Ok(Value::Object(body).to_string())
+}
+
+fn function_request(config: &Config, name: &str, body: String) -> Request {
+    let mut headers = common_headers(config);
+    headers.push(("Content-Type".to_string(), "application/json".to_string()));
+    Request { method: "POST", url: format!("{}/functions/v1/{name}", config.url), headers, body: Some(body) }
+}
+
+/// The post-message request, from a body made by post_message_body.
+pub fn post_message_request(config: &Config, body: String) -> Request {
+    function_request(config, "post-message", body)
+}
+
+/// The fetch-messages request, from a body made by fetch_message_body.
+pub fn fetch_messages_request(config: &Config, body: String) -> Request {
+    function_request(config, "fetch-messages", body)
+}
+
+/// The fetch answer: the message rows for this recipient. Anything malformed is an error (the whole answer is dropped).
+pub fn read_fetch_response(status: u16, body: &str) -> Result<Vec<Message>, String> {
+    if status != 200 {
+        return Err(format!("status {status}"));
+    }
+    let value: Value = serde_json::from_str(body).map_err(|_| "answer is not JSON".to_string())?;
+    let rows = value["messages"].as_array().ok_or("answer has no messages list")?;
+    rows.iter()
+        .map(|row| {
+            let message_id = row["message_id"].as_str().filter(|text| valid_hex(text, 32)).ok_or("message id is not valid")?;
+            let sender_pk = row["sender_pk"].as_str().filter(|text| valid_pk(text)).ok_or("sender key is not valid")?;
+            let ts = row["ts"].as_u64().ok_or("message ts is not a number")?;
+            let nonce = row["nonce"].as_str().filter(|text| valid_hex(text, 32)).ok_or("message nonce is not valid")?;
+            let ciphertext = row["ciphertext"].as_str().filter(|text| valid_ciphertext(text)).ok_or("ciphertext is not valid")?;
+            let created_at = row["created_at"].as_str().ok_or("message time is missing")?;
+            Ok(Message {
+                message_id: message_id.to_string(),
+                sender_pk: sender_pk.to_string(),
+                ts,
+                nonce: nonce.to_string(),
+                ciphertext: ciphertext.to_string(),
+                created_at: created_at.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The Noise keys of room members, by their Ed25519 keys (the peers table, anon may select). Pairs are (pk, noise_pk) hex.
+pub fn members_noise_keys(config: &Config, member_pks: &[String]) -> Result<Vec<(String, String)>, String> {
+    if member_pks.is_empty() {
+        return Ok(Vec::new());
+    }
+    if member_pks.iter().any(|pk| !valid_pk(pk)) {
+        return Err("member key is not valid".to_string());
+    }
+    let mut headers = common_headers(config);
+    headers.push(("Accept".to_string(), "application/json".to_string()));
+    let request = Request {
+        method: "GET",
+        url: format!("{}/rest/v1/peers?pk=in.({})&select=pk,noise_pk", config.url, member_pks.join(",")),
+        headers,
+        body: None,
+    };
+    let (status, body) = http_get(&request)?;
+    if status != 200 {
+        return Err(format!("status {status}"));
+    }
+    let value: Value = serde_json::from_str(&body).map_err(|_| "answer is not JSON".to_string())?;
+    let rows = value.as_array().ok_or("answer is not a list")?;
+    rows.iter()
+        .map(|row| {
+            let pk = row["pk"].as_str().filter(|text| valid_pk(text)).ok_or("row key is not valid")?;
+            let noise = row["noise_pk"].as_str().filter(|text| valid_pk(text)).ok_or("row noise key is not valid")?;
+            Ok((pk.to_string(), noise.to_string()))
+        })
+        .collect()
+}
+
+/// Execute an HTTP GET request and return (status, body).
+pub fn http_get(request: &Request) -> Result<(u16, String), String> {
+    let dummy_config = Config { url: "http://127.0.0.1".to_string(), key: String::new() };
+    let mut builder = agent_within(&dummy_config, TIMEOUT).get(&request.url);
+    for (key, value) in &request.headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+    let mut response = builder.call().map_err(|e| format!("HTTP error: {e}"))?;
     let status = response.status().as_u16();
     let response_body = response.body_mut().read_to_string().map_err(|e| format!("Failed to read response: {e}"))?;
     Ok((status, response_body))

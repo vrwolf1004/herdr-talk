@@ -71,7 +71,6 @@ pub fn start_in(name: Option<String>, tcp_port: u16, udp_port: u16, state: &Path
             identity
         }
     };
-    let named = name.is_some();
     let me = Me {
         id: store::peer_id(&identity.public),
         name: name.unwrap_or_else(default_name),
@@ -84,10 +83,8 @@ pub fn start_in(name: Option<String>, tcp_port: u16, udp_port: u16, state: &Path
     chat.plaintext = plaintext;
     chat.state_dir = Some(state.to_path_buf());
     let chat = Arc::new(chat);
-    // The first node on this PC is the host (방장). Without --name it is called that; with one, its name stays and the status row shows a badge.
-    if chat.try_become_host() && !named {
-        chat.me.lock().unwrap().name = t("host.name", &[]);
-    }
+    // The first node on this PC is the host (방장): the badge shows it; the name stays a country name, as on every node.
+    chat.try_become_host();
     let (receiver, announcer, peers) = (chat.clone(), chat.clone(), chat.clone());
     thread::spawn(move || receive_messages(server, receiver));
     thread::spawn(move || announce(udp_port, announcer));
@@ -140,12 +137,9 @@ fn listen_for_peers(socket: UdpSocket, chat: Arc<Chat>) {
 
 /// The discovery packet: name, port, key, and one commitment per known peer (the commitment this PC makes for that peer).
 fn announce_payload(chat: &Chat, me: &Me) -> String {
-    let mut fields = json!({"app": APP, "id": me.id, "name": me.name, "port": me.port, "key": store::to_hex(&me.key)});
-    let commits = chat.announced_commits();
-    if !commits.is_empty() {
-        fields["commits"] = Value::Object(commits.into_iter().map(|(key, commit)| (key, Value::String(commit))).collect());
-    }
-    fields.to_string()
+    // Always sent, empty when no peer is known yet: a missing key means an old version, not a first contact.
+    let commits = chat.announced_commits().into_iter().map(|(key, commit)| (key, Value::String(commit))).collect();
+    json!({"app": APP, "id": me.id, "name": me.name, "port": me.port, "key": store::to_hex(&me.key), "commits": Value::Object(commits)}).to_string()
 }
 
 /// How long a new chat listens for announcements before it announces itself, so a name that clashes with a
@@ -887,8 +881,7 @@ mod tests {
         let second = start_in(None, 0, 0, &base, false).unwrap(); // same state folder: the host is taken
         let named = start_in(Some("Zed".into()), 0, 0, &other, false).unwrap();
         assert!(first.is_host() && !second.is_host() && named.is_host());
-        assert_eq!(first.me.lock().unwrap().name, t("host.name", &[]));
-        assert_ne!(second.me.lock().unwrap().name, t("host.name", &[]));
+        assert!(crate::chat::NAMES_BY_LANGUAGE.iter().any(|(_, names)| names.contains(&first.me.lock().unwrap().name.as_str())), "the host gets a random country name too");
         assert_eq!(named.me.lock().unwrap().name, "Zed", "a name given by the user stays");
         // The host ends: the other node takes over, and keeps the name it has.
         let kept = second.me.lock().unwrap().name.clone();
@@ -1242,7 +1235,7 @@ mod tests {
         let other = chat_with_keys(2);
         let other_me = other.me.lock().unwrap().clone();
         let alone: Value = serde_json::from_str(&announce_payload(&other, &other_me)).unwrap();
-        assert!(alone.get("commits").is_none(), "no commitment before a peer is known");
+        assert_eq!(alone["commits"], json!({}), "an empty commits map before a peer is known, never a missing key");
     }
 
     fn chat_with_keys(seed: u8) -> Chat {

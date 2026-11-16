@@ -1537,9 +1537,8 @@ def start_node(args, state=None, plaintext=None):
     chat = Chat(me, plaintext=store.plaintext_allowed() if plaintext is None else plaintext)
     chat.trusted = trusted
     chat.state_dir = state
-    # The first node on this PC is the host (방장). Without --name it is called that; with one, its name stays and the status row shows a badge.
-    if chat.try_become_host() and not args.name:
-        me["name"] = t("host.name")
+    # The first node on this PC is the host (방장): the badge shows it; the name stays a country name, as on every node.
+    chat.try_become_host()
     with _sink_lock:
         _sink = chat.add_line
     threading.Thread(target=receive_messages, args=(server, chat), daemon=True).start()
