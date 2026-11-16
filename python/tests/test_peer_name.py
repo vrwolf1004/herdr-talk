@@ -54,12 +54,12 @@ class FakeConn:
 class CollectSayTest(unittest.TestCase):
     def setUp(self):
         self.lines = []
-        self.saved = talk._sink
-        talk._sink = lambda line, style="": self.lines.append(line)
+        self.saved = talk.Chat.on_event
+        talk.Chat.on_event = staticmethod(lambda event: self.lines.extend(talk.event_texts(event)))
         talk.STOP.clear()
 
     def tearDown(self):
-        talk._sink = self.saved
+        talk.Chat.on_event = staticmethod(self.saved)
         talk.STOP.clear()
 
 
@@ -111,11 +111,11 @@ class SenderNameTest(CollectSayTest):
     def test_sender_name_is_cleaned_and_cut_to_32_as_before(self):
         raw = "Ka" + ESC + "ren" + "q" * 40
         self.send(raw)
-        self.assertEqual(self.lines, [f"{talk.plain_sender(raw)} (plain text): hi"])
+        self.assertEqual(self.lines, [f"{talk.plain_sender(raw)} (plain text) > hi"])
 
     def test_sender_of_only_control_characters_keeps_the_old_result(self):
         self.send(BELL + "\x02")
-        self.assertEqual(self.lines, ["unknown (plain text): hi"])
+        self.assertEqual(self.lines, ["unknown (plain text) > hi"])
 
 
 class JoinNameMatchesSenderTest(CollectSayTest):

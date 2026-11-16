@@ -14,8 +14,8 @@ sys.path.insert(0, str(SRC))
 os.environ.setdefault("HERDR_TALK_LANG", "en")
 
 import relay_form  # noqa: E402
-import relay_key  # noqa: E402
-import relay_rest  # noqa: E402
+from core import relay_key  # noqa: E402
+from core import relay_rest  # noqa: E402
 import relay_settings  # noqa: E402
 
 

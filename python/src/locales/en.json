@@ -40,7 +40,7 @@
   "trust.save_failed": "trusted for this session only, could not save: {error}",
   "peer.unverified": "not sent to {name}: not verified yet. Compare codes, then /trust",
   "peer.plain_off": "not sent to {name}: they do not encrypt, and plain text is off",
-  "peer.fingerprint": "{name} ({ip}): not verified yet\n  Code: {code}\n  Compare it with the code on the other screen, then type /trust",
+  "peer.fingerprint": "{name} ({ip}): not verified yet\n  Code: {code}\n  Key: {fp}\n  Compare it with the code on the other screen, then type /trust",
   "peer.key_changed": "{name} at {ip} has a new key. Not trusted, nothing sent. Use /trust only if you know why",
   "peers.verified": "verified",
   "peers.plain": "plain text",
@@ -66,5 +66,8 @@
   "settings.save_ok_local": "Saved: local mode. The relay is stopped.",
   "settings.save_ok_supabase": "Saved: Supabase mode. The relay is started.",
   "settings.save_refused_missing": "Not saved. Missing: {fields}",
-  "settings.cancel_discard": "Left the settings without saving."
+  "settings.cancel_discard": "Left the settings without saving.",
+  "peer.old_version": "{name} ({ip}): this is an old version, so it cannot be verified. Update both PCs to the new version",
+  "trust.wrong_code": "{name}: a different confirmation value arrived. The connection was refused",
+  "relay.room_not_sent": "relay: room messages are not sent yet, the message was not sent"
 }

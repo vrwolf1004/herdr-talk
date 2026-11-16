@@ -17,14 +17,10 @@ Commands (typed in the input line)
 
 import argparse
 import errno
-import itertools
 import hmac
 import ipaddress
 import json
-import locale
 import os
-import random
-import re
 import secrets
 import shutil
 import socket
@@ -34,14 +30,17 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
+from core.names import (  # re-exported: the name rules live in core/names.py
+    NAMES_BY_LANGUAGE, clean_text, default_name, peer_name, pick_name, plain_sender, sender_name, squeeze_spaces, unique_name)
 import herdr_api
-import noise
+from core import noise
 import phone
 import relay_chat
 import relay_form
 import relay_settings
-import sessions
-import store
+from core import sessions
+from core import store
+from core.events import Line, Message, Notice, Status
 
 
 def load_dock_layout():
@@ -94,33 +93,8 @@ MAX_FRAME = 0xFFFF             # a Noise frame carries a 2-byte length
 
 # Display names picked at random when --name is not given: the list for this PC's language, else every list.
 # Each entry: language code -> (Windows language name, names).
-NAMES_BY_LANGUAGE = {
-    "ko": ("korean", ["민준", "서준", "도윤", "예준", "시우", "하준", "지호", "주원", "서연", "서윤"]),
-    "en": ("english", ["Liam", "Olivia", "Noah", "Emma", "Oliver", "Ava", "Elijah", "Sophia", "James", "Isabella"]),
-    "zh": ("chinese", ["Haoran", "Yifan", "Ziyi", "Jiahui", "Xinyi", "Yu", "Mei", "Jie", "Lin", "Ting"]),
-    "ja": ("japanese", ["Haruto", "Yui", "Sota", "Hina", "Ren", "Sakura", "Yuto", "Riku", "Aoi", "Mio"]),
-    "vi": ("vietnamese", ["Anh", "Minh", "Huong", "Linh", "Tuan", "Hoa", "Duc", "Thao", "Phuc", "Lan"]),
-    "fr": ("french", ["Louis", "Gabriel", "Jules", "Lea", "Chloe", "Manon", "Lucas", "Hugo", "Camille", "Adam"]),
-    "de": ("german", ["Ben", "Mia", "Emil", "Hannah", "Paul", "Lina", "Leon", "Sofia", "Finn", "Greta"]),
-    "es": ("spanish", ["Lucia", "Martin", "Mateo", "Valentina", "Pablo", "Daniela", "Diego", "Paula", "Sergio", "Carmen"]),
-    "ru": ("russian", ["Mikhail", "Alexander", "Maria", "Artem", "Anna", "Ivan", "Daria", "Dmitry", "Polina", "Egor"]),
-    "id": ("indonesian", ["Budi", "Siti", "Agus", "Dewi", "Rizky", "Putri", "Adi", "Nur", "Fajar", "Ayu"]),
-    "pt": ("portuguese", ["Miguel", "Helena", "Arthur", "Alice", "Heitor", "Laura", "Bernardo", "Julia", "Davi", "Theo"]),
-}
 
 
-def pick_name(names, taken=()):
-    """Random name that is not in taken. If every name is taken, fall back to the whole list."""
-    free = [name for name in names if name not in taken]
-    return random.choice(free or names)
-
-
-def unique_name(base, taken):
-    """base with the smallest number from 2 that is not in taken, e.g. 지호 -> 지호2."""
-    for number in itertools.count(2):
-        candidate = f"{base[:30]}{number}"
-        if candidate not in taken:
-            return candidate
 
 
 def resolve_name_clash(chat):
@@ -146,31 +120,34 @@ def resolve_name_clash(chat):
     return name, new
 
 
-def default_name(taken=()):
-    """Random name from the list matching the PC's language (e.g. Korean for a Korean locale)."""
-    language = (locale.getlocale()[0] or "").lower()
-    for code, (language_name, names) in NAMES_BY_LANGUAGE.items():
-        if language.startswith(code) or language.startswith(language_name):
-            return pick_name(names, taken)
-    return pick_name([name for _, names in NAMES_BY_LANGUAGE.values() for name in names], taken)
-
-_sink_lock = threading.Lock()
 STOP = threading.Event()  # run() 이 끝날 때 설정한다. 네트워크 스레드는 이것을 보고 멈춘다.
-_sink = None  # where say() writes; set by run()
 _restore_screen = None  # undoes the full-screen mode while the chat runs; leave_when_idle() calls it
 
 
-def say(line, mine=False):
-    """Show one line in the chat (on screen, or plain stdout). mine marks a line the user sent."""
-    with _sink_lock:
-        if _sink is None:
-            print(line, flush=True)
-        else:
-            _sink(line, mine)
+def event_rows(event):
+    """The chat rows of an event as (text, mine, sender): a notice is its locale text, one row per line; a message
+    keeps its sender ("[time] sender > text" on screen); a line is text the screen side already made."""
+    if isinstance(event, Notice):
+        return [(row, False, None) for row in t(event.code, **event.args).split(chr(10))]
+    if isinstance(event, Message):
+        return [(event.text, event.mine, event.sender)]
+    return [(event.text, event.mine, None)]
+
+
+def event_texts(event):
+    """The rows of an event as plain text, as they are printed when no screen is up."""
+    return [text if sender is None else f"{sender} > {text}" for text, _, sender in event_rows(event)]
+
+
+def print_event(event):
+    for text in event_texts(event):
+        print(text, flush=True)
 
 
 class Chat:
     """Shared state: this instance, known peers, and the lines shown on screen."""
+
+    on_event = staticmethod(print_event)  # where events go: stdout until a screen (or a test) takes them
 
     def __init__(self, me, plaintext=True):
         # me: id, name, port; with an identity also key and secret (bytes). start_node() sets plaintext from config.json
@@ -205,15 +182,26 @@ class Chat:
         self.relay = None         # relay_chat.Relay while the relay runs
         self.relay_status = ""    # short text for the status row, empty when the relay is off
 
+    def emit(self, event):
+        """Report an event (core/events.py) to whoever shows it: on_event. None drops it."""
+        if self.on_event is not None:
+            self.on_event(event)
+
     def touch(self):
         """Mark activity so the idle timer restarts. Used by every view, not only add_line()."""
         self.last_activity = time.time()
 
-    def add_line(self, line, mine=False):
+    def add_line(self, line, mine=False, sender=None):
         self.touch()
+        stamp = time.strftime("%H:%M:%S")  # the time the line first shows; it is not stored anywhere else
         with self.lines_lock:
-            self.lines.append((line, mine))
+            self.lines.append((line, mine, sender, stamp))
             del self.lines[:-MAX_LINES]
+
+    def add_event(self, event):
+        """Keep an event's rows as chat lines (what a screen, or the control channel, shows)."""
+        for text, mine, sender in event_rows(event):
+            self.add_line(text, mine, sender)
 
     def clear_lines(self):
         with self.lines_lock:
@@ -361,10 +349,10 @@ class Chat:
                 found.append(info)
         # Two different keys with the same code would mean a collision or an attacker: refuse rather than pick one.
         if len({info["key"] for info in found}) > 1:
-            say(t("trust.ambiguous", code=code))
+            self.emit(Notice("trust.ambiguous", {"code": code}))
             return
         if not found:
-            say(t("trust.none", code=code))
+            self.emit(Notice("trust.none", {"code": code}))
             return
         info = found[0]
         self.trusted.append({"name": info["name"], "key": info["key"], "ip": info["ip"]})
@@ -372,9 +360,9 @@ class Chat:
             if self.state_dir is not None:
                 store.write_trusted(self.state_dir, self.trusted)
         except OSError as error:
-            say(t("trust.save_failed", error=str(error)))
+            self.emit(Notice("trust.save_failed", {"error": str(error)}))
             return
-        say(t("trust.done", name=info["name"], ip=info["ip"]))
+        self.emit(Notice("trust.done", {"name": info["name"], "ip": info["ip"]}))
 
     def start_relay(self):
         """(Re)start the relay for the saved settings and set the connection mode. Returns the status text."""
@@ -387,7 +375,7 @@ class Chat:
             return ""
         self.relay, self.relay_status = relay_chat.start(RelayHooks(self), self.state_dir, settings)
         if self.relay_status:
-            say(self.relay_status)
+            self.emit(Line(self.relay_status))
         return self.relay_status
 
     def stop_relay(self):
@@ -397,10 +385,10 @@ class Chat:
 
     def _send_over_relay(self, text):
         if self.relay is None:
-            say(t("relay.not_sent"))
+            self.emit(Notice("relay.not_sent"))
             return True
         self.relay.send(text)
-        say(f"{self.me['name']} {t('chat.you')}: {text}", mine=True)
+        self.emit(Line(f"{self.me['name']} {t('chat.you')}: {text}", mine=True))
         return True
 
     def handle(self, text):
@@ -410,36 +398,36 @@ class Chat:
             return True
         # Commands are echoed before they run, as in the Rust edition. Chat messages are not echoed.
         if text.startswith("/"):
-            say(f"> {text}")
+            self.emit(Line(f"> {text}"))
         if text == "/quit":
             return False
         if text == "/help":
             for line in HELP_BOX:
-                say(line)
+                self.emit(Line(line))
             return True
         if text == "/name" or text.startswith("/name "):
             new_name = text[5:].strip()[:32]
             if not new_name:
-                say(t("usage.name"))
+                self.emit(Notice("usage.name"))
                 return True
             old_name = self.me["name"]
             self.me["name"] = new_name
-            say(t("name.changed", old=old_name, new=new_name))
+            self.emit(Notice("name.changed", dict(old=old_name, new=new_name)))
             return True
         if text == "/lang" or text.startswith("/lang "):
             code = text[5:].strip().lower()
             if code not in NAMES_BY_LANGUAGE:
-                say(t("usage.lang", codes="|".join(NAMES_BY_LANGUAGE)))
+                self.emit(Notice("usage.lang", dict(codes="|".join(NAMES_BY_LANGUAGE))))
                 return True
             old_name = self.me["name"]
             taken = {info["name"] for info in self.fresh_peers().values()} | {old_name}
             self.me["name"] = pick_name(NAMES_BY_LANGUAGE[code][1], taken)
-            say(t("name.changed", old=old_name, new=self.me["name"]))
+            self.emit(Notice("name.changed", dict(old=old_name, new=self.me["name"])))
             return True
         if text == "/peers":
             found = self.fresh_peers()
             if not found:
-                say(t("peers.none"))
+                self.emit(Notice("peers.none"))
             own = self.me.get("key")
             for info in found.values():
                 link = self.link_of(info)
@@ -451,7 +439,7 @@ class Chat:
                     sas = self.sas_for(info["key"]) if info.get("key") is not None else None
                     # shortcut: the pending text is English-only; move it to the locales with the other peer states.
                     state = t("peers.unverified", code=sas) if sas is not None else ("(code pending)" if own is not None else "")
-                say(f"- {clean_text(info['name'], 32)} ({info['ip']}:{info['port']}) {state}")
+                self.emit(Line(f"- {clean_text(info['name'], 32)} ({info['ip']}:{info['port']}) {state}"))
             return True
         if text == "/phone" or text.startswith("/phone "):
             argument = text[6:].strip()
@@ -459,26 +447,26 @@ class Chat:
                 self.show_phone()
             elif argument == "new":
                 if self.state_dir is not None and phone.regenerate_token(self.state_dir):
-                    say(t("phone.new_done"))
+                    self.emit(Notice("phone.new_done"))
                     self.show_phone()
                 else:
-                    say(t("phone.none"))
+                    self.emit(Notice("phone.none"))
             else:
-                say(t("usage.phone"))
+                self.emit(Notice("usage.phone"))
             return True
         if text == "/trust" or text.startswith("/trust "):
             code = store.normalize_code(text[6:])
             if code:
                 self.trust(code)
             else:
-                say(t("usage.trust"))
+                self.emit(Notice("usage.trust"))
             return True
         text = text[:MAX_TEXT_CHARS].replace("\n", " ")
         if self.supabase:
             return self._send_over_relay(text)
         found = self.fresh_peers()
         if not found:
-            say(t("peers.none_hint"))
+            self.emit(Notice("peers.none_hint"))
             return True
         # Only peers this link allows get the message. Each skipped peer says why.
         targets = {}
@@ -487,9 +475,9 @@ class Chat:
             if link == "encrypted" or (link == "plain" and self.plaintext):
                 targets[pid] = info
             elif link == "plain":
-                say(t("peer.plain_off", name=info["name"]))
+                self.emit(Notice("peer.plain_off", {"name": info["name"]}))
             else:
-                say(t("peer.unverified", name=info["name"]))
+                self.emit(Notice("peer.unverified", {"name": info["name"]}))
         if not targets:
             return True
         # 피어마다 따로 보낸다. 응답 없는 피어가 다른 피어 전송을 기다리게 하지 않도록 동시에 보내고,
@@ -500,8 +488,8 @@ class Chat:
                 try:
                     send.result()
                 except OSError:
-                    say(t("peer.unreachable", name=info["name"]))
-        say(f"{self.me['name']} {t('chat.you')}: {text}", mine=True)
+                    self.emit(Notice("peer.unreachable", {"name": info["name"]}))
+        self.emit(Message(self.me["name"], text, mine=True))
         return True
 
 
@@ -511,11 +499,11 @@ class RelayHooks:
     def __init__(self, chat):
         self.chat = chat
 
-    def say(self, text):
-        say(text)
-
-    def set_status(self, text):
-        self.chat.relay_status = text
+    def emit(self, event):
+        if isinstance(event, Status):
+            self.chat.relay_status = event.text  # the status row reads it at the next redraw
+        else:
+            self.chat.emit(event)
 
 
 
@@ -599,7 +587,7 @@ def _listen_loop(sock, chat):
         if name == chat.me["name"]:
             renamed = resolve_name_clash(chat)
             if renamed:
-                say(t("name.changed", old=renamed[0], new=renamed[1]))
+                chat.emit(Notice("name.changed", {"old": renamed[0], "new": renamed[1]}))
 
 
 def remember_peer(chat, info, ip):
@@ -633,7 +621,7 @@ def remember_peer(chat, info, ip):
         if pinned != commit:
             if (key, commit) not in chat.refused:
                 chat.refused.add((key, commit))
-                say(t("peer.key_changed", name=peer_name(info.get("name", "unknown")), ip=ip))  # shortcut: reused wording
+                chat.emit(Notice("peer.key_changed", {"name": peer_name(info.get("name", "unknown")), "ip": ip}))  # shortcut: reused wording
             return None
     if key is not None and own is not None:
         chat.my_nonce_for(key)  # our nonce for this peer; its commitment goes out in the next announce
@@ -659,7 +647,7 @@ def remember_peer(chat, info, ip):
                     chat.peers[f"{peer_id}:{port}@{ip}"] = entry
                     return name
         chat.peers[f"{peer_id}:{port}@{ip}"] = entry
-    say(t("peer.joined", name=name, ip=ip))
+    chat.emit(Notice("peer.joined", {"name": name, "ip": ip}))
     # The host of this PC joined (its chat port is in phone.json, a local file): show the phone address on this screen only.
     info = phone.read(chat.state_dir) if chat.state_dir else None
     if info and info["owner_port"] == port and info["owner_pid"] != os.getpid() and is_local_address(ip):
@@ -673,7 +661,7 @@ def remember_peer(chat, info, ip):
             for peer in chat.trusted
         )
         if changed:
-            say(t("peer.key_changed", name=name, ip=ip))
+            chat.emit(Notice("peer.key_changed", {"name": name, "ip": ip}))
         elif commit is not None:
             # The code is shown only after both nonces are known (see reveal_later), never from the announce alone.
             if key not in chat.revealing:
@@ -682,7 +670,7 @@ def remember_peer(chat, info, ip):
         elif not announces_commits:
             # An old version announces no commitments at all. A peer that has them but none for this PC is a first contact: silent.
             # shortcut: a Korean-only notice; move it to the locales when the wording is settled.
-            say(f"{name} ({ip}): 구버전이라 확인할 수 없습니다. 양쪽 PC 를 새 판으로 올리세요")
+            chat.emit(Notice("peer.old_version", {"name": name, "ip": ip}))
     return name
 
 
@@ -737,9 +725,10 @@ def show_code(chat, key):
     with chat.peers_lock:
         found = next((info for info in chat.peers.values() if info.get("key") == key), None)
     name, ip = (found["name"], found["ip"]) if found else ("?", "?")
-    # One chat row per line: the code sits on its own indented row.
-    for row in t("peer.fingerprint", name=name, ip=ip, code=code).split(chr(10)):
-        say(row)
+    # The key fingerprint (first 8 characters, the same value as Rust store::fingerprint) is shown beside the code;
+    # the code is still the one to compare. One chat row per line: the code sits on its own indented row.
+    fingerprint = store.fingerprint(chat.me["key"], key)
+    chat.emit(Notice("peer.fingerprint", {"name": name, "ip": ip, "code": code, "fp": fingerprint}))
 
 
 def reveal_later(chat, key, ip, port):
@@ -795,33 +784,9 @@ def receive_messages(server, chat):
         threading.Thread(target=handle, args=(conn, ip), daemon=True).start()
 
 
-def clean_text(value, limit):
-    """Replace control characters with spaces and cut to limit characters."""
-    return "".join(char if char.isprintable() else " " for char in value)[:limit]
 
 
-def peer_name(value):
-    """입장 알림으로 받은 피어 이름. 메시지 보낸 사람 이름과 같은 규칙 (제어 문자 공백, 32자) 으로 정리하고,
-    정리 후 비면 unknown 을 쓴다. 이름 길이 규칙 자체는 여기서 정하지 않는다."""
-    if not isinstance(value, str):
-        return "unknown"
-    name = clean_text(value, 32)
-    return name if name.strip() else "unknown"
 
-
-def squeeze_spaces(value):
-    """Collapse each run of spaces to one space."""
-    return re.sub(" +", " ", value)
-
-
-def sender_name(value):
-    """A sender name as shown: cleaned, spaces squeezed, trimmed, and "unknown" when nothing is left."""
-    return squeeze_spaces(clean_text(value, 32)).strip() or "unknown"
-
-
-def plain_sender(value):
-    """The sender of a plain message. Colons are removed, so the name cannot pass for the start of the text."""
-    return sender_name(clean_text(value, 32).replace(":", "").replace("：", ""))
 
 
 class _Deadline:
@@ -917,7 +882,7 @@ def _receive_encrypted(conn, first, chat):
         # A second, different reveal from the same peer: refuse the connection, with one line of warning.
         with chat.peers_lock:
             found = next((info for info in chat.peers.values() if info.get("key") == sender), None)
-        say(f"{found['name'] if found else '?'}: 다른 확인 값이 왔습니다. 연결을 거부했습니다")  # shortcut: Korean-only, as the other notices
+        chat.emit(Notice("trust.wrong_code", {"name": found["name"] if found else "?"}))  # shortcut: reused wording
         raise ValueError("a different reveal from this peer was already given")
     if sender not in chat.reveals:
         chat.reveals[sender] = nonce
@@ -952,12 +917,12 @@ def deliver(data, key, chat):
     if key is not None:
         # Verified: the name the user verified, not the one the message claims. One line.
         name = chat.trusted_name(key)
-        say(f"{name if name is not None else sender_name(sender)}: {squeeze_spaces(' '.join(rows))}")
+        chat.emit(Message(name if name is not None else sender_name(sender), squeeze_spaces(' '.join(rows))))
         return
     # Plain: no key to check. Every row carries the plain sender's label, so no row can pass for another sender.
     label = f"{plain_sender(sender)} ({t('chat.plain')})"
     for row in rows:
-        say(f"{label}: {row}")
+        chat.emit(Message(label, row))
 
 
 _PEER_CLOSED_ERRNOS = {getattr(errno, name) for name in ("ENOTCONN", "ECONNRESET", "EPIPE") if hasattr(errno, name)}
@@ -1025,7 +990,7 @@ def control_answer(chat, request, allow_shutdown):
     if cmd == "lines":
         with chat.lines_lock:
             rows = list(chat.lines[-CONTROL_LINES_SHOWN:])
-        return {"ok": True, "lines": [{"text": text, "mine": mine} for text, mine in rows]}
+        return {"ok": True, "lines": [{"text": f"{sender} > {text}" if sender else text, "mine": mine} for text, mine, sender, _ in rows]}
     if cmd == "peers":
         peers = [{"name": info["name"], "ip": info["ip"], "port": info["port"]} for info in chat.fresh_peers().values()]
         mode = relay_settings.SUPABASE if chat.supabase else relay_settings.LOCAL
@@ -1292,6 +1257,23 @@ def tail(text, cols):
 
 
 ACCENT, BORDER, MUTED = relay_form.ACCENT, relay_form.BORDER, relay_form.MUTED
+TEXT, BOLD = relay_form.TEXT, relay_form.BOLD
+
+
+def message_rows(text, mine, sender, stamp, cols):
+    """The styled rows of one chat line, as Rust screen.rs message_rows: "[time] name > text", the text wrapped under its
+    start. Mine is bold green; the name is the title colour. A notice (no sender) is muted."""
+    width = cols - 1
+    if sender is None:
+        return [f"{MUTED}{row}" for row in wrap_line(text, width)]
+    body = f"{BOLD}{ACCENT}" if mine else TEXT
+    head = f"[{stamp}] {sender} > "
+    room = width - char_width(head)
+    if room < 8:
+        return [f"{body}{row}" for row in wrap_line(f"{sender} > {text}", width)]
+    rows = wrap_line(text, room)
+    first = f"{MUTED}[{stamp}] {BOLD}{ACCENT}{sender}{relay_form.RESET}{MUTED} > {body}{rows[0]}"
+    return [first] + [f"{' ' * char_width(head)}{body}{row}" for row in rows[1:]]
 
 
 def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=""):
@@ -1302,7 +1284,10 @@ def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=
     Pure, so tests can check the layout."""
     cols, rows = max(20, cols), max(10, rows)
     area = rows - 9   # rows: header, divider, log title, messages, nodes, divider, guide, input, status, footer
-    wrapped = [(row, mine) for line, mine in lines for row in wrap_line(line, cols - 1)]
+    wrapped = []
+    for entry in lines:
+        line, mine, sender, stamp = (tuple(entry) + (None, ""))[:4]  # a (text, mine) pair is a notice
+        wrapped += message_rows(line, mine, sender, stamp, cols)
     visible = wrapped[max(0, len(wrapped) - area):]
     # Each row is overwritten in place and the rest of it cleared (ESC K); no whole-row blank first, so nothing flickers.
     out = []
@@ -1315,8 +1300,7 @@ def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=
     put(3, f"{ACCENT}COMMUNICATION LOG")
     for index in range(area):
         if index < len(visible):
-            row, mine = visible[index]
-            put(index + 4, f"\x1b[1m{ACCENT}{row}" if mine else row)
+            put(index + 4, visible[index])
         else:
             put(index + 4, "")
     # The phone address and token, over the bottom rows of the messages. They are not chat lines.
@@ -1461,7 +1445,7 @@ def on_key(ch, chat, typed):
 
 def run_ansi(chat):
     """The one chat screen, drawn with ANSI codes and the standard library only, so it looks the same on every console."""
-    global _sink, _restore_screen
+    global _restore_screen
     leave = _enter_screen()
     typed = [""]
     screen_lock = threading.Lock()
@@ -1487,12 +1471,11 @@ def run_ansi(chat):
         with screen_lock:
             _draw(frame)
 
-    def add(line, mine=False):
-        chat.add_line(line, mine)
+    def show(event):
+        chat.add_event(event)
         redraw()
 
-    with _sink_lock:
-        _sink = add
+    chat.on_event = show
     chat.on_phone_change = redraw
     _restore_screen = leave
     redraw()
@@ -1508,9 +1491,9 @@ def run_ansi(chat):
                     paused[0] = False
                 if outcome == "saved":
                     chat.start_relay()
-                    say(message)
+                    chat.emit(Line(message))
                 else:
-                    say(t("settings.cancel_discard"))
+                    chat.emit(Notice("settings.cancel_discard"))
                 redraw()
                 continue
             if not on_key(ch, chat, typed):
@@ -1518,11 +1501,10 @@ def run_ansi(chat):
             redraw()
     finally:
         chat.on_phone_change = None
-        with _sink_lock:
-            _sink = None
+        chat.on_event = Chat.on_event  # back to stdout: the screen is gone
         _restore_screen = None
         leave()
-    say(t("bye"))
+    chat.emit(Notice("bye"))
     return 0
 
 
@@ -1549,7 +1531,6 @@ def open_chat(_args):
 def start_node(args, state=None, plaintext=None):
     """Bind the sockets and start the network threads. Returns (server, chat).
     Keys and trusted peers live in the state folder (shared with the Rust edition); plain messages follow config.json."""
-    global _sink
     state = state or state_dir()
     public, secret = store.load_or_create_identity(state)
     trusted = store.read_trusted(state)
@@ -1565,8 +1546,7 @@ def start_node(args, state=None, plaintext=None):
     chat.state_dir = state
     # The first node on this PC is the host (방장): the badge shows it; the name stays a country name, as on every node.
     chat.try_become_host()
-    with _sink_lock:
-        _sink = chat.add_line
+    chat.on_event = chat.add_event
     threading.Thread(target=receive_messages, args=(server, chat), daemon=True).start()
     threading.Thread(target=announce, args=(args.udp_port, me), daemon=True).start()
     threading.Thread(target=listen_for_peers, args=(args.udp_port, chat), daemon=True).start()
@@ -1576,14 +1556,15 @@ def start_node(args, state=None, plaintext=None):
 def serve(args):
     """Chat without a screen, for a GUI: only the control channel runs. Ends on Ctrl+C or a `shutdown` request."""
     server, chat = start_node(args)
+    _tidy_sessions(chat)
     control = start_control(chat, state_dir(), allow_shutdown=True)
     chat.watch_host()
     chat.start_relay()
     STOP.wait(ANNOUNCE_SECONDS + 0.5)
     renamed = resolve_name_clash(chat)
     if renamed:
-        say(t("name.changed", old=renamed[0], new=renamed[1]))
-    say(t("start.hello", name=chat.me["name"], port=chat.me["port"]))
+        chat.emit(Notice("name.changed", dict(old=renamed[0], new=renamed[1])))
+    chat.emit(Notice("start.hello", dict(name=chat.me["name"], port=chat.me["port"])))
     try:
         while not STOP.wait(1):
             pass
@@ -1600,6 +1581,7 @@ def serve(args):
 
 def run(args):
     server, chat = start_node(args)
+    _tidy_sessions(chat)
     me = chat.me
     control = start_control(chat, state_dir())
     chat.watch_host()  # the first node on this PC owns the phone address; another takes over when it ends
@@ -1618,8 +1600,8 @@ def run(args):
     STOP.wait(ANNOUNCE_SECONDS + 0.5)
     renamed = resolve_name_clash(chat)
     if renamed:
-        say(t("name.changed", old=renamed[0], new=renamed[1]))
-    say(t("start.hello", name=me["name"], port=me["port"]))
+        chat.emit(Notice("name.changed", dict(old=renamed[0], new=renamed[1])))
+    chat.emit(Notice("start.hello", dict(name=me["name"], port=me["port"])))
     try:
         return run_ansi(chat)
     finally:
@@ -1726,7 +1708,7 @@ def list_sessions_command():
     return 0
 
 
-def _tidy_sessions():
+def _tidy_sessions(chat):
     """Remove node folders whose node has ended without cleaning up, each after its relay row (best effort). In the
     background: the start does not wait for the relay. Quiet: a folder that cannot be removed is only named, as a chat
     line (stderr would break the full screen)."""
@@ -1735,7 +1717,7 @@ def _tidy_sessions():
 
     def tidy():
         for session_id in sessions.remove_dead_sessions(sessions.base_dir(), leave=leave):
-            say(f"could not remove dead session {session_id}")
+            chat.emit(Line(f"could not remove dead session {session_id}"))
 
     threading.Thread(target=tidy, daemon=True).start()
 
@@ -1745,7 +1727,6 @@ def _dispatch(args):
         return list_sessions_command()
     if args.command in ("run", "serve"):
         sessions.choose_session(args.session)  # a bad or missing --session is reported by main()
-        _tidy_sessions()
     if args.command in ("run", "serve") and args.udp_port is None:
         args.udp_port = udp_port()  # a bad HERDR_TALK_UDP_PORT is reported by main() and stops the start
     if args.command == "run":

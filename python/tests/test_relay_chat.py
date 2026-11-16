@@ -7,7 +7,8 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import relay_chat as rc  # noqa: E402
-import relay_rest  # noqa: E402
+from core import relay_rest  # noqa: E402
+from core.events import Notice, Status  # noqa: E402
 
 ROOM = "ABCD1234"
 SEED = bytes(range(32))
@@ -18,11 +19,11 @@ class Hooks:
         self.said = []
         self.status = ""
 
-    def say(self, text):
-        self.said.append(text)
-
-    def set_status(self, text):
-        self.status = text
+    def emit(self, event):
+        if isinstance(event, Status):
+            self.status = event.text
+        else:
+            self.said.append(event)
 
 
 def settings(**changes):
@@ -109,7 +110,7 @@ class RoomThreadTests(unittest.TestCase):
         relay = rc.Relay(hooks, None, self.config, settings(), self.session)
         relay.send("hello")
         relay._wait(0.3)
-        self.assertEqual(hooks.said, ["relay: room messages are not sent yet, the message was not sent"])
+        self.assertEqual(hooks.said, [Notice("relay.room_not_sent")])
 
 
 if __name__ == "__main__":

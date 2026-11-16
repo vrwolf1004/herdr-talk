@@ -40,7 +40,7 @@
   "trust.save_failed": "vérifié pour cette session seulement, sauvegarde impossible : {error}",
   "peer.unverified": "non envoyé à {name} : pas encore vérifié. Comparez les codes, puis /trust",
   "peer.plain_off": "non envoyé à {name} : il ne chiffre pas, et le texte en clair est désactivé",
-  "peer.fingerprint": "{name} ({ip}) : pas encore vérifié\n  Code : {code}\n  Comparez-le avec le code de l'autre écran, puis tapez /trust",
+  "peer.fingerprint": "{name} ({ip}) : pas encore vérifié\n  Code : {code}\n  Clé: {fp}\n  Comparez-le avec le code de l'autre écran, puis tapez /trust",
   "peer.key_changed": "{name} ({ip}) a une nouvelle clé. Non approuvé, rien envoyé. Utilisez /trust seulement si vous savez pourquoi",
   "peers.verified": "vérifié",
   "peers.plain": "texte en clair",
@@ -66,5 +66,8 @@
   "settings.save_ok_local": "Enregistré : mode local. Le relais est arrêté.",
   "settings.save_ok_supabase": "Enregistré : mode Supabase. Le relais est démarré.",
   "settings.save_refused_missing": "Non enregistré. Manquant : {fields}",
-  "settings.cancel_discard": "Paramètres quittés sans enregistrer."
+  "settings.cancel_discard": "Paramètres quittés sans enregistrer.",
+  "peer.old_version": "{name} ({ip}) : ancienne version, vérification impossible. Mettez les deux PC à la nouvelle version",
+  "trust.wrong_code": "{name} : une autre valeur de confirmation est arrivée. Connexion refusée",
+  "relay.room_not_sent": "relay : les messages de salon ne sont pas encore envoyés, le message n'a pas été envoyé"
 }

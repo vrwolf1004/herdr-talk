@@ -34,8 +34,8 @@ class FrameTest(unittest.TestCase):
     def test_messages_start_under_the_log_title_and_stop_above_the_nodes_row(self):
         frame = self.frame([("a", False), ("b", False)], rows=12)
         # rows=12: header 1, divider 2, log title 3, messages 4..6, nodes 7, divider 8, guide 9, input 10, status 11, footer 12.
-        self.assertIn(place(4, "a"), frame)
-        self.assertIn(place(5, "b"), frame)
+        self.assertIn(place(4, MUTED + "a"), frame)
+        self.assertIn(place(5, MUTED + "b"), frame)
         self.assertIn(place(7, f"{ACCENT}CONNECTED NODES{RESET}  "), frame)
         self.assertIn(place(8, BORDER + "─" * 29), frame)
         self.assertIn(BACKGROUND + TEXT + "MESSAGE > ", frame)
@@ -49,10 +49,9 @@ class FrameTest(unittest.TestCase):
         self.assertNotIn("line5", frame)
 
     def test_my_lines_are_bold_green(self):
-        frame = self.frame([("Haruto (you): hi", True), ("Liam: yo", False)], rows=12)
-        self.assertIn(place(4, BOLD + ACCENT + "Haruto (you): hi"), frame)
-        self.assertIn("Liam: yo", frame)
-        self.assertNotIn(ACCENT + "Liam", frame)
+        frame = self.frame([("hi", True, "Haruto", "12:30:21"), ("yo", False, "Liam", "12:30:22")], rows=12)
+        self.assertIn(place(4, f"{MUTED}[12:30:21] {BOLD}{ACCENT}Haruto{RESET}{MUTED} > {BOLD}{ACCENT}hi"), frame)
+        self.assertIn(place(5, f"{MUTED}[12:30:22] {BOLD}{ACCENT}Liam{RESET}{MUTED} > {TEXT}yo"), frame)
 
     def test_input_row_shows_the_typed_text_at_the_end(self):
         frame = self.frame([], typed="hello")
@@ -78,14 +77,12 @@ class FrameTest(unittest.TestCase):
 class KeyTest(unittest.TestCase):
     def setUp(self):
         self.chat = make_chat()
-        self.saved_sink = talk._sink
-        talk._sink = self.chat.add_line
+        self.chat.on_event = self.chat.add_event
         self.saved_send = talk.send_to
         self.sent = []
         talk.send_to = lambda peer, me, text: self.sent.append(text)
 
     def tearDown(self):
-        talk._sink = self.saved_sink
         talk.send_to = self.saved_send
 
     def press(self, typed, *keys):
@@ -95,7 +92,7 @@ class KeyTest(unittest.TestCase):
         return True
 
     def texts(self):
-        return [line for line, _ in self.chat.lines]
+        return [entry[0] for entry in self.chat.lines]
 
     def test_typing_and_backspace(self):
         typed = [""]
@@ -133,7 +130,7 @@ class KeyTest(unittest.TestCase):
         typed = ["hello"]
         talk.on_key("\r", self.chat, typed)
         self.assertEqual(self.sent, ["hello"])
-        self.assertEqual(self.chat.lines[-1], ("Haruto (you): hello", True))
+        self.assertEqual(self.chat.lines[-1][:3], ("hello", True, "Haruto"))
 
     def test_help_puts_the_box_in_the_messages(self):
         typed = ["/help"]

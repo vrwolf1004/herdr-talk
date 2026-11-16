@@ -2,7 +2,7 @@
 //! message per member, then one post), and shows the messages addressed to it after checking the sender.
 //! Design: docs/room-messages-design.md. Unverified members get no text: the send says how many were left out.
 
-use crate::chat::{Chat, MAX_TEXT_CHARS};
+use crate::chat::{Chat, Line, MAX_TEXT_CHARS};
 use crate::i18n::t;
 use crate::net::noise_builder;
 use crate::relay_key;
@@ -139,7 +139,7 @@ fn send_text(chat: &Chat, config: &Config, seed: &[u8; 32], room_code: &str, ide
     trusted.sort_by(|a, b| a.pk.cmp(&b.pk));
     match post_to(config, seed, room_code, identity, &trusted, &own, text) {
         Ok(()) => {
-            chat.say(format!("{} {}: {text}", label(names, me, &own), t("chat.you", &[])));
+            chat.add(vec![Line { sender: Some(format!("{} {}", label(names, me, &own), t("chat.you", &[]))), text: text.to_string(), mine: true, seq: 0 }]);
             if left_out > 0 {
                 chat.say(t("room.left_out", &[("n", &left_out.to_string())]));
             }
@@ -215,7 +215,7 @@ fn show_message(chat: &Chat, identity: &Identity, members: &[Member], names: &mu
     }
     let name = name_key(&trusted);
     names.insert(row.sender_pk.clone(), name.clone());
-    chat.say(format!("{}: {text}", label(names, &row.sender_pk, &name)));
+    chat.add(vec![Line { sender: Some(label(names, &row.sender_pk, &name)), text, mine: false, seq: 0 }]);
 }
 
 /// The initiator's Noise message (IK, the payload in message 1): the sender key is proven to the receiver.
@@ -370,7 +370,7 @@ mod tests {
         let mut names = HashMap::new();
         show_message(&bob, &identity, &members, &mut names, &mut cache, &row);
         show_message(&bob, &identity, &members, &mut names, &mut cache, &row);
-        let shown: Vec<String> = bob.lines().into_iter().map(|line| line.text).collect();
+        let shown: Vec<String> = bob.lines().into_iter().map(|line| line.render()).collect();
         assert_eq!(shown, vec!["Alice: hello room".to_string()], "shown once; a replay is dropped");
         // A sender that is not a member, and a sender whose key is not trusted, show nothing.
         let (_, stranger) = ed_key(5);
@@ -396,8 +396,11 @@ mod tests {
         let ciphertext = store::to_hex(&seal(&alice_secret, &bob_public, payload.as_bytes()).unwrap());
         let row = Message { message_id: "ff".repeat(16), sender_pk: alice_pk.clone(), ts, nonce: NONCE.into(), ciphertext, created_at: "2026".into() };
         show_message(&bob, &identity, &members, &mut HashMap::new(), &mut NonceCache::default(), &row);
-        let shown: Vec<String> = bob.lines().into_iter().map(|line| line.text).collect();
+        let shown: Vec<String> = bob.lines().into_iter().map(|line| line.render()).collect();
         assert_eq!(shown, vec!["Alice: hi".to_string()]);
+        // Shown like a LAN message: the name is the sender, the text is separate, and it is not this PC's own line.
+        let line = &bob.lines()[0];
+        assert_eq!((line.sender.as_deref(), line.text.as_str(), line.mine), (Some("Alice"), "hi", false));
     }
 
     #[test]

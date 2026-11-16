@@ -7,8 +7,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-import relay_key  # noqa: E402
-import sessions  # noqa: E402
+from core import relay_key  # noqa: E402
+from core import sessions  # noqa: E402
 
 
 class SessionsTest(unittest.TestCase):

@@ -56,6 +56,8 @@ pub(crate) enum Tone {
     Alert,
     /// The phone address over the messages: dark text on the border green.
     Overlay,
+    /// The divider lines: the border green.
+    Border,
 }
 
 /// Print text in a tone on the background colour.
@@ -67,6 +69,7 @@ pub(crate) fn print_tone(out: &mut Stdout, text: &str, tone: Tone) -> io::Result
         Tone::Warn => (WARN, BACKGROUND, true),
         Tone::Alert => (ALERT, BACKGROUND, true),
         Tone::Overlay => (BACKGROUND, BORDER, false),
+        Tone::Border => (BORDER, BACKGROUND, false),
     };
     let bold = if bold { "\x1b[1m" } else { "" };
     queue!(out, Print(format!("{}{}{bold}{text}\x1b[0m", back(back_color), fore(fore_color))))
@@ -93,7 +96,7 @@ pub(crate) fn clear_row(out: &mut Stdout, row: u16) -> io::Result<()> {
 
 /// A row of dashes across the width.
 fn dash(width: usize) -> Row {
-    vec![("-".repeat(width), Tone::Dim)]
+    vec![("-".repeat(width), Tone::Border)]
 }
 
 /// A row with a left part and a right part, cut to the width so they never overlap.
@@ -271,8 +274,7 @@ fn input_row(input: &str, width: usize) -> (Row, usize) {
     let room = width.saturating_sub(char_width(PROMPT) + 1);
     let shown = tail(input, room);
     let cursor = char_width(PROMPT) + char_width(&shown);
-    // shortcut: the input hint is Korean-only like the other screen texts; move it to the locales with them.
-    let typed = if input.is_empty() { ("메시지를 입력하세요...".to_string(), Tone::Dim) } else { (shown, Tone::Title) };
+    let typed = if input.is_empty() { (t("chat.input_hint", &[]), Tone::Dim) } else { (shown, Tone::Title) };
     (vec![(PROMPT.to_string(), Tone::Title), typed], cursor)
 }
 

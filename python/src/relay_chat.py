@@ -4,7 +4,7 @@ Supabase mode only. The chat joins the room in the settings (join-room) and publ
 needs its owner row. Sending to room members is not implemented yet: a typed text is not sent and a notice says so.
 Nothing is stored.
 
-This module does not import talk.py. The chat gives it a `hooks` object with: say(text), set_status(text).
+This module does not import talk.py. The chat gives it a `hooks` object with: emit(event).
 """
 
 import os
@@ -12,8 +12,9 @@ import queue
 import threading
 import time
 
-import relay_key
-import relay_rest
+from core import relay_key
+from core.events import Notice, Status
+from core import relay_rest
 import relay_settings
 
 SLICE_SECONDS = 0.2
@@ -65,7 +66,7 @@ class Relay:
                     self.outbox.get_nowait()
                 except queue.Empty:
                     break
-                self.hooks.say("relay: room messages are not sent yet, the message was not sent")
+                self.hooks.emit(Notice("relay.room_not_sent"))
             time.sleep(SLICE_SECONDS)
 
     def _join_room(self):
@@ -95,15 +96,15 @@ class Relay:
         name = self.settings["name"]
         if name and not relay_rest.valid_name(name):
             # A bad name would never get its row, so the join would fail on the missing row: stop here with the reason.
-            self.hooks.set_status("relay: name is not valid; not joined yet")
+            self.hooks.emit(Status("relay: name is not valid; not joined yet"))
             return
         if relay_rest.valid_name(name):
             while not self._publish():
-                self.hooks.set_status("relay: could not publish this PC's row; not joined yet")
+                self.hooks.emit(Status("relay: could not publish this PC's row; not joined yet"))
                 self._wait(WAIT_SECONDS)
                 if self.stop_event.is_set():
                     return
-        self.hooks.set_status(self._join_room())
+        self.hooks.emit(Status(self._join_room()))
         while not self.stop_event.is_set():
             self._wait(WAIT_SECONDS)
 

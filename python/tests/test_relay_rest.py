@@ -7,8 +7,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-import ed25519  # noqa: E402
-import relay_rest  # noqa: E402
+from core import ed25519  # noqa: E402
+from core import relay_rest  # noqa: E402
 
 # Dummy values only. Nothing here sends a request: urlopen is mocked where a send is tested.
 SEED = bytes(range(32))  # Ed25519 private key for the tests; its public key is PK_OF_SEED

@@ -5,8 +5,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-import ed25519  # noqa: E402
-import relay_key  # noqa: E402
+from core import ed25519  # noqa: E402
+from core import relay_key  # noqa: E402
 
 # RFC 8032 section 7.1, TEST 1 to TEST 3 (secret, public, message, signature).
 RFC8032 = [

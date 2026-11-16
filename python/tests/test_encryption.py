@@ -11,8 +11,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 os.environ.setdefault("HERDR_TALK_LANG", "en")
 
-import noise  # noqa: E402
-import store  # noqa: E402
+from core import noise  # noqa: E402
+from core import store  # noqa: E402
 import talk  # noqa: E402
 
 
@@ -62,12 +62,12 @@ class Base(unittest.TestCase):
     def setUp(self):
         talk.STOP.clear()
         self.lines = []
-        self.saved = talk._sink
-        talk._sink = lambda line, mine=False: self.lines.append(line)
+        self.saved = talk.Chat.on_event
+        talk.Chat.on_event = staticmethod(lambda event: self.lines.extend(talk.event_texts(event)))
         self.dir = tempfile.mkdtemp(prefix="herdr-talk-enc-")
 
     def tearDown(self):
-        talk._sink = self.saved
+        talk.Chat.on_event = staticmethod(self.saved)
         talk.STOP.clear()
         shutil.rmtree(self.dir, ignore_errors=True)
 
@@ -162,10 +162,12 @@ class AnnouncementTest(Base):
         mine.reveals[key] = bytes(32)
         mine.peers["x"] = {"id": theirs.me["id"], "name": "B", "ip": "10.0.0.2", "port": 1, "seen": time.time(), "key": key}
         talk.show_code(mine, key)
-        self.assertEqual(len(self.lines), 3, self.lines)
+        self.assertEqual(len(self.lines), 4, self.lines)
         self.assertTrue(self.lines[1].startswith("  "), self.lines[1])
         self.assertIn(mine.sas_for(key), self.lines[1])
-        self.assertTrue(self.lines[2].startswith("  ") and mine.sas_for(key) not in self.lines[2], self.lines[2])
+        # The key fingerprint row: the same 8 characters Rust store::fingerprint gives for these two keys.
+        self.assertEqual(self.lines[2], "  Key: " + talk.store.fingerprint(mine.me["key"], key), self.lines[2])
+        self.assertTrue(self.lines[3].startswith("  ") and mine.sas_for(key) not in self.lines[3], self.lines[3])
 
     def test_an_old_version_is_named_once_and_a_first_contact_is_silent(self):
         mine = make_chat("A")
@@ -173,7 +175,7 @@ class AnnouncementTest(Base):
         old_info = {"id": old.me["id"], "name": "Old", "port": 5, "key": old.me["key"]}  # no commits key at all
         announce(mine, old_info, "10.0.0.8")
         announce(mine, old_info, "10.0.0.8")
-        self.assertEqual(len([line for line in self.lines if "구버전" in line]), 1, self.lines)
+        self.assertEqual(len([line for line in self.lines if line == talk.t("peer.old_version", name="Old", ip="10.0.0.8")]), 1, self.lines)
         self.lines.clear()
         new = make_chat("New")
         first = {"id": new.me["id"], "name": "New", "port": 6, "key": new.me["key"], "commits": {"00" * 32: "11" * 32}}
@@ -276,7 +278,7 @@ class ExchangeTest(Base):
         self.pair()
         talk.send_to(self.peer(self.a), self.a.me, "안녕 암호화")
         self.wait_for(1)
-        self.assertEqual(self.lines, ["A: 안녕 암호화"])
+        self.assertEqual(self.lines, ["A > 안녕 암호화"])
 
     def test_what_goes_on_the_wire_is_not_plain(self):
         self.pair()
@@ -299,7 +301,7 @@ class ExchangeTest(Base):
         self.lines.clear()
         with self.assertRaises((OSError, ValueError)):
             talk.exchange_reveal(self.a, "127.0.0.1", self.b.me["port"], self.b.me["key"])
-        self.assertEqual(len([line for line in self.lines if "거부" in line]), 1, self.lines)
+        self.assertEqual(len([line for line in self.lines if line == talk.t("trust.wrong_code", name="A")]), 1, self.lines)
 
     def test_an_unverified_sender_message_is_never_shown(self):
         # B answers only the reveal of an unverified sender (its commitment is known). A chat message is refused.
@@ -320,7 +322,7 @@ class ExchangeTest(Base):
         self.b.plaintext = True
         talk.send_to(legacy, {"id": "old", "name": "Old"}, "plain hello")
         self.wait_for(1)
-        self.assertEqual(self.lines, ["Old (plain text): plain hello"])
+        self.assertEqual(self.lines, ["Old (plain text) > plain hello"])
 
     def test_a_key_derived_id_cannot_pass_as_plain(self):
         self.pair(plaintext=True)
@@ -360,7 +362,7 @@ class ExchangeTest(Base):
         self.a.trusted.append({"name": "B", "key": self.b.me["key"], "ip": "127.0.0.1"})
         talk.send_to(self.peer(self.a), self.a.me, "now it works")
         self.wait_for(1)
-        self.assertEqual(self.lines, ["A: now it works"])
+        self.assertEqual(self.lines, ["A > now it works"])
 
     def test_trust_refuses_two_different_keys_with_one_code(self):
         me = make_chat()

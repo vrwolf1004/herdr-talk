@@ -14,11 +14,11 @@ import talk  # noqa: E402
 class CollectSayTest(unittest.TestCase):
     def setUp(self):
         self.lines = []
-        self.saved = talk._sink
-        talk._sink = lambda line, style="": self.lines.append(line)
+        self.saved = talk.Chat.on_event
+        talk.Chat.on_event = staticmethod(lambda event: self.lines.extend(talk.event_texts(event)))
 
     def tearDown(self):
-        talk._sink = self.saved
+        talk.Chat.on_event = staticmethod(self.saved)
 
 
 class SendParallelTest(CollectSayTest):

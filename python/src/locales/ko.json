@@ -40,7 +40,7 @@
   "trust.save_failed": "이번 실행에서만 확인됨. 저장하지 못함: {error}",
   "peer.unverified": "{name} 에게 보내지 않음: 아직 확인 안 됨. 코드를 비교한 뒤 /trust 하세요",
   "peer.plain_off": "{name} 에게 보내지 않음: 암호화하지 않는 상대이고 평문이 꺼져 있습니다",
-  "peer.fingerprint": "{name} ({ip}): 아직 확인되지 않음\n  코드: {code}\n  상대 화면의 코드와 같은지 비교한 뒤 /trust 를 입력하세요",
+  "peer.fingerprint": "{name} ({ip}): 아직 확인되지 않음\n  코드: {code}\n  키: {fp}\n  상대 화면의 코드와 같은지 비교한 뒤 /trust 를 입력하세요",
   "peer.key_changed": "{name} ({ip}) 의 키가 바뀌었습니다. 확인하지 않았고 보내지도 않습니다. 이유를 알 때만 /trust 하세요",
   "peers.verified": "확인됨",
   "peers.plain": "평문",
@@ -66,5 +66,8 @@
   "settings.save_ok_local": "저장됨: 로컬/자체. relay 를 멈췄다.",
   "settings.save_ok_supabase": "저장됨: Supabase. relay 를 시작했다.",
   "settings.save_refused_missing": "저장하지 않음. 빠진 항목: {fields}",
-  "settings.cancel_discard": "저장하지 않고 설정을 나갔다."
+  "settings.cancel_discard": "저장하지 않고 설정을 나갔다.",
+  "peer.old_version": "{name} ({ip}): 구버전이라 확인할 수 없습니다. 양쪽 PC 를 새 판으로 올리세요",
+  "trust.wrong_code": "{name}: 다른 확인 값이 왔습니다. 연결을 거부했습니다",
+  "relay.room_not_sent": "relay: 방 메시지는 아직 보내지 않습니다. 메시지를 보내지 않았습니다"
 }

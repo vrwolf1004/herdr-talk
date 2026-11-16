@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 os.environ.setdefault("HERDR_TALK_LANG", "en")
 
-import sessions  # noqa: E402
+from core import sessions  # noqa: E402
 import talk  # noqa: E402
 
 
@@ -36,10 +36,9 @@ class Client:
 class ControlTest(unittest.TestCase):
     def setUp(self):
         talk.STOP.clear()
-        self.saved_sink = talk._sink
         self.dir = tempfile.mkdtemp(prefix="herdr-talk-control-")
         self.chat = talk.Chat({"id": "me", "name": "Me", "port": 1234})
-        talk._sink = self.chat.add_line
+        self.chat.on_event = self.chat.add_event
         self.control = talk.start_control(self.chat, self.dir, allow_shutdown=True)
         with open(self.control.file, encoding="utf-8") as f:
             self.info = json.load(f)
@@ -47,7 +46,6 @@ class ControlTest(unittest.TestCase):
     def tearDown(self):
         self.control.close()
         talk.STOP.clear()
-        talk._sink = self.saved_sink
 
     def test_file_has_port_token_pid_and_goes_away(self):
         self.assertEqual(os.path.basename(self.control.file), f"control-{os.getpid()}.json")

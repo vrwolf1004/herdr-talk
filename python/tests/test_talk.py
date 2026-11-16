@@ -19,15 +19,15 @@ import talk  # noqa: E402
 
 
 class CollectSayTest(unittest.TestCase):
-    """say() writes through talk._sink; collect the lines instead of printing."""
+    """Events go to Chat.on_event; collect the lines instead of printing."""
 
     def setUp(self):
         self.lines = []
-        self.saved = talk._sink
-        talk._sink = lambda line, style="": self.lines.append(line)
+        self.saved = talk.Chat.on_event
+        talk.Chat.on_event = staticmethod(lambda event: self.lines.extend(talk.event_texts(event)))
 
     def tearDown(self):
-        talk._sink = self.saved
+        talk.Chat.on_event = staticmethod(self.saved)
 
 
 class WrapAndWidthTest(unittest.TestCase):
@@ -111,7 +111,7 @@ class ReceiveTest(CollectSayTest):
 
     def test_valid_message_is_shown(self):
         self.deliver(self.message())
-        self.assertEqual(self.lines, ["Bob (plain text): hi"])
+        self.assertEqual(self.lines, ["Bob (plain text) > hi"])
 
     def test_wrong_types_are_dropped(self):
         self.deliver(self.message(text=123))

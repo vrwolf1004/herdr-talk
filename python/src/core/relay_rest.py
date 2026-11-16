@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-import ed25519
+from core import ed25519
 
 URL_VARIABLE = "HERDR_TALK_RELAY_URL"
 KEY_VARIABLE = "HERDR_TALK_RELAY_KEY"

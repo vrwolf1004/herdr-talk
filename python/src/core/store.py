@@ -9,7 +9,7 @@ import json
 import os
 import re
 
-import noise
+from core import noise
 
 IDENTITY_FILE = "identity.json"
 TRUSTED_FILE = "trusted.json"

@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 
-import store
+from core import store
 
 KEY_FILE = "relay-signing.key"
 SHORT_FILE = "short-id.txt"

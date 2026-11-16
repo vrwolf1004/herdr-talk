@@ -11,9 +11,9 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 os.environ.setdefault("HERDR_TALK_LANG", "en")
 
-import noise  # noqa: E402
+from core import noise  # noqa: E402
 import phone  # noqa: E402
-import store  # noqa: E402
+from core import store  # noqa: E402
 import talk  # noqa: E402
 
 
@@ -21,15 +21,15 @@ class Base(unittest.TestCase):
     def setUp(self):
         talk.STOP.clear()
         self.lines = []
-        self.saved = talk._sink
-        talk._sink = lambda line, mine=False: self.lines.append(line)
+        self.saved = talk.Chat.on_event
+        talk.Chat.on_event = staticmethod(lambda event: self.lines.extend(talk.event_texts(event)))
         self.dir = tempfile.mkdtemp(prefix="herdr-talk-phone-")
         self.hosts = []
 
     def tearDown(self):
         for host in self.hosts:
             host.release()
-        talk._sink = self.saved
+        talk.Chat.on_event = staticmethod(self.saved)
         talk.STOP.clear()
         shutil.rmtree(self.dir, ignore_errors=True)
 

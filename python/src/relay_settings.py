@@ -9,7 +9,7 @@ selects Supabase; a missing or unknown value means local.
 import json
 import os
 
-import relay_rest
+from core import relay_rest
 
 FILE = "relay.json"
 LOCAL = "local"

@@ -456,10 +456,17 @@ fn reveal_later(chat: &Arc<Chat>, key: &[u8], ip: &str, port: u16) {
 fn show_code(chat: &Chat, key: &[u8]) {
     let Some(code) = chat.sas_for(key) else { return };
     let (name, ip) = chat.peer_by_key(key).unwrap_or_else(|| ("?".to_string(), "?".to_string()));
-    // One chat row per line (the TUIs do not wrap a newline): name and state, the code, then the hint.
-    for row in t("peer.fingerprint", &[("name", &name), ("ip", &ip), ("code", &code)]).split(char::from(10)) {
+    let own = chat.me.lock().unwrap().key.clone();
+    // One chat row per line (the TUIs do not wrap a newline): name and state, the key fingerprint, the code, then the hint.
+    for row in fingerprint_text(&own, key, &name, &ip, &code).split(char::from(10)) {
         chat.say(row);
     }
+}
+
+/// The text of the fingerprint screen. The key fingerprint is the same value on both PCs (sorted keys, see store::fingerprint).
+fn fingerprint_text(own: &[u8], peer: &[u8], name: &str, ip: &str, code: &str) -> String {
+    let key = store::fingerprint(own, peer);
+    t("peer.fingerprint", &[("name", name), ("ip", ip), ("key", &key), ("code", code)])
 }
 
 /// The reveal message (plain JSON inside the Noise session): this PC's key and its nonce for that peer.
@@ -1031,6 +1038,17 @@ mod tests {
     }
 
     #[test]
+    fn the_fingerprint_screen_shows_the_same_key_fingerprint_on_both_sides() {
+        let (own, peer) = (vec![1u8; 32], vec![2u8; 32]);
+        let mine = fingerprint_text(&own, &peer, "Bob", "10.0.0.2", "CODE1234");
+        let theirs = fingerprint_text(&peer, &own, "Ann", "10.0.0.1", "CODE1234");
+        let fingerprint = store::fingerprint(&own, &peer);
+        assert_eq!(fingerprint.len(), 8);
+        assert!(mine.contains(&fingerprint) && theirs.contains(&fingerprint), "{mine}");
+        assert!(mine.contains("Bob") && mine.contains("10.0.0.2") && mine.contains("CODE1234"), "{mine}");
+    }
+
+    #[test]
     fn a_silent_connection_is_cut_at_its_deadline() {
         let (_client, server) = stream_pair();
         let mut conn = Deadline::new(server, Duration::from_millis(200)).unwrap();
@@ -1204,9 +1222,11 @@ mod tests {
         chat.peers.lock().unwrap().push(Peer { id: store::peer_id(&key), name: "B".into(), ip: "10.0.0.2".into(), port: 1, seen: Instant::now(), key: Some(key.to_vec()) });
         show_code(&chat, &key);
         let rows: Vec<String> = chat.lines().into_iter().map(|line| line.text).collect();
-        assert_eq!(rows.len(), 3, "{rows:?}");
-        assert!(rows[1].starts_with("  ") && rows[1].contains(&chat.sas_for(&key).unwrap()), "{rows:?}");
-        assert!(rows[2].starts_with("  ") && !rows[2].contains(&chat.sas_for(&key).unwrap()), "the hint row does not repeat the code: {rows:?}");
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        let own = chat.me.lock().unwrap().key.clone();
+        assert!(rows[1].starts_with("  ") && rows[1].contains(&store::fingerprint(&own, &key)), "{rows:?}");
+        assert!(rows[2].starts_with("  ") && rows[2].contains(&chat.sas_for(&key).unwrap()), "{rows:?}");
+        assert!(rows[3].starts_with("  ") && !rows[3].contains(&chat.sas_for(&key).unwrap()), "the hint row does not repeat the code: {rows:?}");
     }
 
     #[test]

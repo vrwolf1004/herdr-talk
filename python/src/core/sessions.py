@@ -9,8 +9,8 @@ import json
 import os
 import shutil
 
-import relay_key
-import relay_rest
+from core import relay_key
+from core import relay_rest
 
 DEFAULT_SESSION = "default"
 

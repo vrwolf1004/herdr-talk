@@ -40,7 +40,7 @@
   "trust.save_failed": "verificado solo para esta sesión, no se pudo guardar: {error}",
   "peer.unverified": "no enviado a {name}: aún sin verificar. Compara los códigos y luego /trust",
   "peer.plain_off": "no enviado a {name}: no cifra, y el texto sin cifrar está desactivado",
-  "peer.fingerprint": "{name} ({ip}): aún no verificado\n  Código: {code}\n  Compárelo con el código de la otra pantalla y escriba /trust",
+  "peer.fingerprint": "{name} ({ip}): aún no verificado\n  Código: {code}\n  Clave: {fp}\n  Compárelo con el código de la otra pantalla y escriba /trust",
   "peer.key_changed": "{name} ({ip}) tiene una clave nueva. No confiado, nada enviado. Usa /trust solo si sabes por qué",
   "peers.verified": "verificado",
   "peers.plain": "texto sin cifrar",
@@ -66,5 +66,8 @@
   "settings.save_ok_local": "Guardado: modo local. El relay está detenido.",
   "settings.save_ok_supabase": "Guardado: modo Supabase. El relay está iniciado.",
   "settings.save_refused_missing": "No guardado. Falta: {fields}",
-  "settings.cancel_discard": "Salido de los ajustes sin guardar."
+  "settings.cancel_discard": "Salido de los ajustes sin guardar.",
+  "peer.old_version": "{name} ({ip}): versión antigua, no se puede verificar. Actualice ambos PC a la nueva versión",
+  "trust.wrong_code": "{name}: llegó otro valor de confirmación. Conexión rechazada",
+  "relay.room_not_sent": "relay: los mensajes de sala aún no se envían, el mensaje no se envió"
 }

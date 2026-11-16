@@ -79,16 +79,16 @@ def _load(language):
         return {}
 
 
-_fallback = _load(DEFAULT)
 _language = DEFAULT
-_messages = _fallback
+_messages = {}   # only the active language is in memory
+_english = None  # read on the first key the active language lacks, then kept
 
 
 def set_language(language):
     """언어를 바꾼다. 지원하지 않는 값이면 en."""
     global _language, _messages
     _language = normalize(language) or DEFAULT
-    _messages = _fallback if _language == DEFAULT else _load(_language)
+    _messages = _load(_language)
 
 
 def language():
@@ -96,7 +96,13 @@ def language():
 
 
 def t(key, **values):
-    text = _messages.get(key) or _fallback.get(key) or key
+    global _english
+    text = _messages.get(key)
+    if not text and _language != DEFAULT:
+        if _english is None:
+            _english = _load(DEFAULT)
+        text = _english.get(key)
+    text = text or key
     return text.format_map(_KeepMissing(values)) if values else text
 
 

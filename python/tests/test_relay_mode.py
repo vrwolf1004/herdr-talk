@@ -13,7 +13,7 @@ os.environ.setdefault("HERDR_TALK_LANG", "en")
 
 import relay_chat  # noqa: E402
 import relay_settings  # noqa: E402
-import store  # noqa: E402
+from core import store  # noqa: E402
 import talk  # noqa: E402
 
 
@@ -43,15 +43,15 @@ class SettingsScreenTest(unittest.TestCase):
 class ModeTest(unittest.TestCase):
     def setUp(self):
         self.lines = []
-        self.saved_sink = talk._sink
-        talk._sink = lambda line, mine=False: self.lines.append((line, mine))
+        self.saved_sink = talk.Chat.on_event
+        talk.Chat.on_event = staticmethod(lambda event: self.lines.extend((text, mine) for text, mine, _ in talk.event_rows(event)))
         self.dir = tempfile.mkdtemp(prefix="herdr-talk-mode-")
         self.public, self.secret = store.load_or_create_identity(self.dir)
         self.chat = talk.Chat({"id": "me", "name": "Me", "port": 1, "key": self.public, "secret": self.secret})
         self.chat.state_dir = self.dir
 
     def tearDown(self):
-        talk._sink = self.saved_sink
+        talk.Chat.on_event = staticmethod(self.saved_sink)
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _peer(self):

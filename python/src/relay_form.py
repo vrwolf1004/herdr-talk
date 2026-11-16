@@ -12,8 +12,8 @@ import threading
 import time
 import unicodedata
 
-import relay_key
-import relay_rest
+from core import relay_key
+from core import relay_rest
 import relay_settings
 from i18n import t
 
@@ -184,7 +184,7 @@ class SettingsForm:
     def _own_keys(state):
         """(Ed25519 public key hex, Noise public key hex) of this PC, or None when they cannot be read yet."""
         try:
-            import ed25519
+            from core import ed25519
             return ed25519.public_key(relay_key.load_or_create(state)).hex(), relay_key.noise_public_hex(state)
         except (relay_key.SigningKeyError, OSError, ValueError, AttributeError):
             return None

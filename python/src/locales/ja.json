@@ -40,7 +40,7 @@
   "trust.save_failed": "今回の実行中だけ確認済み。保存できませんでした: {error}",
   "peer.unverified": "{name} には送りません: 未確認です。コードを比べてから /trust してください",
   "peer.plain_off": "{name} には送りません: 暗号化しない相手で、平文送信はオフです",
-  "peer.fingerprint": "{name} ({ip}): まだ確認されていません\n  コード: {code}\n  相手の画面のコードと同じか比べてから /trust と入力してください",
+  "peer.fingerprint": "{name} ({ip}): まだ確認されていません\n  コード: {code}\n  鍵: {fp}\n  相手の画面のコードと同じか比べてから /trust と入力してください",
   "peer.key_changed": "{name} ({ip}) の鍵が変わりました。信頼せず送信もしません。理由が分かる場合だけ /trust してください",
   "peers.verified": "確認済み",
   "peers.plain": "平文",
@@ -66,5 +66,8 @@
   "settings.save_ok_local": "保存しました: ローカルモード。relay を停止しました。",
   "settings.save_ok_supabase": "保存しました: Supabase モード。relay を開始しました。",
   "settings.save_refused_missing": "保存しませんでした。未入力: {fields}",
-  "settings.cancel_discard": "保存せずに設定を閉じました。"
+  "settings.cancel_discard": "保存せずに設定を閉じました。",
+  "peer.old_version": "{name} ({ip}): 旧バージョンのため確認できません。両方のPCを新しいバージョンに更新してください",
+  "trust.wrong_code": "{name}: 別の確認値が届きました。接続を拒否しました",
+  "relay.room_not_sent": "relay: ルームメッセージはまだ送信できません。メッセージは送信されませんでした"
 }
