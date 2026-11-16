@@ -661,6 +661,14 @@ impl eframe::App for App {
             Kind::Pending => "● SYSTEM STARTING",
             Kind::Problem => "● SYSTEM ATTENTION",
         };
+        let relay_status = (!state.relay.is_empty()).then(|| {
+            let mut chars = state.relay.chars();
+            let mut text: String = chars.by_ref().take(36).collect();
+            if chars.next().is_some() {
+                text.push_str("...");
+            }
+            text
+        });
         egui::TopBottomPanel::bottom("terminal_status")
             .exact_height(38.0)
             .frame(egui::Frame::new().fill(palette.background).stroke(egui::Stroke::new(1.0_f32, palette.border)).inner_margin(egui::Margin::symmetric(12, 8)))
@@ -670,6 +678,12 @@ impl eframe::App for App {
                     ui.colored_label(color, egui::RichText::new(system_label).monospace());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.colored_label(palette.muted, egui::RichText::new("BASE STATION").monospace());
+                        if let Some(relay_status) = &relay_status {
+                            ui.add_sized(
+                                [ui.available_width().min(280.0), 18.0],
+                                egui::Label::new(egui::RichText::new(relay_status).monospace().size(12.0).color(palette.muted)).truncate(),
+                            );
+                        }
                     });
                 });
             });

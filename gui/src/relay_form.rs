@@ -75,10 +75,17 @@ impl Form {
         let saved = relay_settings::load_saved(state);
         let mine = talk_core::relay_chat::my_keys(state).ok();
         let short_id = talk_core::relay_key::short_id(state).unwrap_or_default();
-        let message = if mine.is_none() { t("gui.relay.no_keys", &[]) } else { String::new() };
+        let mut fields = [saved.url, saved.key, saved.name, saved.room_code];
+        let mut message = if mine.is_none() { t("gui.relay.no_keys", &[]) } else { String::new() };
+        if fields[2].trim().is_empty() {
+            match random_nonce() {
+                Ok(nonce) => fields[2] = nonce.chars().take(8).collect::<String>().to_ascii_uppercase(),
+                Err(error) => message = format!("DISPLAY ID를 만들 수 없습니다: {error}"),
+            }
+        }
         Form {
             mode: saved.mode,
-            fields: [saved.url, saved.key, saved.name, saved.room_code],
+            fields,
             message,
             from_env: relay_settings::from_environment(),
             mine,
@@ -333,6 +340,15 @@ pub fn choose(ctx: &egui::Context, palette: &Palette, remaining: Option<u64>) ->
     picked
 }
 
+/// Draw `add` in a column of at most 680px, centred in the width of `ui` with 24px gutters.
+fn centered_column<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let area = ui.available_rect_before_wrap();
+    let width = (area.width() - 48.0).clamp(0.0, 680.0);
+    let left = area.left() + (area.width() - width) / 2.0;
+    let rect = egui::Rect::from_min_size(egui::pos2(left, area.top()), egui::vec2(width, area.height()));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), add).inner
+}
+
 /// Draw the settings window: the mode row, the four fields (greyed out in Local mode), and the buttons.
 pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
     let mut action = Action::Stay;
@@ -350,63 +366,109 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
             Err(error) => form.message = format!("방 만들기 실패: {error}"),
         }
     }
-    egui::CentralPanel::default().show(ctx, |ui| {
-        ui.colored_label(palette.accent, egui::RichText::new(t("settings.mode_row", &[])).heading());
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut form.mode, Mode::Local, t("mode.local", &[]));
-            ui.selectable_value(&mut form.mode, Mode::Supabase, t("mode.supabase", &[]));
+    egui::TopBottomPanel::bottom("relay_settings_actions")
+        .exact_height(60.0)
+        .frame(egui::Frame::new().fill(palette.background).stroke(egui::Stroke::new(1.0_f32, palette.border)).inner_margin(egui::Margin::symmetric(20, 10)))
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if !form.message.is_empty() {
+                    ui.colored_label(palette.muted, egui::RichText::new(form.message.as_str()).monospace());
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_sized([150.0, 40.0], egui::Button::new(egui::RichText::new("SAVE SETTINGS").monospace().color(palette.accent))).clicked() && form.save() {
+                        action = Action::Saved;
+                    }
+                    if ui.add_sized([90.0, 40.0], egui::Button::new(egui::RichText::new("CANCEL").monospace())).clicked() {
+                        action = Action::Discard;
+                    }
+                });
+            });
         });
-        let hint = match form.mode {
-            Mode::Local => t("mode.hint_local", &[]),
-            Mode::Supabase => t("mode.hint_supabase", &[]),
-        };
-        ui.colored_label(palette.muted, hint);
-        ui.add_space(8.0);
-        let enabled = form.mode == Mode::Supabase;
-        for (index, label) in labels().iter().enumerate() {
-            ui.label(label.as_str());
-            let edit = egui::TextEdit::singleline(&mut form.fields[index]).desired_width(f32::INFINITY).password(index == KEY_FIELD);
-            ui.add_enabled(enabled, edit);
-            let (env_url, env_key) = form.from_env;
-            if (index == 0 && env_url) || (index == KEY_FIELD && env_key) {
-                ui.colored_label(palette.muted, t("gui.relay.env_wins", &[]));
-            }
-            ui.add_space(4.0);
-        }
-        // Only Supabase mode can create a room, and only once this PC has its keys and no request is running.
-        let can_create = enabled && form.mine.is_some() && form.creating.is_none();
-        if ui.add_enabled(can_create, egui::Button::new("방 만들기")).clicked() {
-            form.start_create_room(ctx);
-        }
-        ui.separator();
-        if enabled && !form.short_id.is_empty() {
-            ui.label(t("gui.relay.my_id", &[]));
-            ui.add(egui::Label::new(egui::RichText::new(form.short_id.as_str()).monospace().size(22.0)));
-        }
-        match &form.mine {
-            Some((ed, noise)) => {
-                ui.label(t("gui.relay.my_ed", &[]));
-                ui.add(egui::Label::new(egui::RichText::new(ed.as_str()).monospace()).wrap());
-                ui.label(t("gui.relay.my_noise", &[]));
-                ui.add(egui::Label::new(egui::RichText::new(noise.as_str()).monospace()).wrap());
-            }
-            None => {
-                ui.label(t("gui.relay.no_keys_yet", &[]));
-            }
-        }
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            if ui.button(t("gui.button.save", &[])).clicked() && form.save() {
-                action = Action::Saved;
-            }
-            if ui.button(t("gui.button.close", &[])).clicked() {
-                action = Action::Discard;
-            }
+    egui::TopBottomPanel::top("relay_settings_title")
+        .exact_height(78.0)
+        .frame(egui::Frame::new().fill(palette.background).inner_margin(egui::Margin::symmetric(24, 24)))
+        .show(ctx, |ui| {
+            centered_column(ui, |ui| {
+                ui.colored_label(palette.accent, egui::RichText::new("SUPABASE SETTINGS").monospace().heading());
+            });
         });
-        if !form.message.is_empty() {
-            ui.add_space(6.0);
-            ui.colored_label(palette.muted, form.message.as_str());
-        }
+    egui::CentralPanel::default().frame(egui::Frame::new().fill(palette.background)).show(ctx, |ui| {
+        centered_column(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("relay_settings_scroll").show(ui, |ui| {
+                    ui.add_space(24.0);
+                    let enabled = form.mode == Mode::Supabase;
+                    egui::Frame::new()
+                        .fill(palette.panel)
+                        .stroke(egui::Stroke::new(1.0_f32, palette.border))
+                        .inner_margin(egui::Margin::same(20))
+                        .show(ui, |ui| {
+                            ui.colored_label(palette.accent, egui::RichText::new("SECTION 01  SUPABASE CONNECTION").monospace());
+                            ui.add_space(14.0);
+                            for (index, label) in labels().iter().take(2).enumerate() {
+                                ui.colored_label(palette.text, egui::RichText::new(label).monospace());
+                                let edit = egui::TextEdit::singleline(&mut form.fields[index]).password(index == KEY_FIELD);
+                                ui.add_enabled_ui(enabled, |ui| {
+                                    ui.add_sized([ui.available_width(), 40.0], edit);
+                                });
+                                let (env_url, env_key) = form.from_env;
+                                if (index == 0 && env_url) || (index == KEY_FIELD && env_key) {
+                                    ui.colored_label(palette.muted, egui::RichText::new(t("gui.relay.env_wins", &[])).monospace());
+                                }
+                                ui.add_space(14.0);
+                            }
+                        });
+                    ui.add_space(24.0);
+                    egui::Frame::new()
+                        .fill(palette.panel)
+                        .stroke(egui::Stroke::new(1.0_f32, palette.border))
+                        .inner_margin(egui::Margin::same(20))
+                        .show(ui, |ui| {
+                            ui.colored_label(palette.accent, egui::RichText::new("SECTION 02  ROOM SETTINGS").monospace());
+                            ui.add_space(14.0);
+                            for (index, label) in labels().iter().enumerate().skip(2) {
+                                let field_label = if index == 2 { "DISPLAY ID" } else { label };
+                                let label_color = if index == 2 { palette.muted } else { palette.text };
+                                ui.colored_label(label_color, egui::RichText::new(field_label).monospace());
+                                let edit = egui::TextEdit::singleline(&mut form.fields[index]);
+                                ui.add_enabled_ui(enabled && index != 2, |ui| {
+                                    ui.add_sized([ui.available_width(), 40.0], edit);
+                                });
+                                ui.add_space(14.0);
+                            }
+                            let can_create = enabled && form.mine.is_some() && form.creating.is_none();
+                            if ui.add_enabled(can_create, egui::Button::new(egui::RichText::new("CREATE ROOM").monospace()).min_size(egui::vec2(160.0, 40.0))).clicked() {
+                                form.start_create_room(ctx);
+                            }
+                        });
+                    ui.add_space(24.0);
+                    egui::Frame::new()
+                        .fill(palette.panel)
+                        .stroke(egui::Stroke::new(1.0_f32, palette.border))
+                        .inner_margin(egui::Margin::same(20))
+                        .show(ui, |ui| {
+                            ui.colored_label(palette.accent, egui::RichText::new("SECTION 03  DEVICE IDENTITY  /  READ ONLY").monospace());
+                            ui.add_space(14.0);
+                            if enabled && !form.short_id.is_empty() {
+                                ui.colored_label(palette.text, egui::RichText::new(t("gui.relay.my_id", &[])).monospace());
+                                ui.add(egui::Label::new(egui::RichText::new(form.short_id.as_str()).monospace().size(22.0)));
+                                ui.add_space(14.0);
+                            }
+                            match &form.mine {
+                                Some((ed, noise)) => {
+                                    ui.colored_label(palette.text, egui::RichText::new(t("gui.relay.my_ed", &[])).monospace());
+                                    ui.add(egui::Label::new(egui::RichText::new(ed.as_str()).monospace().size(11.5).color(palette.muted)).wrap());
+                                    ui.add_space(14.0);
+                                    ui.colored_label(palette.text, egui::RichText::new(t("gui.relay.my_noise", &[])).monospace());
+                                    ui.add(egui::Label::new(egui::RichText::new(noise.as_str()).monospace().size(11.5).color(palette.muted)).wrap());
+                                }
+                                None => {
+                                    ui.colored_label(palette.muted, egui::RichText::new(t("gui.relay.no_keys_yet", &[])).monospace());
+                                }
+                            }
+                        });
+                    ui.add_space(20.0);
+                });
+        });
     });
     action
 }
