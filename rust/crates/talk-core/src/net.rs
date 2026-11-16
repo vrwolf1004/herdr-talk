@@ -236,10 +236,11 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
         } else if commit.is_some() {
             // The code is shown only after both nonces are known (see reveal_later), never from the announce alone.
             chat.request_reveal(&key, &ip, port);
-        } else {
+        } else if info.get("commits").is_none() {
             // shortcut: a Korean-only notice; move it to the locales when the wording is settled.
             chat.say(format!("{name} ({ip}): 구버전이라 확인할 수 없습니다. 양쪽 PC 를 새 판으로 올리세요"));
         }
+        // Commits present but not for us yet (first contact): the next announce carries ours, so say nothing.
     }
 }
 
@@ -415,6 +416,9 @@ fn receive_encrypted(conn: &mut (impl Read + Write), first: u8, chat: &Chat) -> 
     }
     let nonce = read_reveal(chat, &sender, &payload)?;
     if chat.reveal_of(&sender).is_some_and(|known| known != nonce) {
+        // A second, different reveal from the same peer: refuse the connection, with one line of warning (as Python does).
+        let (name, _ip) = chat.peer_by_key(&sender).unwrap_or_else(|| ("?".to_string(), "?".to_string()));
+        chat.say(format!("{name}: 다른 확인 값이 왔습니다. 연결을 거부했습니다")); // shortcut: Korean-only, as the other notices
         return Err(invalid("a different reveal from this peer was already given"));
     }
     if chat.set_reveal(&sender, nonce) {
@@ -459,8 +463,10 @@ fn reveal_later(chat: &Arc<Chat>, key: &[u8], ip: &str, port: u16) {
 fn show_code(chat: &Chat, key: &[u8]) {
     let Some(code) = chat.sas_for(key) else { return };
     let (name, ip) = chat.peer_by_key(key).unwrap_or_else(|| ("?".to_string(), "?".to_string()));
-    let label = store::key_label(key);
-    chat.say(t("peer.fingerprint", &[("name", &name), ("ip", &ip), ("label", &label), ("code", &code)]));
+    // One chat row per line (the TUIs do not wrap a newline): name and state, the code, then the hint.
+    for row in t("peer.fingerprint", &[("name", &name), ("ip", &ip), ("code", &code)]).split(char::from(10)) {
+        chat.say(row);
+    }
 }
 
 /// The reveal message (plain JSON inside the Noise session): this PC's key and its nonce for that peer.
@@ -1153,6 +1159,62 @@ mod tests {
         let mut conn = TcpStream::connect(address).unwrap();
         assert!(exchange_reveal_on(&mut conn, &first, &second_key).is_err());
         assert!(responder.join().unwrap(), "the responder refuses the reveal");
+    }
+
+    #[test]
+    fn a_second_different_reveal_is_refused_with_one_warning() {
+        let (first, second) = (chat_with_keys(1), chat_with_keys(2));
+        let (first_key, second_key) = (first.me.lock().unwrap().key.clone(), second.me.lock().unwrap().key.clone());
+        first.pin_commit(&second_key, second.my_commit_for(&first_key));
+        second.pin_commit(&first_key, first.my_commit_for(&second_key));
+        // The responder already kept another reveal from this peer.
+        second.set_reveal(&first_key, [0xEE; 32]);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let responder = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut first_byte = [0; 1];
+            conn.read_exact(&mut first_byte).unwrap();
+            let refused = receive_encrypted(&mut conn, first_byte[0], &second).is_err();
+            (refused, second)
+        });
+        let mut conn = TcpStream::connect(address).unwrap();
+        assert!(exchange_reveal_on(&mut conn, &first, &second_key).is_err());
+        let (refused, second) = responder.join().unwrap();
+        assert!(refused);
+        let warnings: Vec<String> = second.lines().into_iter().map(|line| line.text).filter(|text| text.contains("거부")).collect();
+        assert_eq!(warnings.len(), 1, "one warning line: {warnings:?}");
+    }
+
+    #[test]
+    fn an_old_version_is_named_once_and_a_first_contact_is_silent() {
+        let chat = chat_with_keys(1);
+        let old_key = chat_with_keys(2).me.lock().unwrap().key.clone();
+        let old = json!({"app": APP, "id": store::peer_id(&old_key), "name": "Old", "port": 5, "key": store::to_hex(&old_key)}).to_string();
+        remember_peer(&chat, old.as_bytes(), "10.0.0.8".into());
+        remember_peer(&chat, old.as_bytes(), "10.0.0.8".into());
+        let named = chat.lines().into_iter().filter(|line| line.text.contains("구버전")).count();
+        assert_eq!(named, 1, "the old-version notice comes once");
+        let new_key = chat_with_keys(3).me.lock().unwrap().key.clone();
+        let first = json!({"app": APP, "id": store::peer_id(&new_key), "name": "New", "port": 6, "key": store::to_hex(&new_key), "commits": {"00": "11"}}).to_string();
+        let before = chat.lines().len();
+        remember_peer(&chat, first.as_bytes(), "10.0.0.9".into());
+        let added: Vec<String> = chat.lines()[before..].iter().map(|line| line.text.clone()).collect();
+        assert!(added.iter().all(|text| !text.contains("구버전")), "a first contact is silent: {added:?}");
+    }
+
+    #[test]
+    fn the_code_is_on_its_own_indented_row() {
+        let chat = chat_with_keys(1);
+        let key = [7u8; 32];
+        chat.my_nonce_for(&key);
+        assert!(chat.set_reveal(&key, [9; 32]));
+        chat.peers.lock().unwrap().push(Peer { id: store::peer_id(&key), name: "B".into(), ip: "10.0.0.2".into(), port: 1, seen: Instant::now(), key: Some(key.to_vec()) });
+        show_code(&chat, &key);
+        let rows: Vec<String> = chat.lines().into_iter().map(|line| line.text).collect();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert!(rows[1].starts_with("  ") && rows[1].contains(&chat.sas_for(&key).unwrap()), "{rows:?}");
+        assert!(rows[2].starts_with("  ") && !rows[2].contains(&chat.sas_for(&key).unwrap()), "the hint row does not repeat the code: {rows:?}");
     }
 
     #[test]

@@ -597,25 +597,30 @@ impl eframe::App for App {
             self.phone_until = None;
         }
         let mut open_settings = false;
-        egui::TopBottomPanel::top("status").frame(inset(&palette, self.crt)).show(ctx, |ui| {
+        let supabase = talk_core::relay_settings::Mode::from_saved(&state.mode) == talk_core::relay_settings::Mode::Supabase;
+        let (status_short, status_kind) = status_label(&state.status, supabase);
+        egui::TopBottomPanel::top("status")
+            .exact_height(40.0)
+            .frame(egui::Frame::new().fill(palette.background).stroke(egui::Stroke::new(1.0_f32, palette.border)).inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let supabase = talk_core::relay_settings::Mode::from_saved(&state.mode) == talk_core::relay_settings::Mode::Supabase;
-                let color = match status_label(&state.status, supabase).1 {
+                let color = match status_kind {
                     Kind::Ok => palette.accent,
                     Kind::Pending => palette.muted,
                     Kind::Problem => palette.danger,
                 };
+                ui.colored_label(palette.accent, egui::RichText::new("▣ HERDR-TALK").monospace().strong());
                 if talk_core::phone::read(&state_dir()).is_some_and(|phone| state.me.as_ref().is_some_and(|(_, port)| phone.owner_port == *port)) {
                     ui.colored_label(palette.accent, talk_core::t("host.badge", &[]));
                 }
-                // The top bar shows the same words as the first screen: in Supabase mode the serve line is "Supabase 모드".
-                let supabase_now = talk_core::relay_settings::Mode::from_saved(&state.mode) == talk_core::relay_settings::Mode::Supabase;
                 let shown = if state.status.starts_with(&status_connected()) {
-                    if supabase_now { talk_core::t("gui.top.supabase_connected", &[]) } else { talk_core::t("gui.top.local_connected", &[]) }
+                    if supabase { "CLOUD SERVICE : CONNECTED".to_string() } else { "BASE STATION : CONNECTED".to_string() }
+                } else if state.status.starts_with(&status_embedded()) {
+                    "BASE STATION : CONNECTED".to_string()
                 } else {
-                    state.status.clone()
+                    status_short
                 };
-                ui.colored_label(color, shown);
+                ui.colored_label(color, egui::RichText::new(shown).monospace());
                 if ui.button(talk_core::t("gui.button.connection_mode", &[])).clicked() {
                     open_settings = true;
                 }
@@ -628,6 +633,7 @@ impl eframe::App for App {
                             }
                         });
                     ui.checkbox(&mut self.crt, "CRT");
+                        ui.colored_label(palette.muted, egui::RichText::new("SYS.VER 1.0").monospace());
                 });
             });
         });
@@ -636,28 +642,48 @@ impl eframe::App for App {
             self.relay_form = Some(relay_form::Form::open(&state_dir()));
             ctx.request_repaint();
         }
-        egui::SidePanel::right("peers").default_width(220.0).frame(inset(&palette, self.crt)).show(ctx, |ui| {
-            ui.colored_label(palette.accent, egui::RichText::new(talk_core::t("gui.peers.title", &[])).heading());
+        egui::SidePanel::right("peers").default_width(225.0).frame(inset(&palette, self.crt)).show(ctx, |ui| {
+            ui.colored_label(palette.accent, egui::RichText::new("CONNECTED NODES").monospace().heading());
             if let Some((name, port)) = &state.me {
-                ui.colored_label(palette.accent, talk_core::t("gui.peers.me", &[("name", name.as_str())]));
-                ui.colored_label(palette.accent, format!("{}:{port}", self.local_ip));
+                ui.colored_label(palette.accent, egui::RichText::new(format!("● HOST / YOU  {name}")).monospace());
+                ui.colored_label(palette.muted, egui::RichText::new(format!("{}:{port}", self.local_ip)).monospace());
                 ui.separator();
             }
             if state.peers.is_empty() {
-                ui.label("상대 없음");
+                ui.colored_label(palette.muted, egui::RichText::new("● PEER : WAITING").monospace());
             }
             for peer in &state.peers {
-                ui.label(peer);
+                ui.colored_label(palette.text, egui::RichText::new(format!("● PEER  {peer}")).monospace());
             }
         });
-        egui::TopBottomPanel::bottom("input").frame(inset(&palette, self.crt)).show(ctx, |ui| {
+        let system_label = match status_kind {
+            Kind::Ok => "● SYSTEM ONLINE",
+            Kind::Pending => "● SYSTEM STARTING",
+            Kind::Problem => "● SYSTEM ATTENTION",
+        };
+        egui::TopBottomPanel::bottom("terminal_status")
+            .exact_height(38.0)
+            .frame(egui::Frame::new().fill(palette.background).stroke(egui::Stroke::new(1.0_f32, palette.border)).inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let color = if status_kind == Kind::Problem { palette.danger } else { palette.accent };
+                    ui.colored_label(color, egui::RichText::new(system_label).monospace());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.colored_label(palette.muted, egui::RichText::new("BASE STATION").monospace());
+                    });
+                });
+            });
+        egui::TopBottomPanel::bottom("input")
+            .exact_height(52.0)
+            .frame(egui::Frame::new().fill(palette.background).stroke(egui::Stroke::new(1.0_f32, palette.border)).inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let response = ui.add_sized(
                     [ui.available_width() - 76.0, INPUT_HEIGHT],
-                    egui::TextEdit::singleline(&mut self.input).margin(egui::Margin::symmetric(6, 10)),
+                    egui::TextEdit::singleline(&mut self.input).hint_text("메시지를 입력하세요...").margin(egui::Margin::symmetric(6, 10)),
                 );
                 let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                let clicked = ui.add_sized([68.0, INPUT_HEIGHT], egui::Button::new(talk_core::t("gui.button.send", &[]))).clicked();
+                let clicked = ui.add_sized([68.0, INPUT_HEIGHT], egui::Button::new("SEND")).clicked();
                 if (enter || clicked) && !self.input.trim().is_empty() {
                     let text = std::mem::take(&mut self.input);
                     match text.trim() {
@@ -678,6 +704,8 @@ impl eframe::App for App {
             });
         });
         egui::CentralPanel::default().frame(inset(&palette, self.crt)).show(ctx, |ui| {
+            ui.colored_label(palette.accent, egui::RichText::new("COMMUNICATION LOG").monospace().heading());
+            ui.separator();
             egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
                 for (text, mine) in &state.lines {
                     let color = if *mine { palette.mine } else { palette.text };
@@ -825,7 +853,7 @@ fn main() -> eframe::Result<()> {
         thread::Builder::new().name("worker".into()).spawn(move || worker(shared, queue, started, reload)).expect("worker thread");
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 520.0]).with_title("herdr-talk"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([850.0, 620.0]).with_title("herdr-talk"),
         ..Default::default()
     };
     let result = eframe::run_native(
@@ -955,8 +983,8 @@ fn palette(choice: Choice) -> Palette {
             accent: rgb(0xffd24d), accent_dark: rgb(0x8a5f00), accent_light: rgb(0xffe08a), mine: rgb(0xffd24d), danger: rgb(0xff5533),
         },
         Choice::Green => Palette {
-            background: rgb(0x000000), panel: rgb(0x00100a), border: rgb(0x1a7a36), text: rgb(0x33ff66), muted: rgb(0x1fa040),
-            accent: rgb(0x99ffb3), accent_dark: rgb(0x14802f), accent_light: rgb(0xccffd9), mine: rgb(0x99ffb3), danger: rgb(0xff5555),
+            background: rgb(0x050a08), panel: rgb(0x0a140f), border: rgb(0x417d55), text: rgb(0xb4dcbe), muted: rgb(0x526b59),
+            accent: rgb(0x46ff82), accent_dark: rgb(0x417d55), accent_light: rgb(0x46ff82), mine: rgb(0x46ff82), danger: rgb(0xff5555),
         },
     }
 }

@@ -43,15 +43,14 @@ pub fn key_label(key: &[u8]) -> String {
 const CODE_ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 /// Code both users compare on their screens: the first 8 bytes of SHA-256 over the two public keys, sorted (so both PCs
-/// compute the same value), each byte mod 36 into CODE_ALPHABET, shown as XXXX-XXXX. Each side has its own key in the
+/// compute the same value), each byte mod 36 into CODE_ALPHABET, 8 characters. Each side has its own key in the
 /// hash, so one attacker cannot make the two screens show the same code for two different keys.
 pub fn fingerprint(own: &[u8], peer: &[u8]) -> String {
     let (first, second) = if own <= peer { (own, peer) } else { (peer, own) };
     let mut hasher = Sha256::new();
     hasher.update(first);
     hasher.update(second);
-    let code: String = hasher.finalize()[..8].iter().map(|byte| CODE_ALPHABET[usize::from(*byte) % 36] as char).collect();
-    format!("{}-{}", &code[..4], &code[4..])
+    hasher.finalize()[..8].iter().map(|byte| CODE_ALPHABET[usize::from(*byte) % 36] as char).collect()
 }
 
 const COMMIT_TAG: &[u8] = b"herdr-talk-commit-v1";
@@ -67,7 +66,7 @@ pub fn commit(public_key: &[u8], nonce: &[u8]) -> [u8; 32] {
 }
 
 /// The short code both users compare: SHA-256 over the tag and the two (key, nonce) pairs sorted by key. The first 8
-/// bytes, read as a big-endian integer, mod 36^8, in the 36 characters 0-9 A-Z, shown as XXXX-XXXX. Same rule as
+/// bytes, read as a big-endian integer, mod 36^8, in the 36 characters 0-9 A-Z, 8 characters. Same rule as
 /// python/src/store.py sas_code.
 pub fn sas_code(own_key: &[u8], own_nonce: &[u8], peer_key: &[u8], peer_nonce: &[u8]) -> String {
     let ((first_key, first_nonce), (second_key, second_nonce)) = if own_key <= peer_key {
@@ -88,8 +87,7 @@ pub fn sas_code(own_key: &[u8], own_nonce: &[u8], peer_key: &[u8], peer_nonce: &
         *slot = CODE_ALPHABET[(value % 36) as usize];
         value /= 36;
     }
-    let code: String = chars.iter().map(|byte| *byte as char).collect();
-    format!("{}-{}", &code[..4], &code[4..])
+    chars.iter().map(|byte| *byte as char).collect()
 }
 
 /// What the user types for a code: no dashes, spaces; capitals are accepted and made uppercase.
@@ -437,12 +435,12 @@ mod tests {
     fn sas_and_commit_match_the_python_reference() {
         // Vectors from python/src/store.py (same values in the Python tests).
         assert_eq!(commit(&[1; 32], &[2; 32]).iter().map(|b| format!("{b:02x}")).collect::<String>(), "8d02d5ba2bcdc8c3392ffda99d1a66c4eede8c57cc4443c7d0fc00d5f39d7b59");
-        assert_eq!(sas_code(&[1; 32], &[2; 32], &[3; 32], &[4; 32]), "HWCF-KZ1W");
-        assert_eq!(sas_code(&[3; 32], &[4; 32], &[1; 32], &[2; 32]), "HWCF-KZ1W", "order does not matter");
+        assert_eq!(sas_code(&[1; 32], &[2; 32], &[3; 32], &[4; 32]), "HWCFKZ1W");
+        assert_eq!(sas_code(&[3; 32], &[4; 32], &[1; 32], &[2; 32]), "HWCFKZ1W", "order does not matter");
         let initiator = store_vector("initiatorPublic");
         let responder = store_vector("responderPublic");
-        assert_eq!(sas_code(&initiator, &[0x11; 32], &responder, &[0x22; 32]), "I81X-P7D6");
-        assert_ne!(sas_code(&initiator, &[0x11; 32], &responder, &[0x23; 32]), "I81X-P7D6", "a changed nonce changes the code");
+        assert_eq!(sas_code(&initiator, &[0x11; 32], &responder, &[0x22; 32]), "I81XP7D6");
+        assert_ne!(sas_code(&initiator, &[0x11; 32], &responder, &[0x23; 32]), "I81XP7D6", "a changed nonce changes the code");
     }
 
     fn store_vector(key: &str) -> Vec<u8> {
@@ -455,7 +453,7 @@ mod tests {
     fn both_sides_compute_the_same_code() {
         let (a, b) = ([3u8; 32], [4u8; 32]);
         assert_eq!(fingerprint(&a, &b), fingerprint(&b, &a));
-        assert_eq!(fingerprint(&a, &b).len(), 8 + 1);
+        assert_eq!(fingerprint(&a, &b).len(), 8);
         assert_ne!(fingerprint(&a, &b), fingerprint(&a, &[5u8; 32]));
     }
 

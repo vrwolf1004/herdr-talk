@@ -96,11 +96,11 @@ class StoreTest(Base):
     def test_sas_and_commit_match_the_rust_vectors(self):
         # The same values as rust/crates/talk-core store.rs (sas_and_commit_match_the_python_reference).
         self.assertEqual(store.commit(bytes([1]) * 32, bytes([2]) * 32).hex(), "8d02d5ba2bcdc8c3392ffda99d1a66c4eede8c57cc4443c7d0fc00d5f39d7b59")
-        self.assertEqual(store.sas_code(bytes([1]) * 32, bytes([2]) * 32, bytes([3]) * 32, bytes([4]) * 32), "HWCF-KZ1W")
-        self.assertEqual(store.sas_code(bytes([3]) * 32, bytes([4]) * 32, bytes([1]) * 32, bytes([2]) * 32), "HWCF-KZ1W")
+        self.assertEqual(store.sas_code(bytes([1]) * 32, bytes([2]) * 32, bytes([3]) * 32, bytes([4]) * 32), "HWCFKZ1W")
+        self.assertEqual(store.sas_code(bytes([3]) * 32, bytes([4]) * 32, bytes([1]) * 32, bytes([2]) * 32), "HWCFKZ1W")
         mobile = json.load(open(os.path.join(os.path.dirname(__file__), "..", "..", "mobile", "test-vectors", "relay.json")))["outputs"]
         code = store.sas_code(bytes.fromhex(mobile["initiatorPublic"]), bytes([0x11]) * 32, bytes.fromhex(mobile["responderPublic"]), bytes([0x22]) * 32)
-        self.assertEqual(code, "I81X-P7D6")
+        self.assertEqual(code, "I81XP7D6")
 
     def test_ids_and_codes(self):
         key = bytes(range(32))
@@ -108,7 +108,7 @@ class StoreTest(Base):
         a, b = bytes([3]) * 32, bytes([4]) * 32
         code = store.fingerprint(a, b)
         self.assertEqual(code, store.fingerprint(b, a))
-        self.assertRegex(code, r"^[0-9A-Z]{4}-[0-9A-Z]{4}$")
+        self.assertRegex(code, r"^[0-9A-Z]{8}$")
         self.assertEqual(store.normalize_code(f" {code.upper()} "), store.normalize_code(code))
 
     def test_plaintext_follows_config_json(self):
@@ -153,6 +153,33 @@ class AnnouncementTest(Base):
         self.assertEqual(mine.commits[theirs.me["key"]], store.commit(theirs.me["key"], theirs.my_nonce_for(mine.me["key"])))
         self.assertIsNone(mine.sas_for(theirs.me["key"]))
         self.assertFalse(any("code" in line or "fingerprint" in line for line in self.lines), self.lines)
+
+    def test_the_code_is_on_its_own_indented_row(self):
+        mine = make_chat("A")
+        theirs = make_chat("B")
+        key = theirs.me["key"]
+        mine.my_nonce_for(key)
+        mine.reveals[key] = bytes(32)
+        mine.peers["x"] = {"id": theirs.me["id"], "name": "B", "ip": "10.0.0.2", "port": 1, "seen": time.time(), "key": key}
+        talk.show_code(mine, key)
+        self.assertEqual(len(self.lines), 3, self.lines)
+        self.assertTrue(self.lines[1].startswith("  "), self.lines[1])
+        self.assertIn(mine.sas_for(key), self.lines[1])
+        self.assertTrue(self.lines[2].startswith("  ") and mine.sas_for(key) not in self.lines[2], self.lines[2])
+
+    def test_an_old_version_is_named_once_and_a_first_contact_is_silent(self):
+        mine = make_chat("A")
+        old = make_chat("Old")
+        old_info = {"id": old.me["id"], "name": "Old", "port": 5, "key": old.me["key"]}  # no commits key at all
+        announce(mine, old_info, "10.0.0.8")
+        announce(mine, old_info, "10.0.0.8")
+        self.assertEqual(len([line for line in self.lines if "구버전" in line]), 1, self.lines)
+        self.lines.clear()
+        new = make_chat("New")
+        first = {"id": new.me["id"], "name": "New", "port": 6, "key": new.me["key"], "commits": {"00" * 32: "11" * 32}}
+        announce(mine, first, "10.0.0.9")
+        self.assertEqual([line for line in self.lines if "joined" not in line], [], "a first contact with no commitment for this PC is silent")
+        self.assertIn(new.me["id"], [info["id"] for info in mine.peers.values()])
 
     def test_a_changed_commitment_is_refused_with_one_warning(self):
         mine, theirs = make_chat("A"), make_chat("B")
@@ -263,6 +290,16 @@ class ExchangeTest(Base):
         self.wait_for(1)
         self.assertTrue(seen)
         self.assertFalse(any(b"secret-text" in chunk for chunk in seen))
+
+    def test_a_second_different_reveal_from_a_peer_is_refused(self):
+        self.pair(a_trusts_b=False, b_trusts_a=False)
+        wait_code(self.a, self.b.me["key"])
+        wait_code(self.b, self.a.me["key"])
+        self.b.reveals[self.a.me["key"]] = bytes(32)  # the first reveal B kept, now different from what A reveals
+        self.lines.clear()
+        with self.assertRaises((OSError, ValueError)):
+            talk.exchange_reveal(self.a, "127.0.0.1", self.b.me["port"], self.b.me["key"])
+        self.assertEqual(len([line for line in self.lines if "거부" in line]), 1, self.lines)
 
     def test_an_unverified_sender_message_is_never_shown(self):
         # B answers only the reveal of an unverified sender (its commitment is known). A chat message is refused.

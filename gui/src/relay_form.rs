@@ -238,27 +238,97 @@ pub fn tick(timer: &mut Option<ChoiceTimer>, now: Instant, input_seen: bool) -> 
     Tick::Wait(running.remaining(now))
 }
 
+fn connection_card(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    number: &str,
+    title: &str,
+    button: &str,
+    description: &str,
+) -> egui::Response {
+    let response = egui::Frame::new()
+        .fill(palette.panel)
+        .stroke(egui::Stroke::new(1.0_f32, palette.border))
+        .inner_margin(egui::Margin::symmetric(22, 20))
+        .show(ui, |ui| {
+            let content_width = ui.available_width().min(436.0);
+            ui.set_min_width(content_width);
+            ui.set_max_width(content_width);
+            ui.colored_label(palette.accent, egui::RichText::new(format!("[{number}] {title}")).monospace().size(18.0));
+            ui.add_space(14.0);
+            let button = ui.add_sized(
+                [ui.available_width(), 48.0],
+                egui::Button::new(egui::RichText::new(button).monospace().size(18.0)),
+            );
+            ui.add_space(10.0);
+            ui.colored_label(palette.muted, egui::RichText::new(description).monospace());
+            button
+        })
+        .inner;
+    if response.hovered() {
+        ui.painter().rect_stroke(
+            response.rect.expand(1.0),
+            egui::CornerRadius::ZERO,
+            egui::Stroke::new(1.0_f32, palette.accent),
+            egui::StrokeKind::Outside,
+        );
+    }
+    response
+}
+
 /// The first-run choice screen. No close button: the window's own close ends the program. Some(pick) on a click.
 pub fn choose(ctx: &egui::Context, palette: &Palette, remaining: Option<u64>) -> Option<Pick> {
     let mut picked = None;
-    egui::CentralPanel::default().show(ctx, |ui| {
-        ui.add_space(24.0);
-        ui.colored_label(palette.accent, egui::RichText::new(t("mode.first_run_title", &[])).heading());
-        ui.add_space(20.0);
-        if ui.add(egui::Button::new(egui::RichText::new(t("mode.local", &[])).size(18.0)).min_size(egui::vec2(260.0, 40.0))).clicked() {
-            picked = Some(Pick::Local);
-        }
-        ui.colored_label(palette.muted, t("mode.hint_local", &[]));
-        ui.add_space(16.0);
-        if ui.add(egui::Button::new(egui::RichText::new(t("mode.supabase", &[])).size(18.0)).min_size(egui::vec2(260.0, 40.0))).clicked() {
-            picked = Some(Pick::Supabase);
-        }
-        ui.colored_label(palette.muted, t("mode.hint_supabase", &[]));
-        ui.add_space(20.0);
-        if let Some(seconds) = remaining {
-            ui.colored_label(palette.accent, t("mode.timeout_hint", &[("n", &seconds.to_string())]));
-        }
-        ui.colored_label(palette.muted, t("gui.relay.close_quits", &[]));
+    egui::TopBottomPanel::top("connection_terminal_header")
+        .exact_height(50.0)
+        .frame(egui::Frame::new().fill(palette.background).stroke(egui::Stroke::new(1.0_f32, palette.border)).inner_margin(egui::Margin::symmetric(18, 12)))
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(palette.accent, egui::RichText::new("▣ HERDR-TALK").monospace().strong().size(18.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.colored_label(palette.muted, egui::RichText::new("SYS.VER 1.0  ·  SYSTEM READY").monospace());
+                });
+            });
+        });
+    egui::TopBottomPanel::bottom("connection_terminal_status")
+        .exact_height(40.0)
+        .frame(egui::Frame::new().fill(palette.background).stroke(egui::Stroke::new(1.0_f32, palette.border)).inner_margin(egui::Margin::symmetric(18, 10)))
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(palette.accent, egui::RichText::new("SYSTEM READY").monospace());
+                ui.colored_label(palette.muted, egui::RichText::new("·  HERDR-TALK TERMINAL  ·  WAITING FOR SELECTION").monospace());
+            });
+        });
+    egui::CentralPanel::default().frame(egui::Frame::new().fill(palette.background)).show(ctx, |ui| {
+        ui.vertical_centered(|ui| {
+            ui.add_space((ui.available_height() * 0.12).max(16.0));
+            ui.colored_label(palette.accent, egui::RichText::new("BASE STATION").monospace().size(15.0));
+            ui.add_space(6.0);
+            ui.colored_label(palette.text, egui::RichText::new("YOUR PRIVATE COMMUNICATION SPACE").monospace().size(16.0));
+            ui.add_space(26.0);
+            if connection_card(
+                ui,
+                palette,
+                "PRIMARY",
+                "BASE STATION",
+                "▶ CONNECT",
+                "같은 네트워크 내에서 직접 통신합니다.",
+            )
+            .clicked()
+            {
+                picked = Some(Pick::Local);
+            }
+            ui.add_space(18.0);
+            ui.colored_label(palette.muted, egui::RichText::new("ALTERNATIVE CONNECTION").monospace().size(13.0));
+            if ui.link(egui::RichText::new("SUPABASE CLOUD").monospace().size(14.0).color(palette.muted).underline()).clicked() {
+                picked = Some(Pick::Supabase);
+            }
+            ui.add_space(20.0);
+            if let Some(seconds) = remaining {
+                ui.colored_label(palette.muted, egui::RichText::new(t("mode.timeout_hint", &[("n", &seconds.to_string())])).monospace());
+            }
+            ui.colored_label(palette.muted, egui::RichText::new(t("gui.relay.close_quits", &[])).monospace());
+        });
     });
     picked
 }

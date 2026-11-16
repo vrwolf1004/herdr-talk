@@ -40,11 +40,11 @@ CODE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 def fingerprint(own, peer):
     """Code both users compare: the first 8 bytes of SHA-256 over the two public keys, sorted, each byte mod 36 into
-    CODE_ALPHABET (8 characters), shown as XXXX-XXXX. Same rule in Rust store.rs and mobile protocol.ts."""
+    CODE_ALPHABET (8 characters). Same rule in Rust store.rs and mobile protocol.ts."""
     first, second = sorted((own, peer))
     digest = hashlib.sha256(first + second).digest()[:8]
     code = "".join(CODE_ALPHABET[byte % 36] for byte in digest)
-    return f"{code[:4]}-{code[4:]}"
+    return code
 
 
 COMMIT_TAG = b"herdr-talk-commit-v1"
@@ -58,7 +58,7 @@ def commit(public_key, nonce):
 
 def sas_code(own_key, own_nonce, peer_key, peer_nonce):
     """The short code both users compare: SHA-256 over the tag and the two (key, nonce) pairs sorted by key. Its first 8
-    bytes, read as a big-endian integer, mod 36**8, in CODE_ALPHABET, 8 characters, shown as XXXX-XXXX. Same rule as
+    bytes, read as a big-endian integer, mod 36**8, in CODE_ALPHABET, 8 characters. Same rule as
     Rust talk-core store::sas_code."""
     first, second = sorted([(own_key, own_nonce), (peer_key, peer_nonce)], key=lambda pair: pair[0])
     digest = hashlib.sha256(SAS_TAG + first[0] + first[1] + second[0] + second[1]).digest()
@@ -67,8 +67,7 @@ def sas_code(own_key, own_nonce, peer_key, peer_nonce):
     for _ in range(8):
         chars.append(CODE_ALPHABET[value % 36])
         value //= 36
-    code = "".join(reversed(chars))
-    return f"{code[:4]}-{code[4:]}"
+    return "".join(reversed(chars))
 
 
 def normalize_code(text):

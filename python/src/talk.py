@@ -619,6 +619,7 @@ def remember_peer(chat, info, ip):
     own = chat.me.get("key")
     if key is not None and key == own and not is_local_address(ip):
         return None
+    announces_commits = "commits" in info  # read before `info` is reused for the phone check below
     # The commitment (SAS): the one the peer gave us for us. It is pinned at first sight; a different one is refused.
     commit = None
     if key is not None and own is not None:
@@ -679,7 +680,8 @@ def remember_peer(chat, info, ip):
             if key not in chat.revealing:
                 chat.revealing.add(key)
                 threading.Thread(target=reveal_later, args=(chat, key, ip, port), daemon=True).start()
-        else:
+        elif not announces_commits:
+            # An old version announces no commitments at all. A peer that has them but none for this PC is a first contact: silent.
             # shortcut: a Korean-only notice; move it to the locales when the wording is settled.
             say(f"{name} ({ip}): 구버전이라 확인할 수 없습니다. 양쪽 PC 를 새 판으로 올리세요")
     return name
@@ -736,7 +738,9 @@ def show_code(chat, key):
     with chat.peers_lock:
         found = next((info for info in chat.peers.values() if info.get("key") == key), None)
     name, ip = (found["name"], found["ip"]) if found else ("?", "?")
-    say(t("peer.fingerprint", name=name, ip=ip, label=store.key_label(key), code=code))
+    # One chat row per line: the code sits on its own indented row.
+    for row in t("peer.fingerprint", name=name, ip=ip, code=code).split(chr(10)):
+        say(row)
 
 
 def reveal_later(chat, key, ip, port):
@@ -910,6 +914,12 @@ def _receive_encrypted(conn, first, chat):
     if trusted:
         return payload, sender
     nonce = read_reveal(chat, sender, payload)
+    if chat.reveals.get(sender, nonce) != nonce:
+        # A second, different reveal from the same peer: refuse the connection, with one line of warning.
+        with chat.peers_lock:
+            found = next((info for info in chat.peers.values() if info.get("key") == sender), None)
+        say(f"{found['name'] if found else '?'}: 다른 확인 값이 왔습니다. 연결을 거부했습니다")  # shortcut: Korean-only, as the other notices
+        raise ValueError("a different reveal from this peer was already given")
     if sender not in chat.reveals:
         chat.reveals[sender] = nonce
         show_code(chat, sender)
