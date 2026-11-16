@@ -162,12 +162,11 @@ class AnnouncementTest(Base):
         mine.reveals[key] = bytes(32)
         mine.peers["x"] = {"id": theirs.me["id"], "name": "B", "ip": "10.0.0.2", "port": 1, "seen": time.time(), "key": key}
         talk.show_code(mine, key)
-        self.assertEqual(len(self.lines), 4, self.lines)
+        self.assertEqual(len(self.lines), 3, self.lines)
         self.assertTrue(self.lines[1].startswith("  "), self.lines[1])
         self.assertIn(mine.sas_for(key), self.lines[1])
-        # The key fingerprint row: the same 8 characters Rust store::fingerprint gives for these two keys.
-        self.assertEqual(self.lines[2], "  Key: " + talk.store.fingerprint(mine.me["key"], key), self.lines[2])
-        self.assertTrue(self.lines[3].startswith("  ") and mine.sas_for(key) not in self.lines[3], self.lines[3])
+        self.assertTrue(self.lines[2].startswith("  ") and mine.sas_for(key) not in self.lines[2], self.lines[2])
+        self.assertFalse(any(talk.store.fingerprint(mine.me["key"], key) in line for line in self.lines), "no key fingerprint row")
 
     def test_an_old_version_is_named_once_and_a_first_contact_is_silent(self):
         mine = make_chat("A")

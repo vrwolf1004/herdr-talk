@@ -725,10 +725,8 @@ def show_code(chat, key):
     with chat.peers_lock:
         found = next((info for info in chat.peers.values() if info.get("key") == key), None)
     name, ip = (found["name"], found["ip"]) if found else ("?", "?")
-    # The key fingerprint (first 8 characters, the same value as Rust store::fingerprint) is shown beside the code;
-    # the code is still the one to compare. One chat row per line: the code sits on its own indented row.
-    fingerprint = store.fingerprint(chat.me["key"], key)
-    chat.emit(Notice("peer.fingerprint", {"name": name, "ip": ip, "code": code, "fp": fingerprint}))
+    # One chat row per line: the code sits on its own indented row.
+    chat.emit(Notice("peer.fingerprint", {"name": name, "ip": ip, "code": code}))
 
 
 def reveal_later(chat, key, ip, port):

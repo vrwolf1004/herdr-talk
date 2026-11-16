@@ -40,7 +40,7 @@
   "trust.save_failed": "nur für diese Sitzung bestätigt, Speichern fehlgeschlagen: {error}",
   "peer.unverified": "nicht an {name} gesendet: noch nicht bestätigt. Codes vergleichen, dann /trust",
   "peer.plain_off": "nicht an {name} gesendet: keine Verschlüsselung, und Klartext ist aus",
-  "peer.fingerprint": "{name} ({ip}): noch nicht bestätigt\n  Code: {code}\n  Schlüssel: {fp}\n  Vergleichen Sie den Code mit dem Bildschirm des anderen, dann geben Sie /trust ein",
+  "peer.fingerprint": "{name} ({ip}): noch nicht bestätigt\n  Code: {code}\n  Vergleichen Sie den Code mit dem Bildschirm des anderen, dann geben Sie /trust ein",
   "peer.key_changed": "{name} ({ip}) hat einen neuen Schlüssel. Nicht vertraut, nichts gesendet. /trust nur, wenn der Grund klar ist",
   "peers.verified": "bestätigt",
   "peers.plain": "Klartext",

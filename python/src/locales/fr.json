@@ -40,7 +40,7 @@
   "trust.save_failed": "vérifié pour cette session seulement, sauvegarde impossible : {error}",
   "peer.unverified": "non envoyé à {name} : pas encore vérifié. Comparez les codes, puis /trust",
   "peer.plain_off": "non envoyé à {name} : il ne chiffre pas, et le texte en clair est désactivé",
-  "peer.fingerprint": "{name} ({ip}) : pas encore vérifié\n  Code : {code}\n  Clé: {fp}\n  Comparez-le avec le code de l'autre écran, puis tapez /trust",
+  "peer.fingerprint": "{name} ({ip}) : pas encore vérifié\n  Code : {code}\n  Comparez-le avec le code de l'autre écran, puis tapez /trust",
   "peer.key_changed": "{name} ({ip}) a une nouvelle clé. Non approuvé, rien envoyé. Utilisez /trust seulement si vous savez pourquoi",
   "peers.verified": "vérifié",
   "peers.plain": "texte en clair",

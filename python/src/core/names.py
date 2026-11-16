@@ -69,6 +69,10 @@ def sender_name(value):
     return squeeze_spaces(clean_text(value, 32)).strip() or "unknown"
 
 
+_SEPARATORS = str.maketrans("", "", ":：>＞›")  # : ： > ＞ ›
+
+
 def plain_sender(value):
-    """The sender of a plain message. Colons are removed, so the name cannot pass for the start of the text."""
-    return sender_name(clean_text(value, 32).replace(":", "").replace("：", ""))
+    """The sender of a plain message. Colons and the ">" separators are removed, so the name cannot pass for the start of
+    the text or imitate the "name > text" line form."""
+    return sender_name(clean_text(value, 32).translate(_SEPARATORS))

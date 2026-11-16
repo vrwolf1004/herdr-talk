@@ -113,6 +113,11 @@ class SenderNameTest(CollectSayTest):
         self.send(raw)
         self.assertEqual(self.lines, [f"{talk.plain_sender(raw)} (plain text) > hi"])
 
+    def test_a_plain_sender_cannot_imitate_the_line_form(self):
+        # ">" in any width would read as "name > text" inside a name; colons were removed already.
+        self.assertEqual(talk.plain_sender("A > B"), "A B")
+        self.assertEqual(talk.plain_sender("A＞B›C:D"), "ABCD")
+
     def test_sender_of_only_control_characters_keeps_the_old_result(self):
         self.send(BELL + "\x02")
         self.assertEqual(self.lines, ["unknown (plain text) > hi"])

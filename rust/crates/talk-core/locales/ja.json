@@ -52,7 +52,7 @@
   "trust.save_failed": "今回の実行中だけ確認済み。保存できませんでした: {error}",
   "peer.unverified": "{name} には送りません: 未確認です。コードを比べてから /trust してください",
   "peer.plain_off": "{name} には送りません: 暗号化しない相手で、平文送信はオフです",
-  "peer.fingerprint": "{name} ({ip}): まだ確認されていません\n  Key: {key}\n  コード: {code}\n  相手の画面のコードと同じか比べてから /trust と入力してください",
+  "peer.fingerprint": "{name} ({ip}): まだ確認されていません\n  コード: {code}\n  相手の画面のコードと同じか比べてから /trust と入力してください",
   "peer.key_changed": "{name} ({ip}) の鍵が変わりました。信頼せず送信もしません。理由が分かる場合だけ /trust してください",
   "peers.verified": "確認済み",
   "peers.plain": "平文",

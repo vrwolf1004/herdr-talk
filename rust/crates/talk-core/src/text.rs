@@ -53,9 +53,10 @@ pub fn name_key(value: &str) -> String {
     squeeze_spaces(value).trim().to_string()
 }
 
-/// The sender of a plain message. Colons are removed, so the name cannot pass for the start of the text.
+/// The sender of a plain message. Colons and the separator marks (> and its wide and single-arrow forms) are removed, so the
+/// name cannot pass for the start of the text or for the "name > text" separator.
 pub fn plain_sender(value: &str) -> String {
-    sender_name(&clean_text(value, 32).replace([':', '：'], ""))
+    sender_name(&clean_text(value, 32).replace([':', '：', '>', '＞', '›'], ""))
 }
 
 /// Terminal columns used by text. East Asian wide characters count as two.
@@ -121,6 +122,8 @@ mod tests {
         assert_eq!(plain_sender("Bob: x"), "Bob x");
         assert_eq!(plain_sender("Bob：x"), "Bobx");
         assert_eq!(plain_sender(" : "), "unknown");
+        assert_eq!(plain_sender("Bob > x"), "Bob x", "a > in the name is removed");
+        assert_eq!(plain_sender("Bob＞x›y"), "Bobxy", "the wide and single-arrow forms are removed too");
         assert_eq!(sender_name("Bob: x"), "Bob: x");
     }
 

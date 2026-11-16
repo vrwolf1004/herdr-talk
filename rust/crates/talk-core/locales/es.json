@@ -52,7 +52,7 @@
   "trust.save_failed": "verificado solo para esta sesión, no se pudo guardar: {error}",
   "peer.unverified": "no enviado a {name}: aún sin verificar. Compara los códigos y luego /trust",
   "peer.plain_off": "no enviado a {name}: no cifra, y el texto sin cifrar está desactivado",
-  "peer.fingerprint": "{name} ({ip}): aún no verificado\n  Key: {key}\n  Código: {code}\n  Compárelo con el código de la otra pantalla y escriba /trust",
+  "peer.fingerprint": "{name} ({ip}): aún no verificado\n  Código: {code}\n  Compárelo con el código de la otra pantalla y escriba /trust",
   "peer.key_changed": "{name} ({ip}) tiene una clave nueva. No confiado, nada enviado. Usa /trust solo si sabes por qué",
   "peers.verified": "verificado",
   "peers.plain": "texto sin cifrar",
