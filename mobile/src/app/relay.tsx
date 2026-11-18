@@ -1,11 +1,15 @@
-// Supabase room settings on the phone. Room joining and room chat are implemented separately.
+// Supabase room on the phone: settings, joining, the member list, and the room chat.
 
-import { useEffect, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, BackHandler, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { clearDisplayName, clearSettings, defaultSettings, loadOrCreateDisplayName, loadSettings, saveSettings } from '../relay/store.ts';
-import { FIELD_IDS, emptySettings, keyLabel, missingFields, normalizeRoomCode, type FieldId, type RelaySettings } from '../relay/settings.ts';
+import { clearDisplayName, clearSettings, defaultSettings, loadOrCreateDisplayName, loadOrCreateKeys, loadOrCreateShortId, loadSettings, randomBytes, replaceShortId, saveSettings } from '../relay/store.ts';
+import { PUT_TRIES, deleteRow, putRow } from '../relay/client.ts';
+import { bytesToHex } from '../relay/bytes.ts';
+import { NonceCache } from '../relay/protocol.ts';
+import { checkRow, createRoom, displayName, fetchRows, loadMembers, postBody, postMessageBody, roomPayload, sealDeliveries } from '../relay/room.ts';
+import { FIELD_IDS, emptySettings, isHttpsUrl, keyLabel, missingFields, normalizeRoomCode, type FieldId, type RelaySettings } from '../relay/settings.ts';
 import { palette } from '../theme';
 import { SIZE, TOUCH_MIN } from '../typography.ts';
 
@@ -15,6 +19,17 @@ const LABELS: Record<FieldId, string> = {
   roomCode: 'Room ID (8 characters)',
 };
 
+const POLL_MS = 3000;
+const MEMBERS_MS = 10000;
+const MAX_LINES = 200;
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+const randomHex = (length: number) => bytesToHex(randomBytes(length));
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const reason = (error: unknown) => (error instanceof Error ? error.message : 'error');
+
+type Line = { id: string; who: string; text: string; mine: boolean };
+type Session = { run: { stopped: boolean }; settings: RelaySettings; noisePrivate: Uint8Array; noisePublic: Uint8Array; seed: Uint8Array; shortId: string };
+
 export default function RelayScreen() {
   const colors = palette('Green');
   const [settings, setSettings] = useState<RelaySettings>(emptySettings());
@@ -23,6 +38,14 @@ export default function RelayScreen() {
   const [notice, setNotice] = useState('');
   const [editing, setEditing] = useState(false);
   const [usingDefaults, setUsingDefaults] = useState(false);
+  const [members, setMembers] = useState<Map<string, string>>(new Map());
+  const [lines, setLines] = useState<Line[]>([]);
+  const [text, setText] = useState('');
+  const [inRoom, setInRoom] = useState(false);
+  const [left, setLeft] = useState(false);
+  const leaving = useRef<Promise<void> | null>(null);
+  const session = useRef<Session | null>(null);
+  const membersRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     (async () => {
@@ -32,17 +55,160 @@ export default function RelayScreen() {
       setDraft(current);
       setUsingDefaults(fromDefaults);
       if (missingFields(current).length === 0) {
-        prepareRoom(current);
+        startRoom(current);
       } else {
         setStatus('set the settings');
         setEditing(true);
       }
     })();
+    return () => {
+      if (session.current) session.current.run.stopped = true;
+    };
   }, []);
 
-  function prepareRoom(current: RelaySettings) {
-    // TODO: Call join-room with current.roomCode and open the room relay after the room protocol is implemented.
-    setStatus(`room ${current.roomCode} is ready to join`);
+  /** Publish this phone's row (a new short ID is tried when another key has it). The short ID, or null when it could not be published. */
+  async function publishRow(current: RelaySettings, noisePublic: Uint8Array, signingSeed: Uint8Array): Promise<string | null> {
+    const noiseHex = bytesToHex(noisePublic);
+    let shortId = await loadOrCreateShortId();
+    let outcome = await putRow(current, signingSeed, noiseHex, shortId, nowSeconds(), randomHex(16));
+    for (let tries = 1; outcome === 'taken' && tries < PUT_TRIES; tries++) {
+      shortId = await replaceShortId();
+      outcome = await putRow(current, signingSeed, noiseHex, shortId, nowSeconds(), randomHex(16));
+    }
+    return outcome === 'ok' ? shortId : null;
+  }
+
+  /** Make a new room owned by this phone and put its code in the room ID field (saving joins it). */
+  async function makeRoom() {
+    const current: RelaySettings = { ...draft, name: settings.name };
+    if (!isHttpsUrl(current.url) || current.key.trim() === '') {
+      setNotice('create room: fill in the URL and the key first');
+      return;
+    }
+    setNotice('create room: working...');
+    try {
+      const { keys, signingSeed } = await loadOrCreateKeys();
+      if ((await publishRow(current, keys.noisePublic, signingSeed)) === null) {
+        setNotice("create room failed: this phone's row could not be published");
+        return;
+      }
+      const code = await createRoom(current, signingSeed, nowSeconds(), randomHex(16));
+      setDraft({ ...draft, roomCode: code });
+      setNotice(`room created: ${code} (press join)`);
+    } catch (error) {
+      setNotice(`create room failed: ${reason(error)}`);
+    }
+  }
+
+  /** Publish this phone's row, join the room, then loop: members every 10 s, inbox every 3 s, until the screen closes or restarts. */
+  async function startRoom(current: RelaySettings) {
+    if (session.current) session.current.run.stopped = true;
+    setInRoom(false);
+    setLeft(false);
+    const run = { stopped: false };
+    setLines([]);
+    setMembers(new Map());
+    membersRef.current = new Map();
+    try {
+      const { keys, signingSeed } = await loadOrCreateKeys();
+      const shortId = await publishRow(current, keys.noisePublic, signingSeed);
+      if (shortId === null) {
+        setStatus("this phone's row could not be published");
+        return;
+      }
+      setInRoom(true);
+      session.current = { run, settings: current, noisePrivate: keys.noisePrivate, noisePublic: keys.noisePublic, seed: signingSeed, shortId };
+      const cache = new NonceCache();
+      const started = nowSeconds();
+      const names = new Map<string, string>();
+      let since: string | null = null;
+      let nextMembers = 0;
+      while (!run.stopped) {
+        if (Date.now() >= nextMembers) {
+          nextMembers = Date.now() + MEMBERS_MS;
+          try {
+            membersRef.current = await loadMembers(current, signingSeed, nowSeconds(), randomHex(16));
+            setMembers(membersRef.current);
+            setStatus(`room ${current.roomCode} · ${membersRef.current.size + 1} members`);
+          } catch (error) {
+            setStatus(`room join failed: ${reason(error)}`);
+            await sleep(MEMBERS_MS);
+            continue;
+          }
+        }
+        try {
+          const rows = await fetchRows(current, signingSeed, since, nowSeconds(), randomHex(16));
+          for (const row of rows) {
+            since = row.created_at;
+            const shown = checkRow(row, membersRef.current, keys.noisePrivate, () => true, cache, nowSeconds(), started);
+            if (shown === null) continue;
+            names.set(row.sender_pk, shown.name);
+            const line: Line = { id: row.message_id, who: displayName(names, row.sender_pk, shown.name), text: shown.text, mine: false };
+            setLines((prev) => [...prev, line].slice(-MAX_LINES));
+          }
+        } catch (error) {
+          setStatus(`room: ${reason(error)}`);
+        }
+        await sleep(POLL_MS);
+      }
+    } catch (error) {
+      setStatus(`room could not start: ${reason(error)}`);
+    }
+  }
+
+  /** Leave the room: stop the loops and delete this phone's row on the relay. Saving the settings joins again. */
+  async function leave() {
+    const now = session.current;
+    if (!now) return;
+    now.run.stopped = true;
+    session.current = null;
+    setInRoom(false);
+    setLines([]);
+    setMembers(new Map());
+    membersRef.current = new Map();
+    setLeft(true); // the quit button shows at once
+    setStatus('leaving the room...');
+    const done = deleteRow(now.settings, now.seed, now.shortId, nowSeconds(), randomHex(16)).then((deleted) => {
+      setStatus('left the room');
+      setNotice(deleted ? '' : 'left, but the relay did not confirm the delete');
+    });
+    leaving.current = done;
+    await done;
+  }
+
+  /** Close the app (Android). The row delete of a leave in progress finishes first. */
+  async function quit() {
+    await leaving.current;
+    if (Platform.OS === 'android') BackHandler.exitApp();
+    else setNotice('quit: close the app from the app switcher (iOS cannot close itself)');
+  }
+
+  /** One Noise message per room member, in one post. */
+  async function send() {
+    const now = session.current;
+    const message = text.trim();
+    if (!now || message === '') return;
+    const recipients = [...membersRef.current].map(([pk, noise]) => ({ pk, noise }));
+    if (recipients.length === 0) {
+      setNotice('no other member in the room yet');
+      return;
+    }
+    try {
+      const ts = nowSeconds();
+      const nonce = randomHex(16);
+      const deliveries = sealDeliveries(now.noisePrivate, recipients, roomPayload(now.settings.name, message, ts, nonce), () => randomBytes(32));
+      const ok = await postBody(now.settings, postMessageBody(now.seed, now.settings.roomCode, randomHex(16), ts, nonce, deliveries));
+      if (!ok) {
+        setNotice('not sent: the server refused the message');
+        return;
+      }
+    } catch (error) {
+      setNotice(`not sent: ${reason(error)}`);
+      return;
+    }
+    setLines((prev) => [...prev, { id: randomHex(8), who: now.settings.name, text: message, mine: true }].slice(-MAX_LINES));
+    setText('');
+    setNotice('');
   }
 
   async function save() {
@@ -62,7 +228,7 @@ export default function RelayScreen() {
     setSettings(next);
     setEditing(false);
     setNotice('saved');
-    prepareRoom(next);
+    startRoom(next);
   }
 
   function askClear() {
@@ -93,9 +259,20 @@ export default function RelayScreen() {
       <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <View style={[styles.statusRow, { borderColor: colors.border }]}>
           <Text style={[styles.statusText, { color: colors.accent }]}>mode: Supabase · {status}</Text>
-          <Pressable onPress={() => setEditing((value) => !value)} style={{ minHeight: TOUCH_MIN, justifyContent: 'center' }}>
-            <Text style={[styles.link, { color: colors.accent }]}>{editing ? 'close' : 'settings'}</Text>
-          </Pressable>
+          <View style={styles.actions}>
+            {inRoom ? (
+              <Pressable onPress={leave} style={[styles.topButton, { borderColor: colors.danger }]}>
+                <Text style={{ fontSize: SIZE.body, color: colors.danger }}>leave</Text>
+              </Pressable>
+            ) : left ? (
+              <Pressable onPress={quit} style={[styles.topButton, { borderColor: colors.danger }]}>
+                <Text style={{ fontSize: SIZE.body, color: colors.danger }}>quit</Text>
+              </Pressable>
+            ) : null}
+            <Pressable onPress={() => setEditing((value) => !value)} style={[styles.topButton, { borderColor: colors.accent }]}>
+              <Text style={{ fontSize: SIZE.body, color: colors.accent }}>{editing ? 'close' : 'settings'}</Text>
+            </Pressable>
+          </View>
         </View>
         {notice ? <Text style={[styles.notice, { color: colors.muted }]}>{notice}</Text> : null}
         {usingDefaults ? <Text style={[styles.notice, { color: colors.muted }]}>기본값 사용 중 (URL·키·방 ID는 앱 기본값)</Text> : null}
@@ -105,31 +282,62 @@ export default function RelayScreen() {
             {FIELD_IDS.map((id) => (
               <View key={id} style={styles.field}>
                 <Text style={[styles.label, { color: colors.muted }]}>{LABELS[id]}</Text>
-                <TextInput
-                  style={[styles.input, { color: colors.text, borderColor: colors.border }]}
-                  value={draft[id]}
-                  onChangeText={(value) => setDraft({ ...draft, [id]: value })}
-                  autoCapitalize={id === 'roomCode' ? 'characters' : 'none'}
-                  autoCorrect={false}
-                  secureTextEntry={id === 'key'}
-                  placeholder={id === 'key' ? keyLabel(draft.key) : undefined}
-                  placeholderTextColor={colors.muted}
-                />
+                <View style={styles.inputRow}>
+                  <TextInput
+                    style={[styles.input, styles.grow, { color: colors.text, borderColor: colors.border }]}
+                    value={draft[id]}
+                    onChangeText={(value) => setDraft({ ...draft, [id]: value })}
+                    autoCapitalize={id === 'roomCode' ? 'characters' : 'none'}
+                    autoCorrect={false}
+                    secureTextEntry={id === 'key'}
+                    placeholder={id === 'key' ? keyLabel(draft.key) : undefined}
+                    placeholderTextColor={colors.muted}
+                  />
+                  {id === 'roomCode' ? (
+                    <Pressable onPress={makeRoom} accessibilityRole="button" accessibilityLabel="create room" style={[styles.inputButton, { borderColor: colors.accent }]}>
+                      <Text style={{ fontSize: SIZE.body, color: colors.accent }}>+</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               </View>
             ))}
             <View style={styles.row}>
               <Pressable onPress={save} style={[styles.button, { borderColor: colors.accent }]}>
-                <Text style={{ fontSize: SIZE.body, color: colors.accent }}>save</Text>
+                <Text style={{ fontSize: SIZE.body, color: colors.accent }}>join</Text>
               </Pressable>
               <Pressable onPress={askClear} style={[styles.button, { borderColor: colors.danger }]}>
-                <Text style={{ fontSize: SIZE.body, color: colors.danger }}>clear settings</Text>
+                <Text style={{ fontSize: SIZE.body, color: colors.danger }}>clear</Text>
               </Pressable>
             </View>
           </ScrollView>
         ) : (
-          <View style={styles.panel}>
-            <Text style={[styles.label, { color: colors.muted }]}>Room chat will be available after room joining is implemented.</Text>
-            <Text style={[styles.label, { color: colors.muted }]}>Selected room: {settings.roomCode}</Text>
+          <View style={styles.chat}>
+            <ScrollView style={styles.log} keyboardShouldPersistTaps="handled">
+              {[...members].map(([pk]) => (
+                <Text key={pk} style={[styles.label, { color: colors.muted }]}>
+                  member {pk.slice(0, 8)}
+                </Text>
+              ))}
+              {lines.map((line) => (
+                <Text key={line.id} style={[styles.line, { color: line.mine ? colors.accent : colors.text }]}>
+                  {line.who} &gt; {line.text}
+                </Text>
+              ))}
+            </ScrollView>
+            <View style={[styles.row, styles.send]}>
+              <TextInput
+                style={[styles.input, styles.grow, { color: colors.text, borderColor: colors.border }]}
+                value={text}
+                onChangeText={setText}
+                onSubmitEditing={send}
+                returnKeyType="send"
+                placeholder="message"
+                placeholderTextColor={colors.muted}
+              />
+              <Pressable onPress={send} style={[styles.button, { borderColor: colors.accent }]}>
+                <Text style={{ fontSize: SIZE.body, color: colors.accent }}>send</Text>
+              </Pressable>
+            </View>
           </View>
         )}
       </KeyboardAvoidingView>
@@ -140,8 +348,9 @@ export default function RelayScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   statusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 10, borderBottomWidth: 1 },
+  actions: { flexDirection: 'row', gap: 8 },
+  topButton: { minHeight: TOUCH_MIN, borderWidth: 1, borderRadius: 4, paddingHorizontal: 12, justifyContent: 'center' },
   statusText: { fontSize: SIZE.label },
-  link: { fontSize: SIZE.label, textDecorationLine: 'underline' },
   notice: { paddingHorizontal: 10, paddingVertical: 4, fontSize: SIZE.label },
   panel: { flexGrow: 0, flexShrink: 1, padding: 10 },
   field: { marginBottom: 10 },
@@ -149,4 +358,11 @@ const styles = StyleSheet.create({
   input: { minHeight: TOUCH_MIN, borderWidth: 1, borderRadius: 4, paddingHorizontal: 8, paddingVertical: 6, fontSize: SIZE.body },
   button: { minHeight: TOUCH_MIN, borderWidth: 1, borderRadius: 4, paddingHorizontal: 12, paddingVertical: 8, alignSelf: 'flex-start', marginTop: 8 },
   row: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  inputRow: { flexDirection: 'row', gap: 8 },
+  inputButton: { minHeight: TOUCH_MIN, borderWidth: 1, borderRadius: 4, paddingHorizontal: 12, justifyContent: 'center' },
+  chat: { flex: 1 },
+  log: { flex: 1, padding: 10 },
+  grow: { flex: 1 },
+  line: { fontSize: SIZE.body, marginBottom: 4 },
+  send: { padding: 10, alignItems: 'center' },
 });

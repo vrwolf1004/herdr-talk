@@ -38,6 +38,7 @@ import phone
 import relay_chat
 import relay_form
 import relay_settings
+from core import relay_rest
 from core import sessions
 from core import store
 from core.events import Line, Message, Notice, Status
@@ -1380,7 +1381,11 @@ def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=
 def _enter_screen():
     """Switch to the alternate screen with the cursor hidden. On POSIX also read keys one at a time (raw mode).
     Windows reads keys with msvcrt and needs no mode change. Returns the function that undoes all of it."""
-    global _last_frame
+    global _last_frame, _kept_screen
+    if _kept_screen is not None:  # the first-run screen left the full-screen mode on for the chat: no flash between them
+        leave, _kept_screen = _kept_screen, None
+        _last_frame = None
+        return leave
     enable_vt()
     sys.stdout.write("\x1b[?1049h\x1b[?25l")
     sys.stdout.flush()
@@ -1407,6 +1412,7 @@ def _enter_screen():
     return leave
 
 
+_kept_screen = None  # the undo function of a full-screen mode that is still on, for the next _enter_screen() to take over
 _last_frame = None  # what is on screen now; a frame equal to it is not written again (no flicker on idle redraws)
 
 
@@ -1419,11 +1425,11 @@ def _draw(frame):
     sys.stdout.flush()
 
 
-def settings_screen(state, open_supabase=False):
+def settings_screen(state, open_supabase=False, left=False):
     """The Ctrl+R screen (inside the full-screen mode that is already on). Returns ("saved" | "cancel", message)."""
     form = relay_form.SettingsForm(state)
     if open_supabase:
-        form.open_supabase()
+        form.open_supabase(left)
     dirty = True
     while True:
         if dirty:
@@ -1443,7 +1449,9 @@ def settings_screen(state, open_supabase=False):
 def first_run_screen(state):
     """Ask how to connect before the chat starts. Returns "done" (the mode was saved, or 30 seconds passed and the chat
     starts in local mode without saving) or "quit" (Esc)."""
+    global _kept_screen
     leave = _enter_screen()
+    keep = False  # on "done" the chat follows at once, so the full-screen mode stays on
     try:
         choice = relay_form.FirstRun()
         shown = object()
@@ -1456,6 +1464,7 @@ def first_run_screen(state):
             key = read_char_timeout(0.25)
             if key is None:
                 if choice.timed_out():
+                    keep = True
                     return "done"
                 continue
             picked = choice.on_key(key)
@@ -1464,13 +1473,18 @@ def first_run_screen(state):
                 return "quit"
             if picked == "local":
                 relay_settings.set_mode(state, relay_settings.LOCAL)
+                keep = True
                 return "done"
             if picked == "supabase":
                 if settings_screen(state, open_supabase=True)[0] == "saved":
+                    keep = True
                     return "done"
                 choice.restart_timer()
     finally:
-        leave()
+        if keep:
+            _kept_screen = leave
+        else:
+            leave()
 
 
 def on_key(ch, chat, typed):
@@ -1563,7 +1577,24 @@ def run_ansi(chat):
                 redraw()
                 continue
             if not on_key(ch, chat, typed):
-                break
+                if not (chat.supabase and chat.state_dir):
+                    break
+                # Leaving a room chat leaves the room (this node's relay row is deleted) and opens the settings screen with the
+                # saved server info kept. Saving joins again; Esc ends the chat.
+                paused[0] = True
+                chat.stop_relay()
+                leaver = threading.Thread(target=relay_chat.leave, args=(chat.state_dir,), daemon=True)  # the delete runs in the background
+                leaver.start()
+                try:
+                    outcome, message = settings_screen(chat.state_dir, open_supabase=True, left=True)
+                finally:
+                    paused[0] = False
+                leaver.join(relay_rest.TIMEOUT_SECONDS + 1)  # a delete still running must not remove the row published next
+                if outcome != "saved":
+                    break
+                typed[0] = ""
+                chat.start_relay()
+                chat.emit(Line(message))
             redraw()
     finally:
         chat.on_phone_change = None
@@ -1651,7 +1682,11 @@ def run(args):
     me = chat.me
     control = start_control(chat, state_dir())
     chat.watch_host()  # the first node on this PC owns the phone address; another takes over when it ends
-    if chat.state_dir and relay_settings.needs_first_run(chat.state_dir) and first_run_screen(chat.state_dir) == "quit":
+    try:
+        quit_first_run = bool(chat.state_dir and relay_settings.needs_first_run(chat.state_dir) and first_run_screen(chat.state_dir) == "quit")
+    except KeyboardInterrupt:  # Ctrl+C on the first-run screen is a quit, not a crash
+        quit_first_run = True
+    if quit_first_run:
         STOP.set()
         chat.release_host()
         control.close()

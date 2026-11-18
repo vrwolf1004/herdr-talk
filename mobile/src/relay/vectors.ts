@@ -4,8 +4,9 @@
 
 import * as ed25519 from "@noble/ed25519";
 import { hexToBytes, bytesToHex, utf8Encode } from "./bytes.ts";
-import { channelName, encodePayload, fingerprint, sealEnvelope, signPut } from "./protocol.ts";
+import { channelName, encodePayload, fingerprint, NonceCache, sealEnvelope, signPut } from "./protocol.ts";
 import { publicKeyOf, writeMessage1 } from "./noise.ts";
+import { deliveriesDigest, fetchMessageBody, membersQuery, postMessageBody, roomPayload, FETCH_TAG, POST_TAG } from "./room.ts";
 
 export const INPUTS = {
   // Noise static and ephemeral private keys (32 bytes each). Public keys are derived below.
@@ -29,6 +30,21 @@ export const INPUTS = {
   // The two public keys of the known channel-name vector (0x01 x 32 and 0x02 x 32).
   channelKeyA: "01".repeat(32),
   channelKeyB: "02".repeat(32),
+  // Room messages (the values come from the Python side, core/room.py): three phones, one fixed ephemeral key.
+  roomSenderSeed: "33".repeat(32),
+  roomSenderNoisePrivate: "44".repeat(32),
+  roomRecipientSeed: "77".repeat(32),
+  roomRecipientNoisePrivate: "55".repeat(32),
+  roomEphemeralPrivate: "66".repeat(32),
+  roomThirdSeed: "88".repeat(32),
+  roomThirdNoisePrivate: "99".repeat(32),
+  roomCode: "ABCD2345",
+  roomTs: 1700000000,
+  roomNonce: "00112233445566778899aabbccddeeff",
+  roomMessageId: "ffeeddccbbaa99887766554433221100",
+  roomName: "Alice",
+  roomText: "hello room",
+  roomSince: "2026-11-16T00:00:00Z",
 } as const;
 
 export type Vectors = {
@@ -43,6 +59,21 @@ export type Vectors = {
   rowSignature: string;
   deleteSignature: string;
   fingerprint: string;
+  roomSenderPublic: string;
+  roomSenderNoisePublic: string;
+  roomRecipientPublic: string;
+  roomRecipientNoisePublic: string;
+  roomPayloadJson: string;
+  roomCiphertext: string;
+  roomDeliveriesDigest: string;
+  roomPostSignedText: string;
+  roomPostSig: string;
+  roomFetchSignedText: string;
+  roomFetchSig: string;
+  roomMembersQuery: string;
+  roomFetchAnswer: string;
+  roomNonceFirstAccept: string;
+  roomNonceSecondAccept: string;
 };
 
 export function computeVectors(): Vectors {
@@ -69,5 +100,41 @@ export function computeVectors(): Vectors {
     rowSignature: row.sig,
     deleteSignature,
     fingerprint: fingerprint(initiatorPublic, responderPublic),
+    ...computeRoomVectors(),
+  };
+}
+
+function computeRoomVectors() {
+  const senderSeed = hexToBytes(INPUTS.roomSenderSeed);
+  const recipientSeed = hexToBytes(INPUTS.roomRecipientSeed);
+  const senderPk = bytesToHex(ed25519.getPublicKey(senderSeed));
+  const recipientPk = bytesToHex(ed25519.getPublicKey(recipientSeed));
+  const thirdPk = bytesToHex(ed25519.getPublicKey(hexToBytes(INPUTS.roomThirdSeed)));
+  const senderNoise = hexToBytes(INPUTS.roomSenderNoisePrivate);
+  const recipientNoise = publicKeyOf(hexToBytes(INPUTS.roomRecipientNoisePrivate));
+  const payload = roomPayload(INPUTS.roomName, INPUTS.roomText, INPUTS.roomTs, INPUTS.roomNonce);
+  const ephemeral = hexToBytes(INPUTS.roomEphemeralPrivate);
+  const ciphertext = bytesToHex(writeMessage1(senderNoise, recipientNoise, payload, ephemeral));
+  const deliveries = [{ recipient_pk: recipientPk, ciphertext }];
+  const digest = deliveriesDigest(deliveries);
+  const post = JSON.parse(postMessageBody(senderSeed, INPUTS.roomCode, INPUTS.roomMessageId, INPUTS.roomTs, INPUTS.roomNonce, deliveries));
+  const fetch = JSON.parse(fetchMessageBody(recipientSeed, INPUTS.roomCode, null, INPUTS.roomTs, INPUTS.roomNonce));
+  const cache = new NonceCache();
+  return {
+    roomSenderPublic: senderPk,
+    roomSenderNoisePublic: bytesToHex(publicKeyOf(senderNoise)),
+    roomRecipientPublic: recipientPk,
+    roomRecipientNoisePublic: bytesToHex(recipientNoise),
+    roomPayloadJson: new TextDecoder().decode(payload),
+    roomCiphertext: ciphertext,
+    roomDeliveriesDigest: digest,
+    roomPostSignedText: [POST_TAG, "post", INPUTS.roomCode, senderPk, INPUTS.roomMessageId, String(INPUTS.roomTs), INPUTS.roomNonce, digest].join("\n"),
+    roomPostSig: post.sig as string,
+    roomFetchSignedText: [FETCH_TAG, "fetch", INPUTS.roomCode, recipientPk, String(INPUTS.roomTs), INPUTS.roomNonce].join("\n"),
+    roomFetchSig: fetch.sig as string,
+    roomMembersQuery: membersQuery([thirdPk, recipientPk].sort()),
+    roomFetchAnswer: JSON.stringify({ messages: [{ message_id: INPUTS.roomMessageId, sender_pk: senderPk, ts: INPUTS.roomTs, nonce: INPUTS.roomNonce, ciphertext, created_at: INPUTS.roomSince }] }),
+    roomNonceFirstAccept: String(cache.accept(INPUTS.roomNonce, INPUTS.roomTs, INPUTS.roomTs)),
+    roomNonceSecondAccept: String(cache.accept(INPUTS.roomNonce, INPUTS.roomTs, INPUTS.roomTs)),
   };
 }

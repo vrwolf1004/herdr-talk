@@ -66,16 +66,15 @@ class Relay:
         self.outbox.put(text)
 
     def _send_text(self, text):
-        """One text to every trusted member, one Noise message each in one post. Untrusted members are left out and
-        the user is told how many. Mirrors Rust room_relay.rs send_text."""
+        """One text to every other member of the room, one Noise message each in one post (no /trust step in rooms;
+        the Rust edition still sends to trusted members only)."""
         others = [(pk, noise) for pk, noise in self.members.items() if pk != self.own_pk]
-        trusted = [(pk, noise) for pk, noise in others if self.hooks.trusts(noise)]
-        if not trusted:
-            self.hooks.emit(Notice("room.none_trusted"))
+        if not others:
+            self.hooks.emit(Notice("room.send_failed", {"error": "no other member in the room"}))
             return
         try:
             ok = room.post_text(self.config, self.session.seed, self.settings["room_code"], self.session.noise_secret,
-                                trusted, self.hooks.my_name(), text)
+                                others, self.hooks.my_name(), text)
         except (OSError, ValueError) as error:
             self.hooks.emit(Notice("room.send_failed", {"error": str(error)}))
             return
@@ -83,16 +82,13 @@ class Relay:
             self.hooks.emit(Notice("room.send_failed", {"error": "server"}))
             return
         self.hooks.emit(Message(self.hooks.my_name(), text, mine=True))
-        left_out = len(others) - len(trusted)
-        if left_out:
-            self.hooks.emit(Notice("room.left_out", {"n": left_out}))
 
     def _fetch(self):
         """Show the inbox rows that check out (Rust fetch_round + show_message)."""
         rows = room.fetch_rows(self.config, self.session.seed, self.settings["room_code"], self.since)
         for row in rows:
             self.since = row["created_at"]
-            shown = room.check_row(row, self.members, self.session.noise_secret, self.hooks.trusted_name, self.cache, int(time.time()),
+            shown = room.check_row(row, self.members, self.session.noise_secret, self.cache, int(time.time()),
                                    not_before=self.started)
             if shown is None:
                 continue

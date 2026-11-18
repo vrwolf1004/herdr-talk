@@ -1,7 +1,7 @@
 // Network side of the phone relay: the REST calls (signed row write, row lookup) and the Realtime websocket.
 // Only fetch and the platform WebSocket are used (Expo Go has both). Nothing here is printed with the key.
 
-import { isKeyHex, putBody, signPut } from "./protocol.ts";
+import { deleteBody, isKeyHex, putBody, signPut } from "./protocol.ts";
 import { isPeerInput, isValidName, type RelaySettings } from "./settings.ts";
 
 export const TIMEOUT_MS = 5000;
@@ -51,6 +51,29 @@ export async function putRow(
     return response.status >= 200 && response.status < 300 ? "ok" : "failed";
   } catch {
     return "failed";
+  }
+}
+
+/** Signed delete of this phone's own row (delete-peer): the phone leaves the room. True when the relay accepted it. */
+export async function deleteRow(
+  settings: RelaySettings,
+  signingSeed: Uint8Array,
+  shortId: string,
+  now: number,
+  nonce: string,
+  fetcher: Fetch = fetch as unknown as Fetch,
+): Promise<boolean> {
+  try {
+    const response = await withTimeout(
+      fetcher(`${settings.url.replace(/\/+$/, "")}/functions/v1/delete-peer`, {
+        method: "POST",
+        headers: { apikey: settings.key, Authorization: `Bearer ${settings.key}`, "Content-Type": "application/json" },
+        body: deleteBody(signingSeed, shortId, now, nonce),
+      }),
+    );
+    return response.status >= 200 && response.status < 300;
+  } catch {
+    return false;
   }
 }
 

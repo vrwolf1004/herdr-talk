@@ -241,6 +241,20 @@ class SettingsFormTests(unittest.TestCase):
         self.assertIn("ABCD1234", form.message)
         self.assertIsNone(form._room_result, "no create request is sent")
 
+    def test_after_leaving_another_room_can_be_entered_or_created(self):
+        relay_settings.save(self.dir, {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key",
+                                       "name": "Alice", "room_code": "ABCD1234"})
+        form = self._form()
+        form.open_supabase(left=True)
+        self.assertEqual(form.fields[:3], ["https://x.supabase.co", "dummy-test-key", "Alice"], "the server info is kept")
+        form.fields[3] = "EFGH5678"
+        self.assertTrue(form.save(), "another room is allowed after leaving")
+        self.assertEqual(relay_settings.load_saved(self.dir)["room_code"], "EFGH5678")
+        with mock.patch.object(relay_form.threading, "Thread") as thread:
+            form.create_room()
+        self.assertIsNotNone(form._room_result, "a create request starts instead of the one-room refusal")
+        thread.assert_called_once()
+
     def test_escape_leaves_without_saving(self):
         form = self._form()
         form.on_key("\t")

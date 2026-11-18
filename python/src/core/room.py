@@ -60,10 +60,11 @@ def open_message(secret, ciphertext):
     return payload, responder.remote_static
 
 
-def check_row(row, members, secret, trusted_name, cache, now, not_before=0):
+def check_row(row, members, secret, cache, now, not_before=0):
     """The (name, text) to show for one fetched row, or None when it must not be shown (every failure is silent).
 
-    members: {sender_pk: noise_pk bytes} of the room. trusted_name(noise_pk) -> the name this PC verified, or None.
+    members: {sender_pk: noise_pk bytes} of the room. Every member of the room is accepted (no /trust step in rooms): the
+    name shown is the one the sender wrote into the payload, or the first 4 characters of its key when that name is not valid.
     not_before: a row sent before this time (seconds) is dropped: the node takes only what came after it started."""
     if row["ts"] < not_before:
         return None
@@ -76,9 +77,6 @@ def check_row(row, members, secret, trusted_name, cache, now, not_before=0):
         return None
     if remote != sender_noise:
         return None
-    name = trusted_name(remote)
-    if name is None:
-        return None
     try:
         value = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -90,7 +88,8 @@ def check_row(row, members, secret, trusted_name, cache, now, not_before=0):
     text = clean_text(value.get("text") if isinstance(value.get("text"), str) else "", MAX_TEXT_CHARS)
     if not text.strip():
         return None
-    return squeeze_spaces(name).strip(), text
+    claimed = squeeze_spaces(clean_text(value.get("name") if isinstance(value.get("name"), str) else "", 32)).strip()
+    return (claimed if relay_rest.valid_name(claimed) else row["sender_pk"][:4]), text
 
 
 def post_text(config, seed, room_code, secret, recipients, name, text, ts=None):

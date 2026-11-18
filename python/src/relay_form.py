@@ -179,6 +179,7 @@ class SettingsForm:
         self.message = ""
         self.mine = mine if mine is not None else self._own_keys(state)
         self._room_result = None  # a queue of the running create-room request, None when none runs
+        self.left = False  # True on the screen opened after leaving a room: another room may be entered or created
 
     @staticmethod
     def _own_keys(state):
@@ -189,10 +190,12 @@ class SettingsForm:
         except (relay_key.SigningKeyError, OSError, ValueError, AttributeError):
             return None
 
-    def open_supabase(self):
-        """Start on the first field with Supabase selected (the choice made on the first-run screen)."""
+    def open_supabase(self, left=False):
+        """Start on the first field with Supabase selected (the choice made on the first-run screen). left: the screen is
+        shown after leaving a room, so the one-room rule does not apply and the saved server info stays in the fields."""
         self.mode = relay_settings.SUPABASE
         self.focus = 0
+        self.left = left
 
     def settings(self):
         return {"mode": self.mode, **dict(zip(FIELD_NAMES, self.fields))}
@@ -202,7 +205,7 @@ class SettingsForm:
         values = self.settings()
         saved_room = relay_settings.load_saved(self.state)["room_code"]
         new_room = self.fields[ROOM_FIELD].strip().upper()
-        if saved_room and new_room and new_room != saved_room:
+        if saved_room and new_room and new_room != saved_room and not self.left:
             self.message = t("room.only_one", code=saved_room)
             return False
         if values["mode"] == relay_settings.SUPABASE:
@@ -252,7 +255,7 @@ class SettingsForm:
             self.message = "create room: this PC has no keys yet (start a chat first)"
             return
         saved_room = relay_settings.load_saved(self.state)["room_code"]
-        if saved_room:
+        if saved_room and not self.left:
             self.message = t("room.only_one", code=saved_room)
             return
         url, key, name = (value.strip() for value in self.fields[:3])
@@ -320,6 +323,8 @@ class SettingsForm:
             fill = "_" * max(0, FIELD_WIDTH - char_width(value))  # the blank input, as an underscore line
             selected = self.focus == index
             lines.append((f"{'▶ ' if selected else '  '}{label:<22} : [{value}{fill}]", ACCENT if selected else (MUTED if local else "")))
+            if index == ROOM_FIELD:
+                lines.append(("     Join: type a room ID here, then Enter  ·  New room: press Ctrl+N", MUTED))
         lines.append(("", ""))
         lines.append(("DEVICE IDENTITY", ACCENT))
         if self.mine:

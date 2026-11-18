@@ -106,7 +106,7 @@ class RoomThreadTests(unittest.TestCase):
         join.assert_not_called()
         self.assertEqual(hooks.status, "relay: name is not valid; not joined yet")
 
-    def test_a_text_with_no_confirmed_member_is_not_sent_and_the_user_is_told(self):
+    def test_a_text_with_no_other_member_is_not_sent_and_the_user_is_told(self):
         hooks = Hooks()
         relay = rc.Relay(hooks, None, self.config, settings(), self.session)
         relay.own_pk = "aa" * 32
@@ -114,13 +114,11 @@ class RoomThreadTests(unittest.TestCase):
         with mock.patch.object(relay_rest, "_send") as send:
             relay._wait(0.3)
         send.assert_not_called()
-        self.assertEqual(hooks.said, [Notice("room.none_trusted")])
+        self.assertEqual(hooks.said, [Notice("room.send_failed", {"error": "no other member in the room"})])
 
-    def test_a_text_goes_to_the_trusted_members_and_untrusted_ones_are_counted(self):
+    def test_a_text_goes_to_every_other_member(self):
         from core import noise as noise_mod
         hooks = Hooks()
-        hooks.trusts = lambda key: key == b"" * 32
-        hooks.trusted_name = lambda key: "Liam"
         hooks.my_name = lambda: "Alice"
         relay = rc.Relay(hooks, None, self.config, settings(), self.session)
         relay.own_pk = "aa" * 32
@@ -128,11 +126,11 @@ class RoomThreadTests(unittest.TestCase):
         with mock.patch("relay_chat.room.post_text", return_value=True) as post:
             relay._send_text("hello")
         recipients = post.call_args.args[4]
-        self.assertEqual(recipients, [("bb" * 32, b"" * 32)])
+        self.assertEqual(sorted(recipients), [("bb" * 32, b"" * 32), ("cc" * 32, b"\x02" * 32)])
         self.assertEqual(hooks.said[0].text, "hello")
         self.assertTrue(hooks.said[0].mine)
         self.assertEqual(hooks.said[0].sender, "Alice")
-        self.assertEqual(hooks.said[1], Notice("room.left_out", {"n": 1}))
+        self.assertEqual(len(hooks.said), 1)
 
 
 class JoinRetryTests(unittest.TestCase):
@@ -153,7 +151,6 @@ class JoinRetryTests(unittest.TestCase):
 class InboxTests(unittest.TestCase):
     def test_only_rows_that_check_out_are_shown_and_the_cursor_moves_on(self):
         hooks = Hooks()
-        hooks.trusted_name = lambda key: "Liam"
         relay = rc.Relay(hooks, None, None, settings(), rc.Session(SEED, b"" * 32))
         relay.members = {"bb" * 32: b"" * 32}
         rows = [{"sender_pk": "bb" * 32, "created_at": "t1", "ciphertext": "00", "ts": 1, "nonce": "11" * 16},

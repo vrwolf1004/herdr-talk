@@ -34,7 +34,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test:relay": "node --test src/relay/relay.test.ts"
+    "test:relay": "node --test src/relay/relay.test.ts src/relay/room.test.ts"
   },
   "private": true
 }

@@ -154,26 +154,21 @@ fn load_members(config: &Config, seed: &[u8; 32], room_code: &str, name: &str) -
         .collect()
 }
 
-/// Send one text to every trusted member, one Noise message each, in one post. Untrusted members are left out, and the
-/// user is told how many.
+/// Send one text to every other member of the room, one Noise message each, in one post (no /trust step in rooms).
 #[allow(clippy::too_many_arguments)]
 fn send_text(chat: &Chat, config: &Config, seed: &[u8; 32], room_code: &str, identity: &Identity, me: &str, members: &[Member], names: &mut HashMap<String, String>, text: &str) {
     let own = name_key(&chat.me.lock().unwrap().name);
     names.insert(me.to_string(), own.clone());
     let others: Vec<&Member> = members.iter().filter(|member| member.pk != me).collect();
-    let mut trusted: Vec<&Member> = others.iter().copied().filter(|member| chat.trusts(&member.noise)).collect();
-    let left_out = others.len() - trusted.len();
-    if trusted.is_empty() {
-        chat.say(t("room.none_trusted", &[]));
+    let mut recipients = others;
+    if recipients.is_empty() {
+        chat.say("방 메시지 실패: 방에 다른 멤버가 없습니다".to_string());
         return;
     }
-    trusted.sort_by(|a, b| a.pk.cmp(&b.pk));
-    match post_to(config, seed, room_code, identity, &trusted, &own, text) {
+    recipients.sort_by(|a, b| a.pk.cmp(&b.pk));
+    match post_to(config, seed, room_code, identity, &recipients, &own, text) {
         Ok(()) => {
             chat.add(vec![Line { sender: Some(format!("{} {}", label(names, me, &own), t("chat.you", &[]))), text: text.to_string(), mine: true, seq: 0 }]);
-            if left_out > 0 {
-                chat.say(t("room.left_out", &[("n", &left_out.to_string())]));
-            }
         }
         Err(error) => chat.say(format!("방 메시지 실패: {error}")),
     }
@@ -228,9 +223,9 @@ fn label(names: &HashMap<String, String>, pk: &str, name: &str) -> String {
     }
 }
 
-/// One row: shown only when the sender is a member, the Noise key is the member's and trusted, the payload matches the row
-/// (ts, nonce), and the nonce is new. The name shown is the one this PC confirmed for that key (the trust list), never the
-/// name the message claims. Every failure is silent, as on the LAN.
+/// One row: shown only when the sender is a member, the Noise key is the member's, the payload matches the row (ts, nonce),
+/// and the nonce is new. Every member of the room is accepted (no /trust step in rooms). The name shown is the one the
+/// sender wrote into the payload, or the first 4 characters of its key when that name is not valid. Every failure is silent.
 fn show_message(chat: &Chat, identity: &Identity, members: &[Member], names: &mut HashMap<String, String>, cache: &mut NonceCache, row: &Message) {
     let Some(sender) = members.iter().find(|member| member.pk == row.sender_pk) else { return };
     let Some(ciphertext) = store::from_hex(&row.ciphertext) else { return };
@@ -238,7 +233,6 @@ fn show_message(chat: &Chat, identity: &Identity, members: &[Member], names: &mu
     if remote != sender.noise {
         return;
     }
-    let Some(trusted) = chat.trusted_name(&remote) else { return };
     let Ok(value) = serde_json::from_slice::<Value>(&payload) else { return };
     let text = value["text"].as_str().unwrap_or("");
     if value["v"].as_u64() != Some(1) || value["ts"].as_u64() != Some(row.ts) || value["nonce"].as_str() != Some(row.nonce.as_str()) {
@@ -251,7 +245,8 @@ fn show_message(chat: &Chat, identity: &Identity, members: &[Member], names: &mu
     if text.trim().is_empty() {
         return;
     }
-    let name = name_key(&trusted);
+    let claimed = name_key(value["name"].as_str().unwrap_or(""));
+    let name = if relay_rest::valid_name(&claimed) { claimed } else { row.sender_pk.chars().take(4).collect() };
     names.insert(row.sender_pk.clone(), name.clone());
     chat.add(vec![Line { sender: Some(label(names, &row.sender_pk, &name)), text, mine: false, seq: 0 }]);
 }
@@ -392,11 +387,10 @@ mod tests {
     }
 
     #[test]
-    fn a_message_is_shown_once_from_a_trusted_member_and_nothing_else() {
+    fn a_message_is_shown_once_from_a_member_and_nothing_else() {
         let (alice_public, alice_secret) = noise_keys();
         let (bob_public, bob_secret) = noise_keys();
         let bob = Chat::new(Me { id: "b".into(), name: "Bob".into(), port: 1, key: bob_public.clone(), secret: bob_secret.clone() });
-        bob.trusted.lock().unwrap().push(Trusted { name: "Alice".into(), key: alice_public.clone(), ip: "10.0.0.1".into() });
         let identity = Identity { public: bob_public.clone(), secret: bob_secret.clone() };
         let (_, alice_pk) = ed_key(4);
         let members = vec![Member { pk: alice_pk.clone(), noise: alice_public.clone() }];
@@ -410,12 +404,12 @@ mod tests {
         show_message(&bob, &identity, &members, &mut names, &mut cache, &row);
         let shown: Vec<String> = bob.lines().into_iter().map(|line| line.render()).collect();
         assert_eq!(shown, vec!["Alice: hello room".to_string()], "shown once; a replay is dropped");
-        // A sender that is not a member, and a sender whose key is not trusted, show nothing.
+        // A sender that is not a member, and a sender whose key differs from the member's, show nothing.
         let (_, stranger) = ed_key(5);
         let stranger_row = Message { sender_pk: stranger, ..row.clone() };
         show_message(&bob, &identity, &members, &mut names, &mut NonceCache::default(), &stranger_row);
-        let untrusted_members = vec![Member { pk: alice_pk.clone(), noise: noise_keys().0 }];
-        show_message(&bob, &identity, &untrusted_members, &mut names, &mut NonceCache::default(), &row);
+        let other_key_members = vec![Member { pk: alice_pk.clone(), noise: noise_keys().0 }];
+        show_message(&bob, &identity, &other_key_members, &mut names, &mut NonceCache::default(), &row);
         assert_eq!(bob.lines().len(), 1, "nothing else is shown");
     }
 
@@ -438,17 +432,16 @@ mod tests {
     }
 
     #[test]
-    fn a_claimed_name_is_ignored_and_the_confirmed_name_is_shown() {
+    fn the_name_the_sender_wrote_is_shown() {
         let (alice_public, alice_secret) = noise_keys();
         let (bob_public, bob_secret) = noise_keys();
         let bob = Chat::new(Me { id: "b".into(), name: "Bob".into(), port: 1, key: bob_public.clone(), secret: bob_secret.clone() });
-        bob.trusted.lock().unwrap().push(Trusted { name: "Alice".into(), key: alice_public.clone(), ip: "10.0.0.1".into() });
         let identity = Identity { public: bob_public.clone(), secret: bob_secret.clone() };
         let (_, alice_pk) = ed_key(4);
         let members = vec![Member { pk: alice_pk.clone(), noise: alice_public.clone() }];
         let ts = unix_now();
-        // Alice's message claims another name: the screen shows the name confirmed for her key.
-        let payload = json!({"v": 1, "ts": ts, "nonce": NONCE, "name": "방장", "text": "hi"}).to_string();
+        // The screen shows the name Alice wrote.
+        let payload = json!({"v": 1, "ts": ts, "nonce": NONCE, "name": "Alice", "text": "hi"}).to_string();
         let ciphertext = store::to_hex(&seal(&alice_secret, &bob_public, payload.as_bytes()).unwrap());
         let row = Message { message_id: "ff".repeat(16), sender_pk: alice_pk.clone(), ts, nonce: NONCE.into(), ciphertext, created_at: "2026".into() };
         show_message(&bob, &identity, &members, &mut HashMap::new(), &mut NonceCache::default(), &row);

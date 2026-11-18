@@ -62,7 +62,6 @@ class CheckRowTest(unittest.TestCase):
     def setUp(self):
         self.me, self.peer = keys(), keys()
         self.members = {self.peer["pk"]: self.peer["noise_public"]}
-        self.trusted = {self.peer["noise_public"]: "Liam > x"}  # a verified name that contains a separator mark
         self.nonce = "11" * 16
 
     def row(self, text="hi", ts=NOW, nonce=None, sender=None):
@@ -72,10 +71,10 @@ class CheckRowTest(unittest.TestCase):
         return {"sender_pk": self.peer["pk"], "ts": ts, "nonce": nonce or self.nonce, "ciphertext": ciphertext}
 
     def check(self, row, cache=None, now=NOW):
-        return room.check_row(row, self.members, self.me["noise_secret"], self.trusted.get, cache or room.NonceCache(), now)
+        return room.check_row(row, self.members, self.me["noise_secret"], cache or room.NonceCache(), now)
 
-    def test_a_valid_row_shows_the_verified_name_and_the_text(self):
-        self.assertEqual(self.check(self.row("hello")), ("Liam > x", "hello"))
+    def test_a_valid_row_shows_the_name_the_sender_wrote_and_the_text(self):
+        self.assertEqual(self.check(self.row("hello")), ("Liam", "hello"))
 
     def test_a_replayed_row_is_shown_once(self):
         cache = room.NonceCache()
@@ -92,10 +91,6 @@ class CheckRowTest(unittest.TestCase):
         imposter = keys()
         self.assertIsNone(self.check(self.row(sender=imposter)))
 
-    def test_an_untrusted_sender_is_dropped(self):
-        self.trusted.clear()
-        self.assertIsNone(self.check(self.row()))
-
     def test_a_ts_that_differs_from_the_payload_is_dropped(self):
         row = self.row()
         row["ts"] = NOW + 1
@@ -107,10 +102,10 @@ class CheckRowTest(unittest.TestCase):
     def test_a_row_sent_before_this_node_started_is_dropped(self):
         started = NOW
         before = self.row(ts=started - 1)
-        self.assertIsNone(room.check_row(before, self.members, self.me["noise_secret"], self.trusted.get,
+        self.assertIsNone(room.check_row(before, self.members, self.me["noise_secret"],
                                          room.NonceCache(), started, not_before=started))
         after = self.row(ts=started + 1)
-        self.assertIsNotNone(room.check_row(after, self.members, self.me["noise_secret"], self.trusted.get,
+        self.assertIsNotNone(room.check_row(after, self.members, self.me["noise_secret"],
                                             room.NonceCache(), started + 1, not_before=started))
 
     def test_an_empty_text_is_dropped(self):
@@ -144,7 +139,7 @@ class PostAndFetchTest(unittest.TestCase):
             delivery = next(row for row in body["deliveries"] if row["recipient_pk"] == reader["pk"])
             row = {"sender_pk": sender["pk"], "ts": NOW, "nonce": body["nonce"], "ciphertext": delivery["ciphertext"]}
             shown = room.check_row(row, {sender["pk"]: sender["noise_public"]}, reader["noise_secret"],
-                                   {sender["noise_public"]: "Alice"}.get, room.NonceCache(), NOW)
+                                   room.NonceCache(), NOW)
             self.assertEqual(shown, ("Alice", "hello room"))
 
     def test_recipients_must_be_known_and_bounded(self):

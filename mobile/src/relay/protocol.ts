@@ -122,6 +122,13 @@ export function signPut(seed: Uint8Array, noisePk: string, shortId: string, name
   return { pk, sig };
 }
 
+/** Body of delete-peer: pk, short_id, ts, nonce, sig; the signed string is herdr-talk-del-v1, pk, short_id, ts, nonce, one per line. */
+export function deleteBody(seed: Uint8Array, shortId: string, ts: number, nonce: string): string {
+  const pk = bytesToHex(signingPublicKey(seed));
+  const sig = bytesToHex(ed25519.sign(utf8Encode(["herdr-talk-del-v1", pk, shortId, String(ts), nonce].join("\n")), seed));
+  return JSON.stringify({ pk, short_id: shortId, ts, nonce, sig });
+}
+
 export function verifyPut(pk: string, noisePk: string, shortId: string, name: string, ts: number, nonce: string, sig: string): boolean {
   try {
     return ed25519.verify(hexToBytes(sig), putMessage(pk, noisePk, shortId, name, ts, nonce), hexToBytes(pk));
