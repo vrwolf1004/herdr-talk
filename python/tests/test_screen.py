@@ -28,25 +28,28 @@ class FrameTest(unittest.TestCase):
         return talk.screen_frame(lines, "STATUS", typed, cols, rows)
 
     def test_status_row_is_above_a_footer_row_that_holds_only_made_by_python(self):
-        frame = self.frame([])   # rows=9 is raised to 10: status on row 9, the footer alone on row 10
+        frame = talk.screen_frame([], "STATUS", "", 60, 9)   # rows=9 is raised to 10: status on row 9, the footer alone on row 10
         self.assertIn("STATUS", place_text(frame, 9))
-        self.assertTrue(place_text(frame, 9).rstrip().endswith("[SYSTEM READY]"))
-        self.assertIn(place(10, " " * 15 + MUTED + "made by Python"), frame)
+        self.assertTrue(place_text(frame, 9).rstrip().endswith(talk.t("status.help_hint")))
+        self.assertIn("[SYSTEM READY]", place_text(frame, 9))
+        self.assertIn(place(10, " " * (60 - 1 - 14) + MUTED + "made by Python"), frame)
 
     def test_header_titles_and_mode_are_drawn(self):
-        frame = talk.screen_frame([], "STATUS", "", 60, 12, nodes=["YOU Haruto", "PEER Liam"], mode="BASE STATION")
+        frame = talk.screen_frame([], "STATUS", "", 60, 16, nodes=["YOU Haruto", "PEER Liam"], mode="BASE STATION")
         self.assertIn("▣ HERDR-TALK", frame)
         self.assertIn("SYS.VER 1.0 · BASE STATION", frame)
         self.assertIn("COMMUNICATION LOG", frame)
-        self.assertIn(f"CONNECTED NODES{RESET}{BACKGROUND}{TEXT}  YOU Haruto · PEER Liam", frame)
+        self.assertIn("CONNECTED NODES", frame)
+        self.assertIn("YOU Haruto", frame)
+        self.assertIn("PEER Liam", frame)
 
     def test_messages_start_under_the_log_title_and_stop_above_the_nodes_row(self):
         frame = self.frame([("a", False), ("b", False)], rows=12)
-        # rows=12: header 1, divider 2, log title 3, messages 4..6, nodes 7, divider 8, guide 9, input 10, status 11, footer 12.
+        # rows=12: header 1, divider 2, log title 3, messages 4..7, nodes 8, divider 9, input 10, status 11, footer 12.
         self.assertIn(place(4, MUTED + "a"), frame)
         self.assertIn(place(5, MUTED + "b"), frame)
-        self.assertIn(place(7, f"{ACCENT}CONNECTED NODES{RESET}  "), frame)
-        self.assertIn(place(8, BORDER + "─" * 29), frame)
+        self.assertIn(place(8, f"{ACCENT}CONNECTED NODES"), frame)
+        self.assertIn(place(9, BORDER + "─" * 29), frame)
         self.assertIn(BACKGROUND + TEXT + "MESSAGE > ", frame)
         self.assertIn(place(12, " " * 15 + MUTED + "made by Python"), frame)
 
@@ -58,9 +61,18 @@ class FrameTest(unittest.TestCase):
         self.assertTrue(row.rstrip("[0m[K").endswith("[SYSTEM READY]") or "[SYSTEM READY]" in row)
         self.assertNotIn("[SYSTEM READY]", frame.split("[2;1H", 1)[0].split("[1;1H", 1)[1])
 
+    def test_a_long_node_list_is_cut_with_a_more_row(self):
+        nodes = ["YOU me"] + [f"[{i}] P{i} (10.0.0.{i})  waiting" for i in range(1, 11)]
+        frame = talk.screen_frame([], "S", "", 60, 30, nodes=nodes)
+        # 30 rows: at most 6 node rows: this PC, four peers, and one "…" row for the other 6 (11 nodes in all).
+        self.assertIn("YOU me", frame)
+        self.assertIn("[4] P4", frame)
+        self.assertNotIn("P5 (10.0.0.5)", frame)
+        self.assertIn(talk.t("nodes.more", n=6), frame)
+
     def test_only_the_newest_lines_fit(self):
         lines = [(f"line{i}", False) for i in range(10)]
-        frame = self.frame(lines, rows=13)   # 13 - 9 = 4 message rows
+        frame = self.frame(lines, rows=12)   # 12 - 8 = 4 message rows
         self.assertIn("line6", frame)
         self.assertIn("line9", frame)
         self.assertNotIn("line5", frame)
@@ -85,10 +97,10 @@ class FrameTest(unittest.TestCase):
         self.assertNotIn("a" * 40, frame)
 
     def test_wide_characters_are_padded_by_display_width(self):
-        frame = talk.screen_frame([], "가나", "", 20, 8)
-        # 가나 is 4 columns and the status row has the whole width to itself, so it is not cut.
+        frame = talk.screen_frame([], "가나", "", 60, 8)
+        # 가나 is 4 columns: the status text is wide and still drawn in full before the tag.
         self.assertIn("가나", place_text(frame, 9))
-        self.assertIn(place(10, " " * 5 + MUTED + "made by Python"), frame)
+        self.assertIn(place(10, " " * (60 - 1 - 14) + MUTED + "made by Python"), frame)
 
 
 class KeyTest(unittest.TestCase):
@@ -149,10 +161,20 @@ class KeyTest(unittest.TestCase):
         self.assertEqual(self.sent, ["hello"])
         self.assertEqual(self.chat.lines[-1][:3], ("hello", True, "Haruto"))
 
-    def test_help_puts_the_box_in_the_messages(self):
+    def test_help_opens_the_box_and_the_next_key_closes_it_without_typing(self):
         typed = ["/help"]
         talk.on_key("\r", self.chat, typed)
-        self.assertEqual(self.texts(), ["> /help"] + talk.HELP_BOX)
+        self.assertEqual(self.texts(), ["> /help"])
+        self.assertTrue(self.chat.help_open)
+        self.assertTrue(talk.on_key("x", self.chat, typed))
+        self.assertFalse(self.chat.help_open)
+        self.assertEqual(typed, [""], "the key that closed the box is not typed")
+
+    def test_f1_opens_the_box_and_ctrl_c_still_leaves_while_it_is_open(self):
+        typed = [""]
+        talk.on_key(talk.KEY_F1, self.chat, typed)
+        self.assertTrue(self.chat.help_open)
+        self.assertFalse(talk.on_key("\x03", self.chat, typed))
 
 
 class DrawTest(unittest.TestCase):

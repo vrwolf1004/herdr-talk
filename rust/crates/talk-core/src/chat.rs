@@ -170,6 +170,8 @@ pub struct Chat {
     relay_inbox: Mutex<Option<(Sender<String>, Arc<AtomicBool>)>>,
     /// What the status row says about the relay ("" when it is off).
     relay_status: Mutex<String>,
+    /// The numbers of the peers waiting for a code check (see waiting_number).
+    wait_numbers: Mutex<Vec<(Vec<u8>, usize)>>,
     /// True in Supabase mode: messages go only through the relay, never over the LAN.
     supabase: AtomicBool,
     /// One SAS nonce per peer, with its commitment for that peer: (nonce, commitment). Never shared with another peer.
@@ -219,6 +221,7 @@ impl Chat {
             last_auto_rename: Mutex::new(None),
             relay_inbox: Mutex::new(None),
             relay_status: Mutex::new(String::new()),
+            wait_numbers: Mutex::new(Vec::new()),
             supabase: AtomicBool::new(false),
             my_nonces: Mutex::new(HashMap::new()),
             commits: Mutex::new(HashMap::new()),
@@ -418,6 +421,34 @@ impl Chat {
         }
     }
 
+    /// The number of a peer waiting for a code check. It is given once, the first time the peer's code is shown, and kept
+    /// (other peers' numbers do not change when one is verified).
+    pub fn waiting_number(&self, key: &[u8]) -> usize {
+        let mut numbers = self.wait_numbers.lock().unwrap();
+        if let Some((_, number)) = numbers.iter().find(|(known, _)| known == key) {
+            return *number;
+        }
+        let number = numbers.len() + 1;
+        numbers.push((key.to_vec(), number));
+        number
+    }
+
+    /// The peers waiting for a code check, with their codes and numbers, in number order. Only a peer whose code is known
+    /// is listed (the code exists after the reveal exchange).
+    pub fn unverified_peers(&self) -> Vec<(Peer, String, usize)> {
+        let mut waiting: Vec<(Peer, String, usize)> = self.fresh_peers().into_iter().filter_map(|peer| {
+            let key = peer.key.clone()?;
+            if self.link_of(&peer) != Link::Unverified {
+                return None;
+            }
+            let code = self.sas_for(&key)?;
+            let number = self.waiting_number(&key);
+            Some((peer, code, number))
+        }).collect();
+        waiting.sort_by_key(|(_, _, number)| *number);
+        waiting
+    }
+
     /// Accept a message connection only from a fresh peer's address, and only up to MESSAGE_LIMIT per window.
     // shortcut: a peer whose announce has not arrived yet loses its first message, the limit is per IP; upgrade if messages go missing after a join.
     pub fn admit_sender(&self, ip: &str) -> bool {
@@ -594,7 +625,8 @@ impl Chat {
                     },
                     (Link::Unverified, None) => String::new(),
                 };
-                self.say(format!("- {} ({}:{}) {state}", peer.name, peer.ip, peer.port));
+                let number = self.unverified_peers().iter().find(|(waiting, _, _)| waiting.id == peer.id).map(|(_, _, number)| format!("[{number}] ")).unwrap_or_default();
+                self.say(format!("- {number}{} ({}:{}) {state}", peer.name, peer.ip, peer.port));
             }
             return true;
         }
@@ -613,7 +645,17 @@ impl Chat {
             return true;
         }
         if text == "/trust" || text.starts_with("/trust ") {
-            let code = store::normalize_code(&text[6..]);
+            let arg = text[6..].trim();
+            // A number picks a waiting peer from the list ([1], [2] ...); a code is compared as before.
+            if !arg.is_empty() && arg.len() <= 2 && arg.bytes().all(|byte| byte.is_ascii_digit()) {
+                let picked = arg.parse::<usize>().ok().and_then(|number| self.unverified_peers().into_iter().find(|(_, _, waiting)| *waiting == number));
+                match picked {
+                    Some((_, code, _)) => self.trust(&code),
+                    None => self.say(t("trust.no_number", &[("n", arg)])),
+                }
+                return true;
+            }
+            let code = store::normalize_code(arg);
             if code.is_empty() {
                 self.say(t("usage.trust", &[]));
             } else {
@@ -1085,6 +1127,50 @@ mod tests {
         assert!(chat.trusts(&key));
         assert_eq!(chat.link_of(&chat.fresh_peers()[0]), Link::Encrypted);
         assert!(texts(&chat).contains(&t("trust.done", &[("name", "Bob"), ("ip", "10.0.0.2")])));
+    }
+
+    #[test]
+    fn trust_by_number_picks_the_waiting_peer_and_names_it() {
+        let chat = chat(&[]);
+        let (bob, cy) = ([7u8; 32], [8u8; 32]);
+        chat.peers.lock().unwrap().push(keyed_peer("Bob", &bob));
+        chat.peers.lock().unwrap().push(keyed_peer("Cy", &cy));
+        reveal_peer(&chat, &bob);
+        reveal_peer(&chat, &cy);
+        chat.handle("/trust 0");
+        assert_eq!(texts(&chat).last().unwrap(), &t("trust.no_number", &[("n", "0")]));
+        chat.handle("/trust 2");
+        assert!(chat.trusts(&cy), "2 is Cy");
+        assert!(!chat.trusts(&bob));
+        assert!(texts(&chat).contains(&t("trust.done", &[("name", "Cy"), ("ip", "10.0.0.2")])), "the confirmation names the peer");
+        chat.handle("/trust 2");
+        assert_eq!(texts(&chat).last().unwrap(), &t("trust.no_number", &[("n", "2")]), "a verified peer is not waiting any more");
+        chat.handle("/trust 1");
+        assert!(chat.trusts(&bob));
+    }
+
+    #[test]
+    fn waiting_numbers_are_unique_and_stay_when_one_is_verified() {
+        let chat = chat(&[]);
+        let keys = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        for (index, key) in keys.iter().enumerate() {
+            chat.peers.lock().unwrap().push(keyed_peer(&format!("P{index}"), key));
+        }
+        // The codes come in a different order than the peers are listed: each number is kept from its first display.
+        reveal_peer(&chat, &keys[2]);
+        assert_eq!(chat.waiting_number(&keys[2]), 1);
+        reveal_peer(&chat, &keys[0]);
+        reveal_peer(&chat, &keys[1]);
+        assert_eq!(chat.waiting_number(&keys[0]), 2);
+        assert_eq!(chat.waiting_number(&keys[1]), 3);
+        let numbers: Vec<usize> = chat.unverified_peers().iter().map(|(_, _, number)| *number).collect();
+        assert_eq!(numbers, vec![1, 2, 3], "three waiting peers, numbers 1 to 3");
+        chat.handle("/trust 2");
+        assert!(chat.trusts(&keys[0]), "2 stays with its peer");
+        let left: Vec<usize> = chat.unverified_peers().iter().map(|(_, _, number)| *number).collect();
+        assert_eq!(left, vec![1, 3], "the others keep their numbers after one is verified");
+        chat.handle("/trust 3");
+        assert!(chat.trusts(&keys[1]), "3 is still the same peer");
     }
 
     #[test]

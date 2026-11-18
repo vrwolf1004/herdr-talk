@@ -171,6 +171,9 @@ class Chat:
         self.phone_lock = threading.Lock()
         self.phone_timer = None
         self.on_phone_change = None  # the screen sets this to redraw
+        self.help_open = False       # the help box is on screen (F1 or /help); the next key closes it
+        self.numbers = {}            # waiting peer's key -> its number ([n]); given once, never reused or renumbered
+        self.next_number = 1
         self.received_lock = threading.Lock()
         self.peers = {}
         self.peers_lock = threading.Lock()
@@ -338,7 +341,19 @@ class Chat:
         return True
 
     def trust(self, code):
-        """Verify the unverified LAN peer whose code matches: remember its key, and say so."""
+        """Verify a waiting LAN peer: by its number ([n], from /trust n) or by its code (/trust CODE)."""
+        if code.isdigit() and len(code) <= 2:  # a number is 1 or 2 digits; a code is 8 characters, digits or not
+            number = int(code)
+            key = next((key for key, given in self.numbers.items() if given == number), None)
+            if key is None:
+                self.emit(Notice("trust.no_number", {"n": code}))
+                return
+            info = next((info for info in self.fresh_peers().values() if info.get("key") == key), None)
+            if info is None or self.link_of(info) != "unverified":
+                self.emit(Notice("trust.already", {"n": code}))
+                return
+            self.trust_info(info)
+            return
         own = self.me.get("key")
         found = []
         for info in self.fresh_peers().values():
@@ -354,8 +369,19 @@ class Chat:
         if not found:
             self.emit(Notice("trust.none", {"code": code}))
             return
-        info = found[0]
+        self.trust_info(found[0])
+
+    def waiting_number(self, key):
+        """The number of a waiting peer: given once, the first time it is shown, and kept until it is trusted."""
+        if key not in self.numbers:
+            self.numbers[key] = self.next_number
+            self.next_number += 1
+        return self.numbers[key]
+
+    def trust_info(self, info):
+        """Remember a verified peer's key and name (saved when the node has a state folder), and say so."""
         self.trusted.append({"name": info["name"], "key": info["key"], "ip": info["ip"]})
+        self.numbers.pop(info["key"], None)  # the others keep their numbers
         try:
             if self.state_dir is not None:
                 store.write_trusted(self.state_dir, self.trusted)
@@ -401,8 +427,7 @@ class Chat:
         if text == "/quit":
             return False
         if text == "/help":
-            for line in HELP_BOX:
-                self.emit(Line(line))
+            self.help_open = True  # the help box is drawn over the messages until a key is pressed
             return True
         if text == "/name" or text.startswith("/name "):
             new_name = text[5:].strip()[:32]
@@ -438,7 +463,9 @@ class Chat:
                     sas = self.sas_for(info["key"]) if info.get("key") is not None else None
                     # shortcut: the pending text is English-only; move it to the locales with the other peer states.
                     state = t("peers.unverified", code=sas) if sas is not None else ("(code pending)" if own is not None else "")
-                self.emit(Line(f"- {clean_text(info['name'], 32)} ({info['ip']}:{info['port']}) {state}"))
+                number = self.numbers.get(info.get("key"))
+                prefix = f"[{number}] " if number is not None else ""
+                self.emit(Line(f"- {prefix}{clean_text(info['name'], 32)} ({info['ip']}:{info['port']}) {state}"))
             return True
         if text == "/phone" or text.startswith("/phone "):
             argument = text[6:].strip()
@@ -524,8 +551,7 @@ def announce(udp_port, me):
             fields = {"app": APP, "id": me["id"], "name": me["name"], "port": me["port"]}
             if me.get("key") is not None:
                 fields["key"] = store.to_hex(me["key"])
-            if me.get("commits"):
-                fields["commits"] = dict(me["commits"])
+            fields["commits"] = dict(me.get("commits") or {})  # always present, empty when there are none (Rust rejects a notice without it)
             try:
                 sock.sendto(json.dumps(fields).encode("utf-8"), ("255.255.255.255", udp_port))
             except OSError:
@@ -683,7 +709,6 @@ def remember_peer(chat, info, ip):
 
 
 REVEAL_RETRY_SECONDS = 2
-REVEAL_TRIES = 10
 
 
 def reveal_message(chat, peer_key):
@@ -733,15 +758,18 @@ def show_code(chat, key):
     with chat.peers_lock:
         found = next((info for info in chat.peers.values() if info.get("key") == key), None)
     name, ip = (found["name"], found["ip"]) if found else ("?", "?")
-    # One chat row per line: the code sits on its own indented row.
-    chat.emit(Notice("peer.fingerprint", {"name": name, "ip": ip, "code": code}))
+    number = chat.waiting_number(key)
+    # One chat row per line: the code sits on its own indented row. The number is what /trust n takes.
+    chat.emit(Notice("peer.fingerprint", {"name": f"[{number}] {name}", "ip": ip, "code": code}))
 
 
 def reveal_later(chat, key, ip, port):
-    """Fetch a peer's reveal in the background, then show its code. Stops when the code is known or after REVEAL_TRIES."""
+    """Fetch a peer's reveal in the background, then show its code. Keeps trying while the peer announces (a known peer's
+    announce does not ask again); stops when the code is known or the peer is gone."""
     try:
-        for _ in range(REVEAL_TRIES):
-            if STOP.is_set() or chat.sas_for(key) is not None:
+        while True:
+            announcing = any(info.get("key") == key for info in chat.fresh_peers().values())
+            if STOP.is_set() or chat.sas_for(key) is not None or not announcing:
                 break
             try:
                 nonce = exchange_reveal(chat, ip, port, key)
@@ -1153,14 +1181,17 @@ def enable_vt():
 char_width = relay_form.char_width  # one width rule for the chat and the forms
 
 
+KEY_F1 = "\x00;"  # F1 on Windows: a 0 code, then ;. Ctrl+H is not used: Windows sends it as Backspace.
+
+
 def read_char():
     """Block until one key is typed and return it as text. Windows reads keys; elsewhere reads one UTF-8 character."""
     if os.name == "nt":
         import msvcrt
         ch = msvcrt.getwch()
-        if ch in ("\x00", "\xe0"):   # arrow and function keys send a second code; drop it
-            msvcrt.getwch()
-            return ""
+        if ch in ("\x00", "\xe0"):   # arrow and function keys send a second code; only F1 is used
+            code = msvcrt.getwch()
+            return KEY_F1 if code == ";" else ""
         return ch
     fd = sys.stdin.fileno()
     first = os.read(fd, 1)
@@ -1282,6 +1313,9 @@ def message_rows(text, mine, sender, stamp, cols):
     return [first] + [f"{' ' * char_width(head)}{body}{row}" for row in rows[1:]]
 
 
+MAX_NODE_ROWS = 6  # people listed under the CONNECTED NODES title; more become one "…외 N명" row
+
+
 def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=""):
     """The whole chat screen as one string of ANSI codes, in the GUI's retro layout: the header and a divider,
     COMMUNICATION LOG with the messages, the CONNECTED NODES row, a divider, the keyboard guide, the input row, the status
@@ -1289,7 +1323,14 @@ def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=
     Messages go from the top; mine are bold green. `nodes` are the node labels, `mode` the right end of the header.
     Pure, so tests can check the layout."""
     cols, rows = max(20, cols), max(10, rows)
-    area = rows - 9   # rows: header, divider, log title, messages, nodes, divider, guide, input, status, footer
+    # The node list: a title row, then one row per person (the first is this PC). Long lists are cut, as the screen is small.
+    room = max(2, min(MAX_NODE_ROWS, rows - 11))  # this PC's row always shows, with the cut row when needed
+    people = list(nodes)
+    if len(people) > room:
+        kept = max(0, room - 1)
+        people = people[:kept] + [t("nodes.more", n=len(nodes) - kept)]
+    block = 1 + len(people)
+    area = rows - 7 - block   # rows: header, divider, log title, messages, nodes (block), divider, input, status, footer
     wrapped = []
     for entry in lines:
         line, mine, sender, stamp = (tuple(entry) + (None, ""))[:4]  # a (text, mine) pair is a notice
@@ -1314,15 +1355,20 @@ def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=
     for index, text in enumerate(shown):
         text = fit(text, cols - 1)
         put(area + 4 - len(shown) + index, f"{relay_form.OVERLAY}{text}{' ' * (cols - 1 - char_width(text))}")
-    put(rows - 5, f"{ACCENT}CONNECTED NODES\x1b[0m  {fit(' · '.join(nodes), cols - 19)}")
-    put(rows - 4, f"{BORDER}{relay_form.divider(cols)}")
-    put(rows - 3, f"{MUTED}{fit(t('chat.guide'), cols - 1)}")
+    top = 4 + area
+    put(top, f"{ACCENT}CONNECTED NODES")
+    for index, person in enumerate(people):
+        put(top + 1 + index, f"{ACCENT if index == 0 else TEXT}{fit(person, cols - 1)}")
+    put(top + block, f"{BORDER}{relay_form.divider(cols)}")
     shown_typed = tail(typed, cols - 13)
     typed_shown = f"{ACCENT}{shown_typed}_" if typed else f"{MUTED}{t('chat.input_hint')}"
     put(rows - 2, f"MESSAGE > {typed_shown}")
-    # The status tag sits at the right end of the status row, as on the Rust screen (the text before it is cut to fit).
-    tag = relay_form.TAG
-    put(rows - 1, f"{ACCENT}{fit(status, cols - 1 - char_width(tag) - 1)}{' ' * max(0, cols - 1 - char_width(tag) - char_width(fit(status, cols - 1 - char_width(tag) - 1)))}{tag}")
+    # The status row ends with the tag and the key hint for the help box (F1 or /help opens it); the status text is cut to fit.
+    hint = t("status.help_hint")
+    ending = f"{relay_form.TAG}  {hint}"
+    left = fit(status, cols - 1 - char_width(ending) - 2)
+    gap = " " * max(0, cols - 1 - char_width(left) - char_width(ending))
+    put(rows - 1, f"{ACCENT}{left}{gap}{relay_form.TAG}  {MUTED}{hint}")
     # The bottom row: made by Python on the right, nothing else.
     footer = fit(relay_form.FOOTER, cols - 1)
     put(rows, f"{' ' * (cols - 1 - char_width(footer))}{MUTED}{footer}")
@@ -1430,6 +1476,12 @@ def first_run_screen(state):
 def on_key(ch, chat, typed):
     """Apply one key to the typed text (a one-item list, changed in place). The keys are the Rust edition's.
     Return False to leave the chat."""
+    if chat.help_open:  # the key that closes the help box is not typed (Ctrl+C still leaves the chat)
+        chat.help_open = False
+        return ch not in ("\x03", "\x04")
+    if ch == KEY_F1:
+        chat.help_open = True
+        return True
     if ch != "\x10":             # the phone address hides on the first key that is not its own toggle
         chat.hide_phone()
     if ch in ("\x03", "\x04"):    # Ctrl+C, Ctrl+D
@@ -1473,9 +1525,15 @@ def run_ansi(chat):
         with chat.lines_lock:
             lines = list(chat.lines)
         nodes = [f"{'HOST/YOU' if chat.is_host() else 'YOU'} {chat.me['name']}"]
-        nodes += [f"PEER {info['name']}" for info in chat.fresh_peers().values()]
+        for info in chat.fresh_peers().values():
+            link = chat.link_of(info)
+            number = chat.numbers.get(info.get("key")) if link == "unverified" else None
+            prefix = f"[{number}] " if number is not None else ""
+            state = t("nodes.verified") if link == "encrypted" else t("nodes.waiting")
+            nodes.append(f"{prefix}{info['name']} ({info['ip']})  {state}")
         mode = "CLOUD SERVICE" if chat.supabase else "BASE STATION"
-        frame = screen_frame(lines, status, typed[0], size.columns, size.lines, chat.phone_overlay(), nodes, mode)
+        overlay = HELP_BOX if chat.help_open else chat.phone_overlay()
+        frame = screen_frame(lines, status, typed[0], size.columns, size.lines, overlay, nodes, mode)
         with screen_lock:
             _draw(frame)
 

@@ -141,6 +141,11 @@ impl Form {
         if self.creating.is_some() {
             return;
         }
+        // Only one room: a new room is refused while another one is saved (the empty code is never a saved room).
+        if relay_settings::has_other_room(&self.state, "") {
+            self.message = t("settings.one_room_only", &[]);
+            return;
+        }
         if self.mine.is_none() {
             self.message = t("tui.settings.no_keys", &[]);
             return;
@@ -567,6 +572,19 @@ mod tests {
         on_key(&mut form, ctrl_n, &chat);
         assert!(form.message.starts_with("방 만들기:"), "{}", form.message);
         assert!(form.fields[3].is_empty());
+    }
+
+    #[test]
+    fn a_second_room_cannot_be_created_while_one_is_saved() {
+        let dir = folder("second-room");
+        let saved = relay_settings::Settings { mode: Mode::Local, room_code: "ABCD2345".into(), ..Default::default() };
+        relay_settings::save(&dir, &saved).unwrap();
+        let (chat, mut form) = (chat(), form_at(&dir));
+        form.mine = Some(("11".repeat(32), "22".repeat(32)));
+        on_key(&mut form, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL), &chat);
+        assert_eq!(form.message, t("settings.one_room_only", &[]));
+        assert!(form.creating.is_none(), "no room is asked for");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

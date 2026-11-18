@@ -23,6 +23,27 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const SLICE: Duration = Duration::from_millis(200);
 const POLL: Duration = Duration::from_secs(2);
 const MEMBERS_EVERY: Duration = Duration::from_secs(10);
+const JOIN_RETRY_AFTER: Duration = Duration::from_secs(10);
+
+/// The one retry of a failed room join. A successful join gives the retry back.
+struct JoinRetry {
+    left: bool,
+}
+
+impl JoinRetry {
+    fn new() -> Self {
+        JoinRetry { left: true }
+    }
+
+    fn succeeded(&mut self) {
+        self.left = true;
+    }
+
+    /// The delay before the retry, or None when no retry is left.
+    fn failed(&mut self) -> Option<Duration> {
+        std::mem::replace(&mut self.left, false).then_some(JOIN_RETRY_AFTER)
+    }
+}
 const NOISE_MAX: usize = 65535;
 
 /// One room member: its Ed25519 key (hex) and its Noise key (bytes, the one /trust checks).
@@ -57,11 +78,13 @@ fn listen(chat: &Chat, state: &Path, config: &Config, settings: &Settings, seed:
     let mut published = false;
     // A join error stays on the status line: later fetch errors do not replace it while the room is not joined.
     let mut joined = false;
+    let mut join = JoinRetry::new();
+    let mut joining = true;
     // Sender key -> 대화명 seen in messages (and this PC's own). Two keys with one name get a key suffix on the screen.
     let mut names: HashMap<String, String> = HashMap::new();
     let (mut next_members, mut next_fetch) = (Instant::now(), Instant::now());
     while !stop.load(Ordering::Relaxed) {
-        if Instant::now() >= next_members {
+        if joining && Instant::now() >= next_members {
             next_members = Instant::now() + MEMBERS_EVERY;
             if !published {
                 match publish_row(state, config, seed, identity, &settings.name) {
@@ -75,10 +98,16 @@ fn listen(chat: &Chat, state: &Path, config: &Config, settings: &Settings, seed:
                         chat.set_relay_status(&format!("relay: room joined ({} members)", list.len()));
                         members = list;
                         joined = true;
+                        join.succeeded();
                     }
                     Err(error) => {
                         joined = false;
                         chat.set_relay_status(&format!("relay: {error}"));
+                        // One retry 10 seconds later; after that the join is not tried again.
+                        match join.failed() {
+                            Some(delay) => next_members = Instant::now() + delay,
+                            None => joining = false,
+                        }
                     }
                 }
             }
@@ -388,6 +417,15 @@ mod tests {
         let untrusted_members = vec![Member { pk: alice_pk.clone(), noise: noise_keys().0 }];
         show_message(&bob, &identity, &untrusted_members, &mut names, &mut NonceCache::default(), &row);
         assert_eq!(bob.lines().len(), 1, "nothing else is shown");
+    }
+
+    #[test]
+    fn a_failed_join_is_retried_once_after_ten_seconds_and_a_success_gives_the_retry_back() {
+        let mut join = JoinRetry::new();
+        assert_eq!(join.failed(), Some(Duration::from_secs(10)));
+        assert_eq!(join.failed(), None, "no second retry");
+        join.succeeded();
+        assert_eq!(join.failed(), Some(Duration::from_secs(10)), "a successful join gives the retry back");
     }
 
     #[test]

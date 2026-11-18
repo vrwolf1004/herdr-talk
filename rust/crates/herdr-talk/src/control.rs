@@ -169,7 +169,12 @@ fn answer(chat: &Arc<Chat>, request: &Value, allow_shutdown: bool) -> Value {
                 .collect();
             // This chat's own name and port, so a GUI can list it above the others.
             let me = chat.me.lock().unwrap().clone();
-            json!({"ok": true, "peers": peers, "me": {"name": me.name, "port": me.port}, "relay": chat.relay_status(), "mode": chat.mode_name()})
+            // Peers waiting for a /trust: their name and the code the GUI shows for the comparison.
+            let pending: Vec<Value> = chat.fresh_peers().iter().filter_map(|peer| {
+                let code = chat.sas_for(peer.key.as_deref()?)?;
+                (chat.link_of(peer) == talk_core::chat::Link::Unverified).then(|| json!({"name": peer.name, "code": code}))
+            }).collect();
+            json!({"ok": true, "peers": peers, "pending": pending, "me": {"name": me.name, "port": me.port}, "relay": chat.relay_status(), "mode": chat.mode_name()})
         }
         Some("send") => match request.get("text").and_then(Value::as_str) {
             // Same path as typing in the terminal: commands and plain messages both work.
@@ -184,6 +189,11 @@ fn answer(chat: &Arc<Chat>, request: &Value, allow_shutdown: bool) -> Value {
             Ok(on) => json!({"ok": true, "on": on}),
             Err(error) => json!({"ok": false, "error": error}),
         },
+        // Ctrl+L in the GUI: the same clear as the terminal's Ctrl+L.
+        Some("clear") => {
+            chat.clear_lines();
+            json!({"ok": true})
+        }
         Some("shutdown") if allow_shutdown => {
             chat.stop.set();
             json!({"ok": true})

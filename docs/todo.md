@@ -105,7 +105,7 @@ Open:
 - [ ] **Phone as a real P2P peer.** Not possible with Expo Go (UDP/TCP sockets need native modules, so a development build). Would need a JS Noise implementation, Android multicast permission and background limits. Separate project.
 - [x] **One intermittent Python test failure** (2026-11-16 워커: 12회 연속 실행 0회 실패, 재현 안 됨. 계속 지켜볼 것) (once in 37 runs, not reproduced). Watch for it.
 - [x] **Stale `control-<pid>.json` files** pile up after killed nodes. Harmless; maybe clean them at start.
-- [ ] **Commit the work.** `net.rs`, `chat.rs`, `phone.rs`, `screen.rs`, `gui/src/main.rs`, `talk.py`, `noise.py`, `phone.py`, `store.py`, locales, tests, `bridge.js`, docs.
+- [x] **Commit the work.** `net.rs`, `chat.rs`, `phone.rs`, `screen.rs`, `gui/src/main.rs`, `talk.py`, `noise.py`, `phone.py`, `store.py`, locales, tests, `bridge.js`, docs. 2026-11-17: 변경은 모두 커밋됨 (main d64ba35, python-core-room 5bd6743).
 
 ## Review (2026-11-09)
 
@@ -119,20 +119,18 @@ Found by reading the relay, node-folder and CLI code after commit `222aee8`. Not
 
 ## Supabase 방 기능 (2026-11-13)
 
-- [ ] **방 보안 (배포 전 필수)**: `0003_rooms.sql`의 RLS가 anon에게 `rooms`·`room_members`·`room_messages` 전체 조회를 열어 둡니다. `join-room`과 `create-room`에는 서명 검증과 재전송 방지가 없습니다. 메시지는 종단 암호화 전제이므로 서버에는 암호문만 저장하고, 조회는 멤버 검증 후 허용합니다. 구현 전까지 main의 방 모델 커밋(`8cbc628`)을 배포하지 않습니다. 진행 (2026-11-13): `0006_rooms_read_closed.sql` 작성 (실행 안 함). 전제: `create-room`·`join-room` 을 service role 키로 바꾼 뒤에만 실행 (승인 항목 f). service role 전환 완료 (미배포). 서명 검증 1단계 완료 (미커밋·미배포): `create-room`·`join-room` 이 Ed25519 서명, ts, nonce 를 검사하고 nonce 는 `put_nonces` 에 기록. 남은 것: talk-core `join_room_request` 와 gui `create_room` 이 아직 서명 없이 보낸다 (허락 필요), 배포 전 실제 Edge Function 실행 확인.
-- [ ] **방 사용기한 24시간 (구현됨, 미커밋·미배포)**: 생성 시점부터 24시간, 연장 없음 가정. `0005_room_expiry.sql`(실행 안 함), `create-room`은 `expires_at` 저장, `join-room`은 만료된 방에 410 응답. 만료 방 정리는 pg_cron (0005 주석). 남은 일: talk-core `relay_rest.rs:295`의 410 처리 한 줄 (공통 모듈, 허락 필요).
-- [ ] **8자리 코드 통일 (trust·상대 ID·방 ID, A-Z0-9)**: 구현됨, 미커밋. `0004_uppercase_codes.sql` 작성 (실행 안 함). 라이브 DB 소문자 행 정리와 실행은 사람이 한다. 입력 소문자는 입력 지점에서 대문자로 변환.
+- [ ] **방 보안 (배포 전 필수)**: `0003_rooms.sql`의 RLS가 anon에게 `rooms`·`room_members`·`room_messages` 전체 조회를 열어 둡니다. `join-room`과 `create-room`에는 서명 검증과 재전송 방지가 없습니다. 메시지는 종단 암호화 전제이므로 서버에는 암호문만 저장하고, 조회는 멤버 검증 후 허용합니다. 구현 전까지 main의 방 모델 커밋(`8cbc628`)을 배포하지 않습니다. 진행 (2026-11-13): `0006_rooms_read_closed.sql` 작성 (실행 안 함). 전제: `create-room`·`join-room` 을 service role 키로 바꾼 뒤에만 실행 (승인 항목 f). service role 전환 완료 (미배포). 서명 검증 1단계 완료 (미커밋·미배포): `create-room`·`join-room` 이 Ed25519 서명, ts, nonce 를 검사하고 nonce 는 `put_nonces` 에 기록. 남은 것: talk-core `join_room_request` 와 gui `create_room` 이 아직 서명 없이 보낸다 (허락 필요), 배포 전 실제 Edge Function 실행 확인. 2026-11-17 확인: 코드에는 0006 (공개 조회 차단), 함수의 서명·nonce 검증, 서비스 롤 접근이 있음. 운영 DB 에 0006 이 적용됐는지와 함수 배포 상태는 사용자가 확인해야 함. 2026-11-17 운영 DB 확인 (사용자): 정책과 권한 없음 (0006 적용), 마이그레이션 0005·0007·0008 적용됨.
+- [ ] **방 사용기한 24시간 (커밋됨, 운영 배포 여부 확인 필요)**: 생성 시점부터 24시간, 연장 없음 가정. `0005_room_expiry.sql`(실행 안 함), `create-room`은 `expires_at` 저장, `join-room`은 만료된 방에 410 응답. 만료 방 정리는 pg_cron (0005 주석). 남은 일: talk-core `relay_rest.rs:295`의 410 처리 한 줄 (공통 모듈, 허락 필요).
+- [ ] **8자리 코드 통일 (trust·상대 ID·방 ID, A-Z0-9)**: 커밋됨, 운영 배포 여부 확인 필요. `0004_uppercase_codes.sql` 작성 (실행 안 함). 라이브 DB 소문자 행 정리와 실행은 사람이 한다. 입력 소문자는 입력 지점에서 대문자로 변환.
 - [ ] **trust 코드 방식 (SAS 커밋)**: 결정 (2026-11-13): 짧은 8자 코드 + 커밋 방식. 설계는 dev가 작성 (설계만, `docs/encryption-protocol.md` 새 절은 미작성). 결정 (2026-11-13, 권장안 채택): (a) LAN 에도 SAS 적용. (b) 구버전은 거부 (명확한 오류). (c) 기존 신뢰 목록은 재검증하지 않는다. (d) 코드 8자 (SAS 와 함께). (e) 릴레이 commit 은 채널 envelope 으로 전달. (f) rooms 쓰기는 service role 로 전환 완료. (g) talk-core 허락 범위 확대: 미결정 (LAN 의 net.rs, chat.rs 는 talk-core 라서 구현 전 확인 필요). 8자 지문을 SAS 없이 단독으로 쓰면 안 된다 (키 조작으로 같은 코드를 만들 수 있다).
 - [x] **LAN SAS 테스트 (테스트 전)** (2026-11-16 GUI 워커 추가 확인: 창 B 에서도 /trust 후 '확인됨, 이제 암호화'. 지문 코드는 reveal 교환 뒤에만 표시됨 (net.rs:431-451, 443-444 / chat.rs:584-586 코드로 확인). 두 창 확인됨) (2026-11-13; 2026-11-16 GUI 워커: 창 두 개 (PID 3352 '지호', 2316 '하준') 로 LOCAL 연결, 서로 상대 표시, 두 창 코드 CTZRW9EA 같음, 창 A 에서 /trust 후 '확인됨, 이제 암호화' 확인. 미확인: 창 B 의 /trust, 지문 코드가 reveal 뒤에만 나오는지 (입장 직후 로그에 보임). 캡처 g126 폴더): 로컬/자체 모드로 GUI 두 창 (같은 PC) 을 띄워 상대 목록에 서로 보이는지, 지문 코드가 reveal 뒤에만 나오는지, 양쪽 코드가 같은지, `/trust` 로 신뢰되는지 확인. 주의: Supabase 모드 노드는 LAN 으로 상대를 찾지 않는다 (이번 테스트 실패의 원인은 모드였다). Python 노드는 Rust 맞춤 전이라 Rust 와 연결되지 않는다. 실제 두 PC 확인은 별도.
 - [ ] **SAS 보안 검토 지적 반영 (다른 PC 에서 진행)** (2026-11-13, 자동 보안 검토): `python/src/talk.py` 의 SAS 구현. (1) nonce 를 세션 전체에서 하나만 쓴다 → 상대마다, 페어링 시도마다 새로 만든다. (2) `chat.commits` 를 덮어쓴다 → 처음 받은 커밋을 고정 (`setdefault`), 같은 키의 다른 커밋은 연결 거부와 경고. (3) reveal 이 실패하면 nonce 를 버리고 다음 시도에 새로 만든다. (4) 커밋을 먼저 보내고, 상대 커밋을 받은 뒤에만 reveal (ZRTP 식 순서) 이 지켜지는지 확인. (5) Rust `talk-core` (`net.rs`, `chat.rs`) 도 같은 규칙인지 확인하고 불일치는 목록으로 보고 (talk-core 수정은 허락 필요).
-- [ ] **방 참가·만들기 동작**: 방 참가는 실패해도 재시도하지 않는다. 방 만들기는 Rust·Python 모두 동기 호출이라 최대 5초 화면이 멈춘다 (GUI는 백그라운드). 방 이름·안내 문구는 locale 키가 없어 코드에 직접 넣었다.
+- [x] **방 참가 재시도와 방 하나 제한** (2026-11-17 결정, 구현 완료, 미커밋): 참가 실패 시 10초 뒤 1회 재시도, 성공하면 기회를 되돌림 (Rust JoinRetry, Python JoinRetryTests). 방은 하나만 허용 (다른 코드 저장과 Ctrl+N 거부, 같은 방 허용), 알림 settings.one_room_only / room.only_one 7개 언어. 테스트: Rust talk-core 179, herdr-talk 44; Python 253. 미확인: 실제 네트워크 재시도, GUI 알림 화면.
 - [x] **내장 모드 릴레이 재시작·첫 실행 화면 (GUI)** (2026-11-16 GUI 워커: 빌드 성공, 첫 화면 캡처, LOCAL CONNECT 후 방장 채팅 화면 `[방장] BASE STATION : CONNECTED` 확인. 재시작 경로는 코드로 확인: main.rs:306-311 저장 시 릴레이 재시작, main.rs:331-333 serve 모드 relay_reload, relay_chat/mod.rs:56 start_with 가 기존 relay 를 stop 후 재시작): qa가 수정 보고 (`gui/src/main.rs`, 미커밋). 실제 실행 확인 필요.
-- [ ] **여러 방 소속 시 릴레이 대상**: 설정에는 방 코드가 하나만 저장된다. 새 방을 만들고 저장하면 릴레이가 새 방으로 옮겨 간다. 이전 방 기록은 DB에 남는다.
-- [ ] **쌍별 계획 문서 갱신**: `docs/multi-peer-relay-plan.md` 를 1대다 (방) 기준으로 고친다. 1:1 릴레이는 폐기 확정 (2026-11-13), 나머지 1:1 제거 작업은 아래 서버·모바일 항목.
 - [x] **1:1 제거 1단계 (UI)** (2026-11-13, dev 완료, 미커밋): Python 설정은 URL·키·이름·방 ID 4칸. Rust·GUI 는 방 ID 만 받는다. 남은 것: "이 PC의 ID" 표시 (herdr-talk `settings_form.rs`, GUI `relay_form.rs`) 는 방 모드 행 ID 라서 유지했다. Supabase 모드에서만 숨기는 작업은 아직 안 함.
 - [x] **1:1 제거 2단계 (코드)** (2026-11-13, dev 완료, 미커밋): 삭제 `talk-core` `relay.rs`, `relay_realtime.rs`, `relay_e2e_test.rs`, `relay_chat/peer_relay.rs`, Python `relay.py`, `relay_realtime.py`, `relay_replay.py`, `websocket.py` 와 관련 테스트. talk-core 경고 15 → 0. Rust 테스트 148, Python 198 통과. 남긴 것: `relay_replay.rs` (방 `NonceCache` 가 쓴다), `relay_key` 의 `short_id` (행 게시에 쓴다), `put_peer`·`delete_peer` (행 게시에 쓴다).
 - [x] Chat across the internet through Supabase, with end-to-end encryption. (2026-11-09: 노드마다 새 세션 폴더, 자동 이름, 상대 이름은 행 이름을 따름. 남은 확인은 `supabase-relay.md` "남은 일") (2026-11-09: Rust TUI·GUI·Python·안드로이드 구현. 폰 ↔ PC 실사용 송수신 확인. 남은 확인은 `supabase-relay.md` "남은 일")
-- [ ] **배포 상태 미확인**: 로컬 Supabase CLI 가 없어 함수 배포와 마이그레이션 적용 상태를 확인하지 못했다 (qa, 2026-11-13). CLI 설치 후 읽기 전용으로 확인하거나 대시보드에서 확인한다.
+- [ ] **배포 상태 (2026-11-17 일부 확인)**: 운영 Edge Function 목록 확인 — create-room, join-room, post-message, fetch-messages, put-peer 배포됨 (put-peer 는 최신 코드와 같은지 미확인). delete-peer 는 없음 (배포 필요, 사용자 실행).
 - [ ] **RLS·채널 권한은 코드로만 확인**: 0001~0005 마이그레이션 읽기 기준. 실제 DB 의 정책과 grant 는 확인하지 않았다. 방 보안 항목 (RLS 전체 공개) 과 함께 확인한다.
 - [ ] **Edge Function 응답 경로는 코드로만 확인**: `create-room`, `join-room` 의 200·400·401·410 경로를 코드 읽기로 정리했다. 실행과 호출은 하지 않았다 (실제 방 생성·참가는 쓰기 작업).
 - [ ] **모바일 방 기능 없음**: `mobile/src/relay` 는 1:1 경로만 있다 (`settings.ts` 단일 peer ID, `client.ts` `findRow`, `protocol.ts` 두 키 채널). 방 생성·참가·멤버 조회가 필요하다. 1:1 제거와 함께 맞춘다. 실기기와 Expo 실행은 확인하지 않았다.
@@ -149,7 +147,7 @@ Found by reading the relay, node-folder and CLI code after commit `222aee8`. Not
 - [x] 하단 상태 줄에 릴레이 상태 문구 (GUI, 구현)
 - [x] `made by Rust` / `made by Python` 푸터를 맨 아래 오른쪽 끝으로 (두 TUI 구현)
 - [x] Rust, Python TUI 깜빡임 수정: 전체 지우기 제거, 바뀐 행만 그리기, 같은 프레임 건너뛰기 (구현, 실제 화면 확인은 사용자)
-- [ ] **TUI 클래식 터미널 디자인 적용 (Rust, Python)**: 진행 중. 헤더, 구분선, 제목, 본문, 키 안내, 상태 줄 구조. 선택 화면 텍스트 메뉴 (▶), 설정 화면 `DISPLAY NAME : [____]` 입력, 채팅 `[시각] 이름 > 내용`. 기준: ui-style.md
+- [ ] **TUI 클래식 터미널 디자인 적용 (Rust, Python)**: 거의 완료. 헤더, 구분선, 제목, 본문, 키 안내, 상태 줄, 팔레트, 명칭 통일, 커서 깜빡임 수정 (2026-11-17, 첫 화면과 설정 화면은 커서 숨김, 채팅은 입력 줄). 남음: 사용자가 실제 두 창에서 채팅 커서 위치 확인 (151).
 - [ ] 클래식 TUI 확정 후 실제 두 창으로 화면 확인 (사용자)
 - [x] **상대 목록 패널** (2026-11-16: Rust 채팅에 `CONNECTED NODES` 줄 추가, 캡처 확인): Rust TUI 에는 CONNECTED NODES 패널이 없다. 클래식 TUI 에 텍스트 목록으로 넣을지 결정 필요.
 - [x] **Rust 설정의 좌우 키** (2026-11-16: 모드 행의 좌우키·Space 제거, 포커스는 필드 1~4): 연결 방식 줄을 지웠으나 Left/Right 키는 남아 있다. 키도 지울지 결정 필요.
@@ -174,10 +172,13 @@ Found by reading the relay, node-folder and CLI code after commit `222aee8`. Not
 - [x] **코어 알림 문구 로케일화 (2026-11-16)**: `room_relay.rs`(방 게시 실패, 확인된 멤버 없음, 제외 인원), `net.rs`(구버전, 다른 확인 값), `chat.rs`(코드 대기) 의 한국어 고정 문구를 키 `room.*`, `net.*`, `peers.code_pending` 로 옮기고 7개 언어에 넣음. talk-core 테스트 통과.
 - [x] **모드 명칭 통일 (2026-11-16)**: LAN = BASE STATION, Supabase = CLOUD SERVICE. 7개 언어 mode.local / mode.supabase, 첫 메뉴 (Rust, Python), GUI 링크, 사용자 문서 (usage.ko.md, readme-extras.ko.md, ui-style.md) 를 맞춤.
 - [x] **상태 태그 위치 (2026-11-16)**: Rust 와 Python 모두 상태 줄 맨 끝 [SYSTEM READY]. Python 과 Rust 캡처 비교는 워커가 진행 중.
-- [ ] **방 행 시작 시각 검사 (2026-11-16, 보안 보완 중)**: 이 노드가 시작하기 전 ts 의 행은 버림 (Python core/room.py, Rust talk-core). 프로토콜은 그대로. 방 코드와 받는 사람 바인딩은 프로토콜 변경이라 나중 결정.
+- [x] **방 행 시작 시각 검사 (2026-11-16, 보안 보완 중)**: 이 노드가 시작하기 전 ts 의 행은 버림 (Python core/room.py, Rust talk-core). 프로토콜은 그대로. 방 코드와 받는 사람 바인딩은 프로토콜 변경이라 나중 결정. 2026-11-17: Rust·Python 구현과 테스트 완료, 커밋 5bd6743.
 - [x] **구분선 색과 입력 힌트 (Rust, 2026-11-16)**: 구분선을 테두리 녹색 #417D55 로, 입력 힌트는 talk-core chat.input_hint (7개 언어) 로 읽음. HERDR_TALK_LANG=en 에서 확인.
 - [x] **LAN 대화 줄 형식 (Python)** (2026-11-16: `[시각] 이름 > 내용` 으로 바꿈, Rust 와 같음)
-- [ ] **Python 방 메시지**: Rust 와 같은 방식으로 구현 중 (벡터, REST, 코어 완료 2026-11-16). 남음: relay 스레드 연결, 송신 줄과 알림 화면 연결, 실제 두 노드 (Rust+Python) 상호운용 확인 (Supabase 설정 필요).
+- [ ] **Python 방 메시지**: 구현·커밋 완료 (python-core-room). 운영 상호운용 테스트 진행 중: 방 K101SWW9 생성, rust-supa 참가 확인 (2026-11-17). 막힌 점: py-supa 가 예전 공지 형식으로 떠 있어 '구버전' 판정 → 공지 수정 (Python talk.py 의 commits 항상 포함) 적용됨, 노드 재시작 허락 대기. 이후 /trust 와 메시지 확인 남음.
+- [ ] **운영 테스트 정리 (2026-11-17)**: 테스트로 생긴 운영 데이터 — 방 K101SWW9, rust-supa 의 방 행. 메시지는 아직 없음. 정리는 사용자 확인 후 삭제.
+- [ ] **키 입력 사고 확인 (2026-11-17)**: 테스트 중 키 입력이 Orca, Chrome(Gmail), herdr-talk-gui (PID 8524) 로 샜을 가능성. 사용자가 Gmail 탭, Orca 창, GUI 창 상태를 확인해야 함.
+- [ ] **Rust 실행 파일 교체 정리**: rust/target/debug/herdr-talk.exe.old 는 잠금이 풀리면 삭제 (실행 중인 운영 노드가 쓰는 중이었음).
 - [x] **TUI 팔레트를 GUI·Rust·Python 에서 같은 스펙 색으로 (2026-11-16)**: Python 을 16색 ANSI 에서 24비트 색으로 바꿈 (relay_form.py 상수, 배경 #050A08 을 모든 행에). 값은 docs/ui-style.md 3절과 gui retro 팔레트 일치. Python 테스트 221 OK, 실제 창 캡처로 배경·테두리·제목·흐린 글씨 확인. 2026-11-16: Rust 도 색을 ANSI 24비트 문자열로 직접 쓰도록 고쳐 출력에 38;2/48;2 확인. 남음: Rust 와 Python 의 실제 화면 색 나란히 비교.
 - [x] **Rust 채팅 상태 문구의 키 안내 중복** (2026-11-16: 7개 언어 status.line 에서 키 안내를 뺌, 안내는 chat 가이드 줄이 맡음. Python 가이드에 Ctrl+N 추가. Rust 가이드 줄에 /help 추가 완료: Enter: SEND · /help: COMMANDS · Ctrl+N: NAME · Ctrl+P: PHONE · Ctrl+R: SETTINGS · Ctrl+C: QUIT): 맨 위 상태 문구의 `Ctrl+N: 이름 변경 /help Ctrl+C: 종료` 가 아래 키 안내 줄과 겹친다. Python 과 같은 문제 (코어 locale `status.line`). 정리 방향 결정 필요.
 

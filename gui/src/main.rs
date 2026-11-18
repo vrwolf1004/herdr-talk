@@ -66,6 +66,10 @@ struct Shared {
     relay: String,
     /// The connection mode as the chat reports it: "local" or "supabase".
     mode: String,
+    /// Ctrl+L was pressed: the chat clears its message lines (in the node it runs in).
+    clear: bool,
+    /// Peers waiting for a /trust, with the code to compare: (name, code).
+    pending: Vec<(String, String)>,
 }
 
 /// Which screen is shown. The connection work runs in the background on both.
@@ -107,7 +111,18 @@ struct App {
     /// The toast on screen: the text last shown and when it appeared (it fades after TOAST_SECONDS).
     toast_text: String,
     toast_started: Option<Instant>,
+    /// The Ctrl+H / F1 help window, while it is open.
+    help_open: bool,
+    /// The verify window for a waiting peer, while it is open: (name, code).
+    verify: Option<(String, String)>,
 }
+
+/// The key list of the TUI /help box, in its order (talk-core locale keys; "" is a gap).
+const HELP_KEYS: &[&str] = &[
+    "help.title_send", "help.send", "", "help.commands", "help.name", "help.lang", "help.codes",
+    "help.peers", "help.trust", "help.phone", "help.help", "help.quit", "", "help.keys", "help.enter", "help.backspace",
+    "help.ctrl_l", "help.ctrl_p", "help.ctrl_c",
+];
 
 const PHONE_SHOWN: Duration = Duration::from_secs(30);
 
@@ -309,6 +324,9 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
                 chat.set_relay_status(&format!("relay: {error}"));
             }
         }
+        if std::mem::take(&mut locked(shared, "run_embedded.clear").clear) {
+            chat.clear_lines();
+        }
         while let Ok(text) = outgoing.try_recv() {
             chat.handle(&text);
         }
@@ -319,6 +337,10 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
             Some((me.name.clone(), me.port))
         };
         state.peers = chat.fresh_peers().iter().map(|peer| format!("{} ({}:{})", peer.name, peer.ip, peer.port)).collect();
+        state.pending = chat.fresh_peers().iter().filter_map(|peer| {
+            let code = chat.sas_for(peer.key.as_deref()?)?;
+            (chat.link_of(peer) == talk_core::chat::Link::Unverified).then(|| (peer.name.clone(), code))
+        }).collect();
         state.relay = chat.relay_status();
         state.mode = chat.mode_name().to_string();
         drop(state);
@@ -331,6 +353,9 @@ fn session(link: &mut Link, shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<Str
         // Settings were saved in this window: the serve node starts the relay again with them.
         if reload.swap(false, Ordering::SeqCst) {
             link.call(&json!({"cmd": "relay_reload"}))?;
+        }
+        if std::mem::take(&mut locked(&**shared, "session.clear").clear) {
+            link.call(&json!({"cmd": "clear"}))?;
         }
         while let Ok(text) = outgoing.try_recv() {
             let answer = link.call(&json!({"cmd": "send", "text": text}))?;
@@ -348,6 +373,9 @@ fn session(link: &mut Link, shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<Str
             .map(|(name, port)| (name.to_string(), port));
         state.peers = peers["peers"].as_array().into_iter().flatten()
             .map(|peer| format!("{} ({}:{})", peer["name"].as_str().unwrap_or("?"), peer["ip"].as_str().unwrap_or("?"), peer["port"]))
+            .collect();
+        state.pending = peers["pending"].as_array().into_iter().flatten()
+            .map(|peer| (peer["name"].as_str().unwrap_or("?").to_string(), peer["code"].as_str().unwrap_or("").to_string()))
             .collect();
         state.relay = peers["relay"].as_str().unwrap_or("").to_string();
         state.mode = peers["mode"].as_str().unwrap_or("local").to_string();
@@ -575,6 +603,12 @@ impl eframe::App for App {
             self.relay_form = Some(relay_form::Form::open(&state_dir()));
             return;
         }
+        if ctx.input(|input| (input.modifiers.ctrl && input.key_pressed(egui::Key::H)) || input.key_pressed(egui::Key::F1)) {
+            self.help_open = true;
+        }
+        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::L)) {
+            locked(&*self.shared, "update.clear").clear = true;
+        }
         let state = locked(&*self.shared, "update.chat");
         // Once, at the first chat screen: show the phone address when the node this window talks to is the host (방장) of this PC.
         if !self.phone_checked {
@@ -642,6 +676,7 @@ impl eframe::App for App {
             self.relay_form = Some(relay_form::Form::open(&state_dir()));
             ctx.request_repaint();
         }
+        let mut verify_open = None;
         egui::SidePanel::right("peers").default_width(225.0).frame(inset(&palette, self.crt)).show(ctx, |ui| {
             ui.colored_label(palette.accent, egui::RichText::new("CONNECTED NODES").monospace().heading());
             if let Some((name, port)) = &state.me {
@@ -655,7 +690,18 @@ impl eframe::App for App {
             for peer in &state.peers {
                 ui.colored_label(palette.text, egui::RichText::new(format!("● PEER  {peer}")).monospace());
             }
+            for (name, code) in &state.pending {
+                ui.horizontal(|ui| {
+                    ui.colored_label(palette.muted, egui::RichText::new(format!("● WAIT  {name}")).monospace());
+                    if ui.button(talk_core::t("gui.button.verify", &[])).clicked() {
+                        verify_open = Some((name.clone(), code.clone()));
+                    }
+                });
+            }
         });
+        if verify_open.is_some() {
+            self.verify = verify_open;
+        }
         let system_label = match status_kind {
             Kind::Ok => "● SYSTEM ONLINE",
             Kind::Pending => "● SYSTEM STARTING",
@@ -677,6 +723,7 @@ impl eframe::App for App {
                     let color = if status_kind == Kind::Problem { palette.danger } else { palette.accent };
                     ui.colored_label(color, egui::RichText::new(system_label).monospace());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.colored_label(palette.muted, egui::RichText::new(talk_core::t("chat.help_hint", &[])).monospace());
                         ui.colored_label(palette.muted, egui::RichText::new("BASE STATION").monospace());
                         if let Some(relay_status) = &relay_status {
                             ui.add_sized(
@@ -727,6 +774,44 @@ impl eframe::App for App {
                 }
             });
         });
+        if self.help_open {
+            if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+                self.help_open = false;
+            }
+            egui::Window::new(talk_core::t("help.keys", &[])).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                for key in HELP_KEYS {
+                    if key.is_empty() {
+                        ui.add_space(8.0);
+                    } else {
+                        ui.label(egui::RichText::new(talk_core::t(key, &[])).monospace());
+                    }
+                }
+                ui.add_space(8.0);
+                if ui.button(talk_core::t("gui.button.close", &[])).clicked() {
+                    self.help_open = false;
+                }
+            });
+        }
+        // The verify window: show the peer's code to compare; 확인 trusts it (the same /trust as typing), 닫기 leaves it.
+        if let Some((name, code)) = self.verify.clone() {
+            let (mut confirm, mut close) = (false, ctx.input(|input| input.key_pressed(egui::Key::Escape)));
+            egui::Window::new(&name).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                ui.label(talk_core::t("gui.verify.hint", &[]));
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(&code).monospace().size(28.0).color(palette.accent));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    confirm = ui.button(talk_core::t("gui.button.verify", &[])).clicked();
+                    close |= ui.button(talk_core::t("gui.button.close", &[])).clicked();
+                });
+            });
+            if confirm {
+                let _ = self.outgoing.send(format!("/trust {code}"));
+            }
+            if confirm || close {
+                self.verify = None;
+            }
+        }
         if self.phone_until.is_some() {
             let mut rows = vec![egui::RichText::new(talk_core::t("phone.title", &[])).strong()];
             match talk_core::phone::read(&state_dir()) {
@@ -877,7 +962,7 @@ fn main() -> eframe::Result<()> {
             install_korean_font(&cc.egui_ctx);
             let hwnd = window_hwnd(cc);
             cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
-            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None, phone_until: None, phone_checked: false, reload: reload.clone(), relay_form: None, first_run: talk_core::relay_settings::needs_first_run(&state_dir()), notice: String::new(), choice_timer: None, intro_mode: talk_core::relay_settings::Mode::from_saved(talk_core::relay_settings::load_saved(&state_dir()).mode.as_str()), toast_text: String::new(), toast_started: None }))
+            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None, phone_until: None, phone_checked: false, reload: reload.clone(), relay_form: None, first_run: talk_core::relay_settings::needs_first_run(&state_dir()), notice: String::new(), choice_timer: None, intro_mode: talk_core::relay_settings::Mode::from_saved(talk_core::relay_settings::load_saved(&state_dir()).mode.as_str()), toast_text: String::new(), toast_started: None, help_open: false, verify: None }))
         }),
     );
     stop_serve(&started);

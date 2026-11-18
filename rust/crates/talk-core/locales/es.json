@@ -3,6 +3,7 @@
   "settings.save_ok_local": "Guardado: modo local. El relay está detenido.",
   "settings.save_ok_supabase": "Guardado: modo Supabase. El relay está iniciado.",
   "settings.save_refused_missing": "No guardado. Falta: {fields}",
+  "settings.one_room_only": "Solo se permite una sala. Para usar otra, borre antes el ID de la sala.",
   "settings.cancel_discard": "Salido de los ajustes sin guardar.",
   "mode.timeout_hint": "Inicio en modo local en {n} s",
   "mode.first_run_title": "¿Cómo quieres conectarte?",
@@ -41,6 +42,7 @@
   "idle.left": "* salió: sin actividad durante {minutes} minutos",
   "bye": "hasta luego",
   "status.line": " herdr-talk  |  {name}  |  pares: {peers} ",
+  "chat.help_hint": "F1 ayuda",
   "start.hello": "herdr-talk: tu nombre es '{name}' (puerto TCP {port}). Escribe /help para ver los comandos.",
   "open.no_pane": "herdr-talk open: ejecútelo desde un pane de herdr (HERDR_PANE_ID no está definido).",
   "dock.agent_name": "talk: {count} conectados",
@@ -49,6 +51,7 @@
   "usage.trust": "uso: /trust <código>   (el código que se ve en el otro PC)",
   "trust.done": "{name} ({ip}) verificado. Los mensajes para él ahora van cifrados.",
   "trust.none": "ningún par sin verificar tiene el código {code}",
+  "trust.no_number": "No hay ningún par [{n}] pendiente de verificar.",
   "trust.save_failed": "verificado solo para esta sesión, no se pudo guardar: {error}",
   "peer.unverified": "no enviado a {name}: aún sin verificar. Compara los códigos y luego /trust",
   "peer.plain_off": "no enviado a {name}: no cifra, y el texto sin cifrar está desactivado",
@@ -88,6 +91,8 @@
   "gui.button.send": "Enviar",
   "gui.button.save": "Guardar",
   "gui.button.close": "Cerrar",
+  "gui.button.verify": "Verificar",
+  "gui.verify.hint": "Compara este código con el de la otra pantalla y luego pulsa Verificar",
   "gui.top.supabase_connected": "Supabase: conectado",
   "gui.top.local_connected": "Servidor local: conectado",
   "gui.peers.title": "Pares",
@@ -124,5 +129,7 @@
   "room.put_failed": "No se pudo publicar la fila de este PC (error de red o del servidor)",
   "net.old_version": "{name} ({ip}): versión antigua, no se puede verificar. Actualiza ambos PC a la versión nueva",
   "net.other_reveal": "{name}: llegó otro valor de verificación. Conexión rechazada",
-  "peers.code_pending": "(código pendiente)"
+  "peers.code_pending": "(código pendiente)",
+  "nodes.waiting": "pendiente de verificar",
+  "nodes.more": "y {n} más"
 }

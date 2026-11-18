@@ -28,7 +28,6 @@
   "idle.left": "* left: no activity for {minutes} minutes",
   "bye": "bye",
   "status.line": " herdr-talk  |  {name}  |  peers: {peers} ",
-  "chat.guide": "Enter: SEND · Ctrl+N: NAME · /help: COMMANDS · Ctrl+R: SETTINGS · Ctrl+C: QUIT",
   "chat.input_hint": "Type a message...",
   "start.hello": "herdr-talk: you are '{name}' (TCP port {port}). Type /help for commands.",
   "open.no_pane": "herdr-talk open: run this from a herdr pane (HERDR_PANE_ID is not set).",
@@ -71,5 +70,12 @@
   "trust.wrong_code": "{name}: a different confirmation value arrived. The connection was refused",
   "room.none_trusted": "No confirmed member in the room, so nothing was sent (/trust needed)",
   "room.left_out": "{n} member(s) not confirmed and left out (/trust needed)",
-  "room.send_failed": "Room message failed: {error}"
+  "room.send_failed": "Room message failed: {error}",
+  "room.only_one": "Only one room per PC: this PC already uses room {code}",
+  "status.help_hint": "F1 help",
+  "trust.no_number": "no waiting peer has the number {n}",
+  "trust.already": "{n} is already verified, or is no longer waiting",
+  "nodes.waiting": "waiting to confirm",
+  "nodes.verified": "verified",
+  "nodes.more": "… and {n} more"
 }

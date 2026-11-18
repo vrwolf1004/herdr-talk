@@ -3,6 +3,7 @@
   "settings.save_ok_local": "保存しました: ローカルモード。relay を停止しました。",
   "settings.save_ok_supabase": "保存しました: Supabase モード。relay を開始しました。",
   "settings.save_refused_missing": "保存しませんでした。未入力: {fields}",
+  "settings.one_room_only": "部屋は一つだけ使えます。別の部屋を使うには先に部屋 ID を消してください。",
   "settings.cancel_discard": "保存せずに設定を閉じました。",
   "mode.timeout_hint": "{n}秒後にローカルモードで開始します",
   "mode.first_run_title": "接続方法を選んでください",
@@ -41,6 +42,7 @@
   "idle.left": "* 退出: {minutes}分間操作がなかったため",
   "bye": "終了します",
   "status.line": " herdr-talk  |  {name}  |  相手: {peers} ",
+  "chat.help_hint": "F1 ヘルプ",
   "start.hello": "herdr-talk: あなたの名前は '{name}' です (TCP ポート {port})。/help でコマンドを表示します。",
   "open.no_pane": "herdr-talk open: herdr の pane 内で実行してください (HERDR_PANE_ID が設定されていません)。",
   "dock.agent_name": "talk: 接続 {count}人",
@@ -49,6 +51,7 @@
   "usage.trust": "使い方: /trust <コード>   (もう一方の PC 画面のコード)",
   "trust.done": "{name} ({ip}) を確認しました。以後この相手へのメッセージは暗号化されます。",
   "trust.none": "コード {code} と一致する未確認の相手はいません",
+  "trust.no_number": "確認待ちの相手 [{n}] はいません。",
   "trust.save_failed": "今回の実行中だけ確認済み。保存できませんでした: {error}",
   "peer.unverified": "{name} には送りません: 未確認です。コードを比べてから /trust してください",
   "peer.plain_off": "{name} には送りません: 暗号化しない相手で、平文送信はオフです",
@@ -88,6 +91,8 @@
   "gui.button.send": "送信",
   "gui.button.save": "保存",
   "gui.button.close": "閉じる",
+  "gui.button.verify": "確認",
+  "gui.verify.hint": "相手の画面のコードと同じか比べてから確認を押してください",
   "gui.top.supabase_connected": "Supabase: 接続済み",
   "gui.top.local_connected": "ローカルサーバー: 接続済み",
   "gui.peers.title": "ピア",
@@ -124,5 +129,7 @@
   "room.put_failed": "このPCの行を公開できませんでした (ネットワークまたはサーバーのエラー)",
   "net.old_version": "{name} ({ip}): 旧バージョンのため確認できません。両方のPCを新しいビルドに更新してください",
   "net.other_reveal": "{name}: 別の確認値を受信しました。接続を拒否しました",
-  "peers.code_pending": "(コード待ち)"
+  "peers.code_pending": "(コード待ち)",
+  "nodes.waiting": "確認待ち",
+  "nodes.more": "ほか {n} 名"
 }

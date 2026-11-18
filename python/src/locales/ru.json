@@ -28,7 +28,6 @@
   "idle.left": "* вышел: нет активности {minutes} мин",
   "bye": "пока",
   "status.line": " herdr-talk  |  {name}  |  собеседники: {peers} ",
-  "chat.guide": "Enter: ОТПРАВИТЬ · Ctrl+N: ИМЯ · /help: ПОМОЩЬ · Ctrl+R: ОПЦИИ · Ctrl+C: ВЫХОД",
   "chat.input_hint": "Введите сообщение...",
   "start.hello": "herdr-talk: вы — '{name}' (TCP порт {port}). Введите /help для команд.",
   "open.no_pane": "herdr-talk open: запустите из pane herdr (HERDR_PANE_ID не задан).",
@@ -71,5 +70,12 @@
   "trust.wrong_code": "{name}: пришло другое значение подтверждения. Соединение отклонено",
   "room.none_trusted": "Нет подтверждённых участников комнаты, ничего не отправлено (нужен /trust)",
   "room.left_out": "Пропущено неподтверждённых участников: {n} (нужен /trust)",
-  "room.send_failed": "Сообщение в комнату не отправлено: {error}"
+  "room.send_failed": "Сообщение в комнату не отправлено: {error}",
+  "room.only_one": "На этом ПК только одна комната: сейчас используется комната {code}",
+  "status.help_hint": "F1 помощь",
+  "trust.no_number": "Нет ожидающего собеседника с номером {n}",
+  "trust.already": "{n} уже подтверждён или больше не ожидает",
+  "nodes.waiting": "ожидает подтверждения",
+  "nodes.verified": "подтверждён",
+  "nodes.more": "… и ещё {n}"
 }

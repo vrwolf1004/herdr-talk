@@ -3,6 +3,7 @@
   "settings.save_ok_local": "Gespeichert: lokaler Modus. Das Relay ist gestoppt.",
   "settings.save_ok_supabase": "Gespeichert: Supabase-Modus. Das Relay ist gestartet.",
   "settings.save_refused_missing": "Nicht gespeichert. Fehlt: {fields}",
+  "settings.one_room_only": "Nur ein Raum ist erlaubt. Für einen anderen Raum zuerst die Raum-ID leeren.",
   "settings.cancel_discard": "Einstellungen ohne Speichern verlassen.",
   "mode.timeout_hint": "Start im lokalen Modus in {n} s",
   "mode.first_run_title": "Wie möchtest du dich verbinden?",
@@ -41,6 +42,7 @@
   "idle.left": "* verlassen: {minutes} Minuten ohne Aktivität",
   "bye": "tschüss",
   "status.line": " herdr-talk  |  {name}  |  Peers: {peers} ",
+  "chat.help_hint": "F1 Hilfe",
   "start.hello": "herdr-talk: du bist '{name}' (TCP-Port {port}). Gib /help für die Befehle ein.",
   "open.no_pane": "herdr-talk open: Bitte in einem herdr-Pane ausführen (HERDR_PANE_ID ist nicht gesetzt).",
   "dock.agent_name": "talk: {count} online",
@@ -49,6 +51,7 @@
   "usage.trust": "Verwendung: /trust <Code>   (der Code auf dem anderen PC)",
   "trust.done": "{name} ({ip}) bestätigt. Nachrichten an diesen Partner werden jetzt verschlüsselt.",
   "trust.none": "kein unbestätigter Partner hat den Code {code}",
+  "trust.no_number": "Kein Peer [{n}] wartet auf Bestätigung.",
   "trust.save_failed": "nur für diese Sitzung bestätigt, Speichern fehlgeschlagen: {error}",
   "peer.unverified": "nicht an {name} gesendet: noch nicht bestätigt. Codes vergleichen, dann /trust",
   "peer.plain_off": "nicht an {name} gesendet: keine Verschlüsselung, und Klartext ist aus",
@@ -88,6 +91,8 @@
   "gui.button.send": "Senden",
   "gui.button.save": "Speichern",
   "gui.button.close": "Schließen",
+  "gui.button.verify": "Bestätigen",
+  "gui.verify.hint": "Vergleiche diesen Code mit dem Code auf dem anderen Bildschirm, dann Bestätigen drücken",
   "gui.top.supabase_connected": "Supabase: verbunden",
   "gui.top.local_connected": "Lokaler Server: verbunden",
   "gui.peers.title": "Peers",
@@ -124,5 +129,7 @@
   "room.put_failed": "Die Zeile dieses PCs konnte nicht veröffentlicht werden (Netzwerk- oder Serverfehler)",
   "net.old_version": "{name} ({ip}): alte Version, kann nicht geprüft werden. Beide PCs auf die neue Version bringen",
   "net.other_reveal": "{name}: ein anderer Prüfwert ist eingetroffen. Verbindung abgelehnt",
-  "peers.code_pending": "(Code ausstehend)"
+  "peers.code_pending": "(Code ausstehend)",
+  "nodes.waiting": "Prüfung ausstehend",
+  "nodes.more": "und {n} weitere"
 }

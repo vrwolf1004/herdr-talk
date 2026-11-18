@@ -6,6 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::style::Print;
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute, queue};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{self, Stdout, Write};
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use talk_core::text::{char_width, wrap_line};
 use crate::first_run::{self, Chooser, Step};
 use crate::settings_form::{self, Form};
 use talk_core::relay_settings::Mode;
-use talk_core::{t, Chat, Line, Peer, IDLE_LIMIT};
+use talk_core::{t, Chat, Line, Link, IDLE_LIMIT};
 
 const POLL: Duration = Duration::from_millis(100);
 
@@ -128,7 +129,7 @@ pub(crate) fn paint(out: &mut Stdout, width: usize, rows: usize, body: Vec<Row>,
             print_row(out, cells, width)?;
         }
     }
-    queue!(out, cursor::Show)?;
+    // The cursor stays hidden here: a screen with an input row shows it at the input (render), the others have none.
     out.flush()?;
     *drawn = frame;
     Ok(())
@@ -288,12 +289,32 @@ fn input_row(input: &str, width: usize) -> (Row, usize) {
     (vec![(PROMPT.to_string(), Tone::Title), typed], cursor)
 }
 
-/// The CONNECTED NODES row text: you first (HOST/YOU on the host), then each fresh peer.
-fn nodes_text(me: &str, host: bool, peers: &[Peer]) -> String {
-    let you = if host { "HOST/YOU" } else { "YOU" };
-    let mut nodes = vec![format!("{you} {me}")];
-    nodes.extend(peers.iter().map(|peer| format!("PEER {}", peer.name)));
-    nodes.join(" · ")
+/// The CONNECTED NODES block: a title row, then one row per node: you first (HOST/YOU on the host), then each fresh peer as
+/// "[n] name (ip)  state" (the number only for a peer waiting for a code check). When the rows run out, the last row says how
+/// many more there are. At least three rows of messages are kept.
+fn nodes_block(chat: &Chat, name: &str, rows: usize) -> Vec<Row> {
+    let you = if chat.is_host() { "HOST/YOU" } else { "YOU" };
+    let waiting = chat.unverified_peers();
+    let mut lines: Vec<String> = vec![format!("{you} {name}")];
+    for peer in chat.fresh_peers() {
+        let number = waiting.iter().find(|(waiting_peer, _, _)| waiting_peer.id == peer.id).map(|(_, _, number)| format!("[{number}] ")).unwrap_or_default();
+        let state = match chat.link_of(&peer) {
+            Link::Encrypted => t("peers.verified", &[]),
+            Link::Plain => t("peers.plain", &[]),
+            Link::Unverified => t("nodes.waiting", &[]),
+        };
+        lines.push(format!("{number}{} ({})  {state}", peer.name, peer.ip));
+    }
+    let max_lines = rows.saturating_sub(11).max(1);
+    if lines.len() > max_lines {
+        let shown = max_lines - 1;
+        let more = lines.len() - shown;
+        lines.truncate(shown);
+        lines.push(t("nodes.more", &[("n", &more.to_string())]));
+    }
+    let mut block = vec![vec![("CONNECTED NODES".to_string(), Tone::Title)]];
+    block.extend(lines.into_iter().map(|line| vec![(line, Tone::Text)]));
+    block
 }
 
 /// The chat screen: the messages fill the middle, the phone address (when shown) sits over their last rows.
@@ -302,12 +323,14 @@ fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows:
     let times = stamps.times(&lines);
     let messages: Vec<Row> = lines.iter().zip(times).flat_map(|(line, time)| message_rows(line, &time, width - 1)).collect();
     let name = chat.me.lock().unwrap().name.clone();
-    let fresh = chat.fresh_peers();
-    let area = rows - 9;
+    let nodes = nodes_block(chat, &name, rows);
+    let area = rows - 7 - nodes.len();
     let mut body: Vec<Row> = messages[messages.len().saturating_sub(area)..].to_vec();
     // Fill the message area first: with few messages the overlay rows must still sit inside it.
     body.resize_with(area, Vec::new);
-    if let Some(overlay) = chat.phone_overlay() {
+    // The help box (F1) and the phone address sit over the bottom rows of the messages, the same way.
+    let help = HELP_OPEN.with(Cell::get).then(talk_core::help_box);
+    for overlay in help.into_iter().chain(chat.phone_overlay()) {
         let count = overlay.len().min(area);
         for (slot, text) in body[area - count..].iter_mut().zip(&overlay) {
             let text = fit(text, width);
@@ -316,32 +339,40 @@ fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows:
         }
     }
 
-    let peers = fresh.len().to_string();
+    let peers = chat.fresh_peers().len().to_string();
     let badge = if chat.is_host() { format!("{} ", t("host.badge", &[])) } else { String::new() };
     let mode = if chat.is_supabase() { t("mode.supabase", &[]) } else { t("mode.local", &[]) };
     let info = format!("{badge}{} · {}", t("status.line", &[("name", &name), ("peers", &peers)]).trim(), t("mode.status", &[("mode", &mode)]));
     let relay = chat.relay_status();
     let (input, cursor) = input_row(input, width);
-    let nodes = vec![("CONNECTED NODES  ".to_string(), Tone::Title), (nodes_text(&name, chat.is_host(), &fresh), Tone::Text)];
 
     let mut frame = vec![split(APP_NAME, Tone::Title, "SYS.VER 1.0", Tone::Dim, width), dash(width), vec![("COMMUNICATION LOG".to_string(), Tone::Title)]];
     frame.extend(body);
-    frame.push(nodes);
+    frame.extend(nodes);
     frame.push(dash(width));
-    // shortcut: the keyboard guide is English-only like the other Ctrl key notes; move it to the locales with them.
-    frame.push(vec![("Enter: SEND · /help: COMMANDS · Ctrl+N: NAME · Ctrl+P: PHONE · Ctrl+R: SETTINGS · Ctrl+C: QUIT".to_string(), Tone::Dim)]);
     frame.push(input);
-    // The status line sits above the maker line, as in the Python edition: the app name, name, peers and mode, then the
-    // connection tag at the end (Python appends the relay text there).
+    // The status line sits above the maker line: the app name, name, peers and mode, then the connection tag and the help
+    // hint at the end. The left part is cut when the row is too narrow, so the hint stays visible.
     let (tag, tone) = status_tag(&relay);
-    frame.push(vec![(format!("{info}  "), Tone::Dim), (tag.to_string(), tone)]);
+    let hint = t("chat.help_hint", &[]);
+    let left = fit(&info, width.saturating_sub(char_width(tag) + char_width(&hint) + 4));
+    frame.push(vec![(format!("{left}  "), Tone::Dim), (tag.to_string(), tone), (format!("  {hint}"), Tone::Dim)]);
     frame.push(footer(width));
     (frame, cursor)
+}
+
+thread_local! {
+    /// The help box is open (F1). Thread-local so each test thread has its own.
+    static HELP_OPEN: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Apply one key. Return false to leave the chat.
 fn on_key(key: KeyEvent, chat: &Chat, input: &mut String) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // Any key closes the help box, and that key is not typed (Ctrl+C still quits).
+    if HELP_OPEN.with(|open| open.replace(false)) && !(ctrl && key.code == KeyCode::Char('c')) {
+        return true;
+    }
     // The phone address hides on the first key that is not its own toggle.
     if !(ctrl && key.code == KeyCode::Char('p')) {
         chat.hide_phone();
@@ -351,6 +382,9 @@ fn on_key(key: KeyEvent, chat: &Chat, input: &mut String) -> bool {
         KeyCode::Char('l') if ctrl => chat.clear_lines(),
         KeyCode::Char('n') if ctrl => *input = "/name ".to_string(),
         KeyCode::Char('p') if ctrl => chat.toggle_phone(),
+        // Ctrl+H: on Windows it arrives as Backspace with the Control modifier, so both codes are checked.
+        KeyCode::F(1) => HELP_OPEN.with(|open| open.set(true)),
+        KeyCode::Char('h') | KeyCode::Backspace if ctrl => HELP_OPEN.with(|open| open.set(true)),
         KeyCode::Char(ch) if !ctrl => input.push(ch),
         KeyCode::Backspace => {
             input.pop();
@@ -506,7 +540,7 @@ fn render(out: &mut Stdout, chat: &Chat, input: &str, stamps: &mut Stamps, drawn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use talk_core::Me;
+    use talk_core::{Me, Peer};
 
     fn text_of(row: &Row) -> String {
         row.iter().map(|(text, _)| text.as_str()).collect()
@@ -549,6 +583,18 @@ mod tests {
         assert_eq!(chat.lines()[0].text, "> /name Bob");
         on_key(key(KeyCode::Char('l'), KeyModifiers::CONTROL), &chat, &mut input);
         assert!(chat.lines().is_empty());
+    }
+
+    #[test]
+    fn f1_opens_the_help_and_the_next_key_closes_it_without_typing() {
+        let (chat, mut input) = (chat(), String::new());
+        on_key(key(KeyCode::F(1), KeyModifiers::NONE), &chat, &mut input);
+        assert!(HELP_OPEN.with(Cell::get), "F1 opens the help");
+        on_key(key(KeyCode::Char('a'), KeyModifiers::NONE), &chat, &mut input);
+        assert!(!HELP_OPEN.with(Cell::get), "any key closes it");
+        assert!(input.is_empty(), "the closing key is not typed");
+        on_key(key(KeyCode::Char('b'), KeyModifiers::NONE), &chat, &mut input);
+        assert_eq!(input, "b");
     }
 
     #[test]
@@ -602,22 +648,41 @@ mod tests {
     }
 
     #[test]
-    fn the_nodes_row_lists_you_then_the_peers() {
-        let peer = |name: &str| Peer { id: name.into(), name: name.into(), ip: String::new(), port: 1, seen: Instant::now(), key: None };
-        assert_eq!(nodes_text("Ann", false, &[]), "YOU Ann");
-        assert_eq!(nodes_text("Ann", true, &[peer("Bob"), peer("Cy")]), "HOST/YOU Ann · PEER Bob · PEER Cy");
+    fn a_waiting_peer_with_a_code_shows_its_number_in_the_list() {
+        let chat = chat();
+        let key = [7u8; 32];
+        chat.peers.lock().unwrap().push(Peer { id: "p".into(), name: "rust-supa".into(), ip: "10.0.0.7".into(), port: 1, seen: Instant::now(), key: Some(key.to_vec()) });
+        chat.my_nonce_for(&key);
+        assert!(chat.set_reveal(&key, [9; 32]));
+        let rows: Vec<String> = nodes_block(&chat, "Ann", 30).iter().map(text_of).collect();
+        assert!(rows.iter().any(|row| row.starts_with("[1] rust-supa (10.0.0.7)")), "the list shows the same number as /trust: {rows:?}");
+    }
+
+    #[test]
+    fn the_nodes_block_lists_one_node_per_row_and_caps_the_rest() {
+        let chat = chat();
+        let peer = |name: &str| Peer { id: name.into(), name: name.into(), ip: "10.0.0.5".into(), port: 1, seen: Instant::now(), key: None };
+        chat.peers.lock().unwrap().extend([peer("Bob"), peer("Cy")]);
+        let rows: Vec<String> = nodes_block(&chat, "Ann", 30).iter().map(text_of).collect();
+        assert_eq!(rows[0], "CONNECTED NODES");
+        assert_eq!(rows[1], "YOU Ann");
+        assert!(rows[2].starts_with("Bob (10.0.0.5)") && rows[3].starts_with("Cy (10.0.0.5)"), "{rows:?}");
+        // Few rows left: the list keeps its first rows and the last one counts the rest.
+        let rows: Vec<String> = nodes_block(&chat, "Ann", 13).iter().map(text_of).collect();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert_eq!(rows[2], t("nodes.more", &[("n", "2")]), "{rows:?}");
     }
 
     #[test]
     fn the_chat_rows_follow_the_python_order_with_the_maker_alone_at_the_bottom() {
-        let (frame, _) = chat_frame(&chat(), "", &mut Stamps::default(), 60, 20);
+        let (frame, _) = chat_frame(&chat(), "", &mut Stamps::default(), 100, 20);
         let texts: Vec<String> = frame.iter().map(text_of).collect();
         assert_eq!(texts.len(), 20);
         assert!(texts[0].starts_with("▣ HERDR-TALK"), "{}", texts[0]);
         assert!(texts[2].starts_with("COMMUNICATION LOG"), "{}", texts[2]);
-        assert!(texts[16].starts_with("Enter: SEND"), "the guide: {}", texts[16]);
         assert!(texts[17].starts_with("MESSAGE > "), "the input: {}", texts[17]);
-        assert!(texts[18].ends_with("[SYSTEM READY]"), "the connection tag comes last on the status line: {}", texts[18]);
+        assert!(texts[18].ends_with(&t("chat.help_hint", &[])), "the help hint closes the status line: {}", texts[18]);
+        assert!(texts[18].contains("[SYSTEM READY]"), "the connection tag is on the status line: {}", texts[18]);
         assert!(texts[18].contains(&t("mode.status", &[("mode", &t("mode.local", &[]))])), "the mode is on the status line: {}", texts[18]);
         assert_eq!(texts[19].trim(), "made by Rust", "the bottom row holds only the maker");
         assert!(texts[19].starts_with(' '), "the maker is at the right end");

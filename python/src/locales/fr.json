@@ -28,7 +28,6 @@
   "idle.left": "* sorti : aucune activité pendant {minutes} minutes",
   "bye": "au revoir",
   "status.line": " herdr-talk  |  {name}  |  pairs : {peers} ",
-  "chat.guide": "Enter : ENVOI · Ctrl+N : NOM · /help : AIDE · Ctrl+R : RÉGLAGES · Ctrl+C : FIN",
   "chat.input_hint": "Saisissez un message...",
   "start.hello": "herdr-talk : vous êtes '{name}' (port TCP {port}). Tapez /help pour les commandes.",
   "open.no_pane": "herdr-talk open : à lancer depuis un pane herdr (HERDR_PANE_ID n'est pas défini).",
@@ -71,5 +70,12 @@
   "trust.wrong_code": "{name} : une autre valeur de confirmation est arrivée. Connexion refusée",
   "room.none_trusted": "Aucun membre confirmé dans le salon, rien n'a été envoyé (/trust requis)",
   "room.left_out": "{n} membre(s) non confirmé(s) laissé(s) de côté (/trust requis)",
-  "room.send_failed": "Échec du message de salon : {error}"
+  "room.send_failed": "Échec du message de salon : {error}",
+  "room.only_one": "Un seul salon par PC : ce PC utilise déjà le salon {code}",
+  "status.help_hint": "F1 aide",
+  "trust.no_number": "Aucun correspondant en attente n'a le numéro {n}",
+  "trust.already": "{n} est déjà vérifié ou n'attend plus",
+  "nodes.waiting": "en attente de confirmation",
+  "nodes.verified": "vérifié",
+  "nodes.more": "… et {n} autre(s)"
 }
