@@ -28,7 +28,6 @@
   "idle.left": "* verlassen: {minutes} Minuten ohne Aktivität",
   "bye": "tschüss",
   "status.line": " herdr-talk  |  {name}  |  Peers: {peers} ",
-  "chat.guide": "Enter: SENDEN · Ctrl+N: NAME · /help: HILFE · Ctrl+R: EINST. · Ctrl+C: ENDE",
   "chat.input_hint": "Nachricht eingeben...",
   "start.hello": "herdr-talk: du bist '{name}' (TCP-Port {port}). Gib /help für die Befehle ein.",
   "open.no_pane": "herdr-talk open: Bitte in einem herdr-Pane ausführen (HERDR_PANE_ID ist nicht gesetzt).",
@@ -71,5 +70,12 @@
   "trust.wrong_code": "{name}: Anderer Bestätigungswert empfangen. Verbindung abgelehnt",
   "room.none_trusted": "Kein bestätigtes Raummitglied, daher nichts gesendet (/trust nötig)",
   "room.left_out": "{n} unbestätigte(s) Mitglied(er) ausgelassen (/trust nötig)",
-  "room.send_failed": "Raumnachricht fehlgeschlagen: {error}"
+  "room.send_failed": "Raumnachricht fehlgeschlagen: {error}",
+  "room.only_one": "Pro PC nur ein Raum: dieser PC nutzt bereits Raum {code}",
+  "status.help_hint": "F1 Hilfe",
+  "trust.no_number": "Kein wartender Partner mit der Nummer {n}",
+  "trust.already": "{n} ist bereits bestätigt oder wartet nicht mehr",
+  "nodes.waiting": "wartet auf Bestätigung",
+  "nodes.verified": "bestätigt",
+  "nodes.more": "… und {n} weitere"
 }

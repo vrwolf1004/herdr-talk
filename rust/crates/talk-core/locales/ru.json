@@ -3,6 +3,7 @@
   "settings.save_ok_local": "Сохранено: локальный режим. Relay остановлен.",
   "settings.save_ok_supabase": "Сохранено: режим Supabase. Relay запущен.",
   "settings.save_refused_missing": "Не сохранено. Не заполнено: {fields}",
+  "settings.one_room_only": "Разрешена только одна комната. Чтобы выбрать другую, сначала очистите ID комнаты.",
   "settings.cancel_discard": "Настройки закрыты без сохранения.",
   "mode.timeout_hint": "Запуск в локальном режиме через {n} с",
   "mode.first_run_title": "Как вы хотите подключиться?",
@@ -41,6 +42,7 @@
   "idle.left": "* вышел: нет активности {minutes} мин",
   "bye": "пока",
   "status.line": " herdr-talk  |  {name}  |  собеседники: {peers} ",
+  "chat.help_hint": "F1 помощь",
   "start.hello": "herdr-talk: вы — '{name}' (TCP порт {port}). Введите /help для команд.",
   "open.no_pane": "herdr-talk open: запустите из pane herdr (HERDR_PANE_ID не задан).",
   "dock.agent_name": "talk: в сети {count}",
@@ -49,6 +51,7 @@
   "usage.trust": "использование: /trust <код>   (код на экране другого ПК)",
   "trust.done": "{name} ({ip}) подтверждён. Сообщения ему теперь шифруются.",
   "trust.none": "нет неподтверждённого собеседника с кодом {code}",
+  "trust.no_number": "Нет собеседника [{n}], ожидающего проверки.",
   "trust.save_failed": "подтверждено только для этого запуска, не сохранено: {error}",
   "peer.unverified": "не отправлено {name}: ещё не подтверждён. Сравните коды и введите /trust",
   "peer.plain_off": "не отправлено {name}: он не шифрует, а открытый текст выключен",
@@ -88,6 +91,8 @@
   "gui.button.send": "Отправить",
   "gui.button.save": "Сохранить",
   "gui.button.close": "Закрыть",
+  "gui.button.verify": "Подтвердить",
+  "gui.verify.hint": "Сравните этот код с кодом на другом экране, затем нажмите «Подтвердить»",
   "gui.top.supabase_connected": "Supabase: подключено",
   "gui.top.local_connected": "Локальный сервер: подключено",
   "gui.peers.title": "Пиры",
@@ -124,5 +129,7 @@
   "room.put_failed": "Не удалось опубликовать строку этого ПК (сеть или сервер)",
   "net.old_version": "{name} ({ip}): старая версия, проверить нельзя. Обновите оба ПК до новой сборки",
   "net.other_reveal": "{name}: пришло другое проверочное значение. Соединение отклонено",
-  "peers.code_pending": "(код ожидается)"
+  "peers.code_pending": "(код ожидается)",
+  "nodes.waiting": "ожидает проверки",
+  "nodes.more": "и ещё {n}"
 }

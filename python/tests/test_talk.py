@@ -61,10 +61,12 @@ class ChatHandleTest(CollectSayTest):
     def make_chat(self):
         return talk.Chat({"id": "me", "name": "Me", "port": 1})
 
-    def test_help_prints_the_box(self):
-        self.assertTrue(self.make_chat().handle("/help"))
-        # The command is echoed first, then the box, as in the Rust edition.
-        self.assertEqual(self.lines, ["> /help"] + talk.HELP_BOX)
+    def test_help_opens_the_box_over_the_messages(self):
+        chat = self.make_chat()
+        self.assertTrue(chat.handle("/help"))
+        # The command is echoed first; the box is an overlay (chat.help_open), not chat lines.
+        self.assertEqual(self.lines, ["> /help"])
+        self.assertTrue(chat.help_open)
 
     def test_name_change_is_announced(self):
         chat = self.make_chat()
@@ -142,10 +144,9 @@ class LocaleKeysTest(unittest.TestCase):
         locales = Path(talk.__file__).resolve().parent / "locales"
         for path in sorted(locales.glob("*.json")):
             messages = json.loads(path.read_text(encoding="utf-8"))
-            for key in ("chat.guide", "chat.input_hint"):
+            for key in ("status.help_hint", "chat.input_hint"):
                 self.assertTrue(messages.get(key), f"{path.name} {key}")
-            for shortcut in ("Enter", "Ctrl+N", "Ctrl+R", "Ctrl+C"):
-                self.assertIn(shortcut, messages["chat.guide"], path.name)
+            self.assertIn("F1", messages["status.help_hint"], path.name)
 
 
 class ShutdownTest(unittest.TestCase):
@@ -189,6 +190,21 @@ class SharedLinesTest(unittest.TestCase):
         for worker in workers:
             worker.join()
         self.assertEqual(len(chat.lines), min(1200, talk.MAX_LINES))
+
+
+class AnnounceTest(unittest.TestCase):
+    def test_the_announcement_always_carries_commits_even_when_empty(self):
+        sent = []
+        sock = unittest.mock.MagicMock()
+        sock.sendto.side_effect = lambda data, addr: (sent.append(json.loads(data.decode("utf-8"))), talk.STOP.set())
+        talk.STOP.clear()
+        try:
+            with unittest.mock.patch.object(talk.socket, "socket", return_value=sock):
+                talk.announce(47850, {"id": "me", "name": "Me", "port": 1, "key": bytes(32)})
+        finally:
+            talk.STOP.clear()
+        self.assertEqual(sent[0]["commits"], {})
+        self.assertIn("key", sent[0])
 
 
 class StatusLineTest(unittest.TestCase):

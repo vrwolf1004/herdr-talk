@@ -423,9 +423,9 @@ fn receive_encrypted(conn: &mut (impl Read + Write), first: u8, chat: &Chat) -> 
     Ok(None)
 }
 
-/// How often a peer's reveal is tried, and how many times, before the worker gives up (the next announce starts it again).
+/// How often a peer's reveal is tried. A known peer's announce does not ask for it again, so the worker keeps trying
+/// while the peer is still announcing (fresh); it stops then, or when the code is known.
 const REVEAL_RETRY: Duration = Duration::from_secs(2);
-const REVEAL_TRIES: u32 = 10;
 
 /// Fetch a peer's reveal in the background, then show its code. One worker per peer; it stops when the code is known.
 fn reveal_later(chat: &Arc<Chat>, key: &[u8], ip: &str, port: u16) {
@@ -434,8 +434,9 @@ fn reveal_later(chat: &Arc<Chat>, key: &[u8], ip: &str, port: u16) {
     }
     let (chat, key, ip) = (chat.clone(), key.to_vec(), ip.to_string());
     thread::spawn(move || {
-        for _ in 0..REVEAL_TRIES {
-            if chat.stop.is_set() || chat.sas_for(&key).is_some() {
+        loop {
+            let announcing = chat.fresh_peers().iter().any(|peer| peer.key.as_deref() == Some(key.as_slice()));
+            if chat.stop.is_set() || chat.sas_for(&key).is_some() || !announcing {
                 break;
             }
             match exchange_reveal(&chat, &ip, port, &key) {
@@ -456,6 +457,9 @@ fn reveal_later(chat: &Arc<Chat>, key: &[u8], ip: &str, port: u16) {
 fn show_code(chat: &Chat, key: &[u8]) {
     let Some(code) = chat.sas_for(key) else { return };
     let (name, ip) = chat.peer_by_key(key).unwrap_or_else(|| ("?".to_string(), "?".to_string()));
+    // The number [n] is the one /trust n takes (the same list as /peers).
+    let number = if chat.trusts(key) { String::new() } else { format!("[{}] ", chat.waiting_number(key)) };
+    let name = format!("{number}{name}");
     // One chat row per line (the TUIs do not wrap a newline): name and state, the code, then the hint.
     for row in t("peer.fingerprint", &[("name", &name), ("ip", &ip), ("code", &code)]).split(char::from(10)) {
         chat.say(row);

@@ -200,6 +200,11 @@ class SettingsForm:
     def save(self):
         """Write relay.json. True when saved; otherwise the message says what is missing or wrong."""
         values = self.settings()
+        saved_room = relay_settings.load_saved(self.state)["room_code"]
+        new_room = self.fields[ROOM_FIELD].strip().upper()
+        if saved_room and new_room and new_room != saved_room:
+            self.message = t("room.only_one", code=saved_room)
+            return False
         if values["mode"] == relay_settings.SUPABASE:
             missing = [label for label, value in zip(FIELD_LABELS, self.fields) if not value.strip()]
             if missing:
@@ -245,6 +250,10 @@ class SettingsForm:
             return
         if self.mine is None:
             self.message = "create room: this PC has no keys yet (start a chat first)"
+            return
+        saved_room = relay_settings.load_saved(self.state)["room_code"]
+        if saved_room:
+            self.message = t("room.only_one", code=saved_room)
             return
         url, key, name = (value.strip() for value in self.fields[:3])
         if not (url and key and name):

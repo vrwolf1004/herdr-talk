@@ -3,6 +3,7 @@
   "settings.save_ok_local": "Enregistré : mode local. Le relais est arrêté.",
   "settings.save_ok_supabase": "Enregistré : mode Supabase. Le relais est démarré.",
   "settings.save_refused_missing": "Non enregistré. Manquant : {fields}",
+  "settings.one_room_only": "Une seule salle est autorisée. Pour en utiliser une autre, effacez d'abord l'ID de la salle.",
   "settings.cancel_discard": "Paramètres quittés sans enregistrer.",
   "mode.timeout_hint": "Démarrage en mode local dans {n} s",
   "mode.first_run_title": "Comment voulez-vous vous connecter ?",
@@ -41,6 +42,7 @@
   "idle.left": "* sorti : aucune activité pendant {minutes} minutes",
   "bye": "au revoir",
   "status.line": " herdr-talk  |  {name}  |  pairs : {peers} ",
+  "chat.help_hint": "F1 aide",
   "start.hello": "herdr-talk : vous êtes '{name}' (port TCP {port}). Tapez /help pour les commandes.",
   "open.no_pane": "herdr-talk open : à lancer depuis un pane herdr (HERDR_PANE_ID n'est pas défini).",
   "dock.agent_name": "talk : {count} en ligne",
@@ -49,6 +51,7 @@
   "usage.trust": "usage : /trust <code>   (le code affiché sur l'autre PC)",
   "trust.done": "{name} ({ip}) vérifié. Les messages vers lui sont maintenant chiffrés.",
   "trust.none": "aucun pair non vérifié n'a le code {code}",
+  "trust.no_number": "Aucun pair [{n}] en attente de vérification.",
   "trust.save_failed": "vérifié pour cette session seulement, sauvegarde impossible : {error}",
   "peer.unverified": "non envoyé à {name} : pas encore vérifié. Comparez les codes, puis /trust",
   "peer.plain_off": "non envoyé à {name} : il ne chiffre pas, et le texte en clair est désactivé",
@@ -88,6 +91,8 @@
   "gui.button.send": "Envoyer",
   "gui.button.save": "Enregistrer",
   "gui.button.close": "Fermer",
+  "gui.button.verify": "Vérifier",
+  "gui.verify.hint": "Comparez ce code avec celui de l'autre écran, puis appuyez sur Vérifier",
   "gui.top.supabase_connected": "Supabase : connecté",
   "gui.top.local_connected": "Serveur local : connecté",
   "gui.peers.title": "Pairs",
@@ -124,5 +129,7 @@
   "room.put_failed": "Impossible de publier la ligne de ce PC (erreur réseau ou serveur)",
   "net.old_version": "{name} ({ip}) : ancienne version, impossible à vérifier. Mettez les deux PC à la nouvelle version",
   "net.other_reveal": "{name} : une autre valeur de vérification est arrivée. Connexion refusée",
-  "peers.code_pending": "(code en attente)"
+  "peers.code_pending": "(code en attente)",
+  "nodes.waiting": "en attente de vérification",
+  "nodes.more": "et {n} autres"
 }

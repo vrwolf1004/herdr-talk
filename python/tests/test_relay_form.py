@@ -222,6 +222,25 @@ class SettingsFormTests(unittest.TestCase):
             self._finish(form)
         self.assertEqual(form.fields[3], "ABCD1234")
 
+    def test_only_one_room_is_allowed_and_the_same_room_again_is_fine(self):
+        relay_settings.save(self.dir, {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key",
+                                       "name": "Alice", "room_code": "ABCD1234"})
+        form = self._form()
+        form.fields[3] = "EFGH5678"
+        self.assertFalse(form.save())
+        self.assertIn("ABCD1234", form.message)
+        form.fields[3] = "abcd1234"
+        self.assertTrue(form.save(), "the same room, typed in another case, is allowed")
+
+    def test_ctrl_n_is_refused_while_a_room_is_saved(self):
+        relay_settings.save(self.dir, {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key",
+                                       "name": "Alice", "room_code": "ABCD1234"})
+        form = self._form()
+        form.fields[:3] = ["https://x.supabase.co", "dummy-test-key", "Alice"]
+        form.create_room()
+        self.assertIn("ABCD1234", form.message)
+        self.assertIsNone(form._room_result, "no create request is sent")
+
     def test_escape_leaves_without_saving(self):
         form = self._form()
         form.on_key("\t")

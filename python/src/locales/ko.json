@@ -28,7 +28,6 @@
   "idle.left": "* 나감: {minutes}분 동안 활동이 없었습니다",
   "bye": "종료합니다",
   "status.line": " herdr-talk  |  {name}  |  상대: {peers} ",
-  "chat.guide": "Enter: 보내기 · Ctrl+N: 이름 · /help: 명령어 · Ctrl+R: 설정 · Ctrl+C: 종료",
   "chat.input_hint": "메시지를 입력하세요...",
   "start.hello": "herdr-talk: 당신의 이름은 '{name}'입니다 (TCP 포트 {port}). 명령어는 /help를 입력하세요.",
   "open.no_pane": "herdr-talk open: herdr 패널 안에서 실행하세요 (HERDR_PANE_ID 가 없습니다).",
@@ -60,7 +59,7 @@
   "mode.status": "방식: {mode}",
   "mode.first_run_title": "어떻게 연결할까요?",
   "mode.change": "Ctrl+R: 연결 방식 바꾸기",
-  "mode.timeout_hint": "{n}초 후 로컬/자체로 시작합니다",
+  "mode.timeout_hint": "{n}초 후 로컬로 시작합니다",
   "relay.not_sent": "relay: 연결되어 있지 않아 relay 로 보내지 않았다",
   "settings.mode_row": "연결 방식",
   "settings.save_ok_local": "저장됨: 로컬/자체. relay 를 멈췄다.",
@@ -71,5 +70,12 @@
   "trust.wrong_code": "{name}: 다른 확인 값이 왔습니다. 연결을 거부했습니다",
   "room.none_trusted": "확인된 방 멤버가 없어 보내지 않았습니다 (/trust 필요)",
   "room.left_out": "확인되지 않은 멤버 {n}명은 빼고 보냈습니다 (/trust 필요)",
-  "room.send_failed": "방 메시지 실패: {error}"
+  "room.send_failed": "방 메시지 실패: {error}",
+  "room.only_one": "이 PC는 방 하나만 씁니다. 지금 방은 {code} 입니다",
+  "status.help_hint": "F1 도움말",
+  "trust.no_number": "확인 대기 중인 상대 중에 {n}번이 없습니다",
+  "trust.already": "{n}번은 이미 확인되었거나 더 이상 대기 중이 아닙니다",
+  "nodes.waiting": "확인 대기",
+  "nodes.verified": "확인됨",
+  "nodes.more": "…외 {n}명"
 }

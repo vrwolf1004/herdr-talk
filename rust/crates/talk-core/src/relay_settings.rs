@@ -3,6 +3,7 @@
 //! The environment variables HERDR_TALK_RELAY_URL and HERDR_TALK_RELAY_KEY win over the saved values when set.
 //! The key is never printed: the screen shows its length only.
 
+use crate::i18n::t;
 use crate::relay_rest::{self, URL_VARIABLE, KEY_VARIABLE};
 use serde_json::{json, Value};
 use std::fs;
@@ -109,9 +110,18 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
     Ok(())
 }
 
+/// Only one room is used: a saved room code can be kept or cleared, but not replaced by another one.
+pub fn has_other_room(state: &Path, code: &str) -> bool {
+    let saved = load_saved(state).room_code;
+    !saved.is_empty() && saved != code
+}
+
 /// Save to relay.json. The file is written whole through a temporary file and renamed. Unix: 0600.
 pub fn save(state: &Path, settings: &Settings) -> Result<(), String> {
     validate(settings)?;
+    if !settings.room_code.is_empty() && has_other_room(state, &settings.room_code) {
+        return Err(t("settings.one_room_only", &[]));
+    }
     fs::create_dir_all(state).map_err(|error| error.to_string())?;
     let text = json!({"mode": settings.mode.as_str(), "url": settings.url, "key": settings.key, "name": settings.name, "room_code": settings.room_code}).to_string();
     let temp = state.join(format!("{FILE}.{}.tmp", std::process::id()));
@@ -163,6 +173,25 @@ mod tests {
             name: "Alice".into(),
             room_code: "ABCD2345".into(),
         }
+    }
+
+    #[test]
+    fn a_second_room_is_refused_and_the_same_room_is_allowed() {
+        let dir = folder("one-room");
+        save(&dir, &sample()).unwrap();
+        save(&dir, &sample()).expect("the same room code is saved again");
+        let other = Settings { room_code: "ZZZZ2345".into(), ..sample() };
+        assert_eq!(save(&dir, &other), Err(t("settings.one_room_only", &[])));
+        assert_eq!(load_saved(&dir).room_code, "ABCD2345", "the first room stays");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_first_room_is_allowed_when_none_is_saved() {
+        let dir = folder("first-room");
+        save(&dir, &Settings { mode: Mode::Local, ..Settings::default() }).unwrap();
+        save(&dir, &sample()).expect("no room was saved before");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

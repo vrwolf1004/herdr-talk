@@ -98,6 +98,11 @@ impl Form {
     /// Ask Supabase for a new room (create-room) with this PC's key and the display name, and put the code in the room ID field.
     /// Runs in a thread so the window keeps drawing; `show` reads the answer.
     fn start_create_room(&mut self, ctx: &egui::Context) {
+        // Only one room: a new room is refused while another one is saved (the empty code is never a saved room).
+        if relay_settings::has_other_room(&self.state, "") {
+            self.message = t("settings.one_room_only", &[]);
+            return;
+        }
         let url = self.fields[0].trim().to_string();
         let key = self.fields[1].trim().to_string();
         let name = self.fields[2].trim().to_string();

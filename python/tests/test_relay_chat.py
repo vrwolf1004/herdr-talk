@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -132,6 +133,21 @@ class RoomThreadTests(unittest.TestCase):
         self.assertTrue(hooks.said[0].mine)
         self.assertEqual(hooks.said[0].sender, "Alice")
         self.assertEqual(hooks.said[1], Notice("room.left_out", {"n": 1}))
+
+
+class JoinRetryTests(unittest.TestCase):
+    def test_a_failed_join_is_tried_once_more_after_the_wait_and_then_not_again(self):
+        import threading
+        hooks = Hooks()
+        config = relay_rest.Config("https://x.supabase.co", "dummy-test-key")
+        relay = rc.Relay(hooks, None, config, settings(), rc.Session(SEED, b"" * 32))
+        with mock.patch.object(rc, "MEMBERS_SECONDS", 0.05), mock.patch.object(relay, "_publish", return_value=True),                 mock.patch.object(relay, "_load_members", side_effect=OSError("offline")) as load:
+            thread = threading.Thread(target=relay._run, daemon=True)
+            thread.start()
+            time.sleep(0.6)
+            relay.stop_event.set()
+            thread.join(2)
+        self.assertEqual(load.call_count, 2, "one try, one retry, then no more")
 
 
 class InboxTests(unittest.TestCase):

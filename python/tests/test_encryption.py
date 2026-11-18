@@ -363,6 +363,29 @@ class ExchangeTest(Base):
         self.wait_for(1)
         self.assertEqual(self.lines, ["A > now it works"])
 
+    def test_three_waiting_peers_get_unique_numbers_that_stay_after_one_is_trusted(self):
+        chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        keys = [bytes([i]) * 32 for i in (1, 2, 3)]
+        self.assertEqual([chat.waiting_number(key) for key in keys], [1, 2, 3])
+        self.assertEqual(chat.waiting_number(keys[0]), 1, "the same peer keeps its number")
+        chat.numbers.pop(keys[1])  # the second is trusted
+        self.assertEqual(chat.waiting_number(keys[0]), 1)
+        self.assertEqual(chat.waiting_number(keys[2]), 3, "the third keeps 3, it is not moved to 2")
+        self.assertEqual(chat.waiting_number(bytes([9]) * 32), 4, "a new peer gets the next number, never a reused one")
+
+    def test_a_waiting_peer_is_numbered_and_trusted_by_its_number(self):
+        self.pair(a_trusts_b=False, b_trusts_a=False)
+        self.b.state_dir = self.dir
+        wait_code(self.b, self.a.me["key"])
+        self.assertTrue(any(line.startswith("[1] A ") for line in self.lines), self.lines)
+        self.b.handle("/trust 2")
+        self.assertIn(talk.t("trust.no_number", n="2"), self.lines)
+        self.b.handle("/trust 1")
+        self.assertIn(talk.t("trust.done", name="A", ip="127.0.0.1"), self.lines)
+        self.assertEqual(self.b.link_of(self.peer(self.b)), "encrypted")
+        self.b.handle("/trust 1")  # a trusted peer leaves the waiting list, so its number is gone
+        self.assertIn(talk.t("trust.no_number", n="1"), self.lines)
+
     def test_trust_refuses_two_different_keys_with_one_code(self):
         me = make_chat()
         code = "ABCD-1234"

@@ -3,6 +3,7 @@
   "settings.save_ok_local": "Saved: local mode. The relay is stopped.",
   "settings.save_ok_supabase": "Saved: Supabase mode. The relay is started.",
   "settings.save_refused_missing": "Not saved. Missing: {fields}",
+  "settings.one_room_only": "Only one room is allowed. Clear the room ID first to use another room.",
   "settings.cancel_discard": "Left the settings without saving.",
   "mode.timeout_hint": "Starting in local mode in {n}s",
   "mode.first_run_title": "How do you want to connect?",
@@ -41,6 +42,7 @@
   "idle.left": "* left: no activity for {minutes} minutes",
   "bye": "bye",
   "status.line": " herdr-talk  |  {name}  |  peers: {peers} ",
+  "chat.help_hint": "F1 help",
   "start.hello": "herdr-talk: you are '{name}' (TCP port {port}). Type /help for commands.",
   "open.no_pane": "herdr-talk open: run this from a herdr pane (HERDR_PANE_ID is not set).",
   "dock.agent_name": "talk: {count} online",
@@ -49,6 +51,7 @@
   "usage.trust": "usage: /trust <code>   (the code shown on the other PC)",
   "trust.done": "trusted {name} at {ip}. Messages to them are now encrypted.",
   "trust.none": "no unverified peer has the code {code}",
+  "trust.no_number": "No unverified peer [{n}].",
   "trust.save_failed": "trusted for this session only, could not save: {error}",
   "peer.unverified": "not sent to {name}: not verified yet. Compare codes, then /trust",
   "peer.plain_off": "not sent to {name}: they do not encrypt, and plain text is off",
@@ -88,6 +91,8 @@
   "gui.button.send": "Send",
   "gui.button.save": "Save",
   "gui.button.close": "Close",
+  "gui.button.verify": "Verify",
+  "gui.verify.hint": "Compare this code with the code on the other screen, then press Verify",
   "gui.top.supabase_connected": "Supabase: connected",
   "gui.top.local_connected": "Local server: connected",
   "gui.peers.title": "Peers",
@@ -124,5 +129,7 @@
   "room.put_failed": "Could not publish this PC's row (network or server error)",
   "net.old_version": "{name} ({ip}): an old version, cannot verify. Update both PCs to the new build",
   "net.other_reveal": "{name}: a different verification value came. Connection refused",
-  "peers.code_pending": "(code pending)"
+  "peers.code_pending": "(code pending)",
+  "nodes.waiting": "waiting for check",
+  "nodes.more": "and {n} more"
 }

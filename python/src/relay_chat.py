@@ -161,6 +161,7 @@ class Relay:
                     return
         self.own_pk = ed25519.public_key(self.session.seed).hex()
         joined = False
+        retries = 1  # a failed join is tried once more, after MEMBERS_SECONDS; then no more tries
         next_members = next_fetch = 0.0
         while not self.stop_event.is_set():
             now = time.monotonic()
@@ -169,10 +170,14 @@ class Relay:
                 try:
                     info = self._load_members()
                     joined = True
+                    retries = 1
                     self.hooks.emit(Status(f"relay: 방 참가 (멤버 {len(info['members'])}명)"))
                 except (OSError, ValueError) as error:
                     joined = False
                     self.hooks.emit(Status(f"relay: room join failed: {error}"))
+                    if not retries:
+                        next_members = float("inf")  # shortcut: a second failure stops the joins until the relay restarts
+                    retries -= 1
             if joined and now >= next_fetch:
                 next_fetch = now + POLL_SECONDS
                 try:
