@@ -200,9 +200,11 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
         }
         chat.note_waiting(key);
     }
-    // A room holds MAX_PEERS with this PC: a new peer is ignored while MAX_PEERS - 1 others are here. Known peers always pass.
+    // A room holds MAX_PEERS with this PC. Only verified (trusted) peers count: a new peer is ignored while MAX_PEERS - 1
+    // of them are here. Unverified peers do not take a place. Known peers always pass.
     let here = chat.fresh_peers();
-    if here.len() >= MAX_PEERS - 1 && !here.iter().any(|known| known.id == id) {
+    let verified = here.iter().filter(|known| known.key.as_deref().is_some_and(|key| chat.trusts(key))).count();
+    if verified >= MAX_PEERS - 1 && !here.iter().any(|known| known.id == id) {
         return;
     }
     let peer = Peer { id: id.to_string(), name: name.clone(), ip: ip.clone(), port, seen: Instant::now(), key: key.clone() };
@@ -811,16 +813,45 @@ mod tests {
     #[test]
     fn a_room_takes_max_peers_with_this_pc_and_refuses_the_next() {
         let chat = chat();
-        let packet = |n: usize| json!({"app": APP, "id": format!("peer{n}"), "name": format!("P{n}"), "port": 9}).to_string();
+        // Verified peers: each key is trusted before its announce, so it counts toward the room.
+        let key = |n: u8| [n; 32];
+        let packet = |n: u8| json!({"app": APP, "id": store::peer_id(&key(n)), "name": format!("P{n}"), "port": 9, "key": store::to_hex(&key(n))}).to_string();
+        let trust = |chat: &Chat, n: u8| chat.trusted.lock().unwrap().push(Trusted { name: format!("P{n}"), key: key(n).to_vec(), ip: format!("10.0.2.{n}") });
         // This PC is one of MAX_PEERS: MAX_PEERS - 1 others fit.
-        for n in 0..MAX_PEERS - 1 {
+        for n in 1..MAX_PEERS as u8 {
+            trust(&chat, n);
             remember_peer(&chat, packet(n).as_bytes(), format!("10.0.2.{n}"));
         }
         assert_eq!(chat.fresh_peers().len(), MAX_PEERS - 1);
+        // An unverified 11th is refused too while nine verified peers are here.
+        remember_peer(&chat, packet(98).as_bytes(), "10.0.2.98".into());
+        assert_eq!(chat.fresh_peers().len(), MAX_PEERS - 1, "the unverified 11th is ignored");
+        trust(&chat, 99);
         remember_peer(&chat, packet(99).as_bytes(), "10.0.2.99".into());
-        assert_eq!(chat.fresh_peers().len(), MAX_PEERS - 1, "the next new peer is ignored");
+        assert_eq!(chat.fresh_peers().len(), MAX_PEERS - 1, "the next verified peer is ignored");
         remember_peer(&chat, packet(3).as_bytes(), "10.0.2.3".into());
         assert_eq!(chat.fresh_peers().len(), MAX_PEERS - 1, "a known peer still passes");
+    }
+
+    #[test]
+    fn unverified_peers_do_not_take_a_place_in_the_room() {
+        let chat = chat();
+        let key = |n: u8| [n; 32];
+        let packet = |n: u8| json!({"app": APP, "id": store::peer_id(&key(n)), "name": format!("P{n}"), "port": 9, "key": store::to_hex(&key(n))}).to_string();
+        // Eight verified peers.
+        for n in 1..=8u8 {
+            chat.trusted.lock().unwrap().push(Trusted { name: format!("P{n}"), key: key(n).to_vec(), ip: format!("10.0.4.{n}") });
+            remember_peer(&chat, packet(n).as_bytes(), format!("10.0.4.{n}"));
+        }
+        // Three unverified newcomers: they do not count, so all are admitted.
+        for n in 40..43u8 {
+            remember_peer(&chat, packet(n).as_bytes(), format!("10.0.4.{n}"));
+        }
+        assert_eq!(chat.fresh_peers().len(), 11, "eight verified and three unverified");
+        // The ninth verified peer still fits.
+        chat.trusted.lock().unwrap().push(Trusted { name: "P9".into(), key: key(9).to_vec(), ip: "10.0.4.9".into() });
+        remember_peer(&chat, packet(9).as_bytes(), "10.0.4.9".into());
+        assert!(chat.fresh_peers().iter().any(|peer| peer.key.as_deref() == Some(&key(9)[..])), "the ninth verified peer is admitted");
     }
 
     #[test]

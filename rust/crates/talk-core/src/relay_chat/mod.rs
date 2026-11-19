@@ -193,6 +193,9 @@ Connection: close
 
 /// True when the saved room refuses this trust code (join-room answers 403): the chat must not open the room then. Any other
 /// failure (offline, no keys yet) is not a refusal: the chat starts as before and shows it.
+/// The trust check gives up after this long and does not refuse (the chat then starts as before).
+const ROOM_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 pub fn room_refuses(state: &Path) -> bool {
     let settings = relay_settings::effective(state);
     if settings.mode != Mode::Supabase || settings.room_code.is_empty() {
@@ -201,7 +204,7 @@ pub fn room_refuses(state: &Path) -> bool {
     let Ok(Some(config)) = relay_rest::config(Some(&settings.url), Some(&settings.key)) else { return false };
     let Ok(seed) = relay_key::load_or_create(state) else { return false };
     let Ok(request) = relay_rest::join_room_request(&config, &seed, &settings.room_code, &settings.name, &settings.trust) else { return false };
-    let Ok((status, body)) = relay_rest::http_post(&request) else { return false };
+    let Ok((status, body)) = relay_rest::http_post_within(&request, ROOM_CHECK_TIMEOUT) else { return false };
     matches!(relay_rest::read_join_room_response(status, &body), Err(error) if error == crate::i18n::t("room.trust_wrong", &[]))
 }
 
@@ -227,6 +230,25 @@ mod room_refuses_tests {
             setup_code: String::new(),
         })
         .unwrap();
+    }
+
+    #[test]
+    fn a_slow_trust_check_gives_up_after_three_seconds_and_does_not_refuse() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        // The server takes the connection and never answers.
+        std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(8));
+        });
+        let dir = std::env::temp_dir().join("herdr-talk-room-refuses-slow");
+        let _ = std::fs::remove_dir_all(&dir);
+        saved_room(&dir, &url);
+        let started = std::time::Instant::now();
+        assert!(!room_refuses(&dir), "no answer in time is not a refusal");
+        let took = started.elapsed();
+        assert!(took >= std::time::Duration::from_secs(2) && took < std::time::Duration::from_secs(7), "{took:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

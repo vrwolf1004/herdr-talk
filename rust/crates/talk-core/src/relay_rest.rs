@@ -390,9 +390,14 @@ pub fn put_peer(config: &Config, seed: &[u8; 32], noise_pk: &str, short_id: &str
 
 /// Execute an HTTP POST request and return (status, body).
 pub fn http_post(request: &Request) -> Result<(u16, String), String> {
+    http_post_within(request, TIMEOUT)
+}
+
+/// POST with its own time limit (the trust check uses a shorter one).
+pub fn http_post_within(request: &Request, timeout: Duration) -> Result<(u16, String), String> {
     // Create a dummy config for the agent (we only need a timeout, URL will be from request)
     let dummy_config = Config { url: "http://127.0.0.1".to_string(), key: String::new() };
-    let mut builder = agent_within(&dummy_config, TIMEOUT).post(&request.url);
+    let mut builder = agent_within(&dummy_config, timeout).post(&request.url);
     for (key, value) in &request.headers {
         builder = builder.header(key.as_str(), value.as_str());
     }
