@@ -39,7 +39,7 @@ class SendParallelTest(CollectSayTest):
         def slow_send(peer, me, text):
             time.sleep(self.DELAY)
 
-        with mock.patch.object(talk, "send_to", side_effect=slow_send):
+        with mock.patch("core.chat.send_to", side_effect=slow_send):
             started = time.monotonic()
             chat.handle("hello")
             elapsed = time.monotonic() - started
@@ -56,7 +56,7 @@ class SendParallelTest(CollectSayTest):
             with lock:
                 delivered.append(peer["name"])
 
-        with mock.patch.object(talk, "send_to", side_effect=send):
+        with mock.patch("core.chat.send_to", side_effect=send):
             chat.handle("hello")
         self.assertEqual(sorted(delivered), ["a", "c"])
         self.assertEqual(self.lines.count(talk.t("peer.unreachable", name="b")), 1, self.lines)
@@ -68,7 +68,7 @@ class SendParallelTest(CollectSayTest):
             if peer["name"] in ("a", "c"):
                 raise OSError("unreachable")
 
-        with mock.patch.object(talk, "send_to", side_effect=send):
+        with mock.patch("core.chat.send_to", side_effect=send):
             chat.handle("hello")
         self.assertIn("a", self.lines[0])
         self.assertIn("c", self.lines[1])
@@ -88,14 +88,14 @@ class SendParallelTest(CollectSayTest):
             with lock:
                 active[0] -= 1
 
-        with mock.patch.object(talk, "send_to", side_effect=send):
+        with mock.patch("core.chat.send_to", side_effect=send):
             chat.handle("hello")
         self.assertLessEqual(most[0], talk.SEND_WORKERS)
         self.assertGreater(most[0], 1)
 
     def test_no_peers_sends_nothing(self):
         chat = self.make_chat([])
-        with mock.patch.object(talk, "send_to") as send:
+        with mock.patch("core.chat.send_to") as send:
             chat.handle("hello")
         send.assert_not_called()
         self.assertTrue(any("hint" in line.lower() or "peer" in line.lower() for line in self.lines), self.lines)

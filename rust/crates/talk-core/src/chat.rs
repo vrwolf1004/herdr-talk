@@ -18,7 +18,9 @@ pub const PEER_TIMEOUT: Duration = Duration::from_secs(10);
 /// A LAN peer must be joined (/join) within this time of its first announce, or it is kicked for this chat.
 pub const JOIN_LIMIT: Duration = Duration::from_secs(20);
 pub const MAX_TEXT_CHARS: usize = 2000;
-/// Peers in one room (LAN or relay), this PC included: a new peer is ignored when MAX_PEERS - 1 others are here.
+/// Every peer in the list (verified or not, this PC not counted): a new one is ignored at this count. Change it here.
+pub const MAX_TOTAL_PEERS: usize = 10;
+/// Verified peers in one room (LAN or relay), this PC included: a new verified peer is ignored when MAX_PEERS - 1 are here.
 pub const MAX_PEERS: usize = 10;
 pub const SEND_WORKERS: usize = 8; // upper limit of peers sent to at the same time
 pub const MAX_LINES: usize = 2000;

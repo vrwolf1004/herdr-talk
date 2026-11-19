@@ -15,12 +15,13 @@ import unicodedata
 from core import relay_key
 from core import relay_rest
 import relay_settings
-from i18n import t
+from i18n import cycle_language, t
 
 TIMEOUT_SECONDS = 30
-FIELD_LABELS = ("Setup code", "Trust code (8 digits)", "Display name", "Room id (8 characters)")  # English; row 0 is t()
+FIELD_COUNT = 4
 CODE_FIELD = 0
 KEY_F2 = "\x00<"  # F2 on Windows: a 0 code, then <. Saves the setup code (middle save) on the setup-code row.
+KEY_F3 = "\x00="  # F3 on Windows: a 0 code, then =. Cycles the interface language (saved to config.json).
 KEY_F9 = "\x00C"  # F9 on Windows: a 0 code, then C. Hidden: opens the operator passphrase prompt (issue a setup code).
 TRUST_FIELD = 1
 NAME_FIELD = 2
@@ -28,7 +29,7 @@ ROOM_FIELD = 3
 
 
 def _labels():
-    return (t("settings.setup_code"),) + FIELD_LABELS[1:]
+    return (t("settings.setup_code"), t("form.label_trust"), t("form.label_name"), t("form.label_room"))
 
 
 # The classic terminal palette of docs/ui-style.md section 3, as 24-bit colours (the same values as the Rust edition).
@@ -122,6 +123,9 @@ class FirstRun:
         """None while choosing; "local", "supabase" or "quit" when the choice is made."""
         if not ch:
             return None
+        if ch == KEY_F3:  # the language changes at once; the countdown keeps running (a language is not a choice)
+            cycle_language()
+            return None
         self._deadline = None
         if ch == "1":
             return "local"
@@ -141,15 +145,17 @@ class FirstRun:
             (divider(cols), BORDER),
             (t("mode.first_run_title"), ACCENT + BOLD),
             ("", ""),
-            *_menu_item(self.selected == 0, "01. BASE STATION", t("mode.hint_local")),
+            *_menu_item(self.selected == 0, f"01. {t('mode.local')}", t("mode.hint_local")),
             ("", ""),
-            *_menu_item(self.selected == 1, "02. CLOUD SERVICE", t("mode.hint_supabase")),
+            *_menu_item(self.selected == 1, f"02. {t('mode.supabase')}", t("mode.hint_supabase")),
             ("", ""),
         ]
         left = self.remaining()
         if left is not None:
             lines.append((t("mode.timeout_hint", n=left), MUTED))
-        lines += [(divider(cols), BORDER), ("1 / 2, or Tab then Enter · Esc: quit", MUTED)]
+        # The divider and the key guide sit on the two rows above the status row, as on the settings screen.
+        lines += [("", "")] * max(0, rows - 3 - len(lines))
+        lines += [(divider(cols), BORDER), (t("first.hint"), MUTED)]
         return _frame(lines, cols, rows)
 
 
@@ -164,11 +170,11 @@ def _menu_item(selected, title, hint):
 def publish_failure(status):
     """Why the row write did not go through (the create is not sent), or None when it did."""
     if status is None:
-        return "this PC's row could not be published (network or server error)"
+        return t("form.publish_network")
     if status == 409:
-        return "this PC's short id is already used by another key (409). Try again"
+        return t("form.publish_taken")
     if not relay_rest.put_succeeded(status):
-        return f"this PC's row could not be published (status {status})"
+        return t("form.publish_status", status=status)
     return None
 
 
@@ -184,6 +190,7 @@ class SettingsForm:
         self.mode = saved["mode"]
         self.url = saved["url"]  # saved values; a setup code replaces them on redeem
         self.key = saved["key"]
+        self.setup_code = saved["setup_code"]
         self.fields = ["", saved["trust"], saved["name"], saved["room_code"]]
         self.from_env = relay_settings.from_environment()
         self.focus = 0  # index into fields
@@ -246,7 +253,7 @@ class SettingsForm:
                   "room_code": new_room, "trust": self.fields[TRUST_FIELD].strip()}
         reason = relay_settings.save(self.state, values)
         if reason:
-            self.message = f"not saved: {reason}"
+            self.message = t("form.not_saved", reason=reason)
             return False
         self.fields[CODE_FIELD] = ""
         self.message = t("settings.save_ok_supabase" if values["mode"] == relay_settings.SUPABASE else "settings.save_ok_local")
@@ -270,22 +277,24 @@ class SettingsForm:
             return None
         if ch == KEY_F9:
             self._operator = ""
-            self.message = "operator passphrase: Enter issues a setup code, Esc cancels"
+            self.message = t("form.operator_hint")
             return None
         if ch == "\x1b":
             return "cancel"
         if ch == "\t":
-            self.focus = (self.focus + 1) % len(FIELD_LABELS)
+            self.focus = (self.focus + 1) % FIELD_COUNT
         elif ch == KEY_F2:  # F2: the middle save, only on the setup-code row
             if self.focus == CODE_FIELD:
                 self._begin_redeem()
             else:
                 self.message = t("settings.ctrl_s_only_code")
         elif ch in ("\r", "\n"):
-            if self.focus < len(FIELD_LABELS) - 1:
+            if self.focus < FIELD_COUNT - 1:
                 self.focus += 1
             elif self.save():
                 return "saved"
+        elif ch == KEY_F3:
+            cycle_language()
         elif ch == "\x0e":
             self.create_room()
         elif ch in ("\x08", "\x7f"):
@@ -316,7 +325,7 @@ class SettingsForm:
                 result.put(("error", str(error)))
 
         self._issue_result = result
-        self.message = "issuing a setup code..."
+        self.message = t("form.issuing")
         threading.Thread(target=work, daemon=True).start()
 
     def _redeem(self, code):
@@ -340,10 +349,10 @@ class SettingsForm:
         if self._room_result is not None:
             return
         if self.mode != relay_settings.SUPABASE:
-            self.message = "create room: switch to Supabase mode first"
+            self.message = t("form.room_need_supabase")
             return
         if self.mine is None:
-            self.message = "create room: this PC has no keys yet (start a chat first)"
+            self.message = t("form.room_no_keys")
             return
         saved_room = relay_settings.load_saved(self.state)["room_code"]
         if saved_room and not self.left:
@@ -352,11 +361,11 @@ class SettingsForm:
         saved = relay_settings.effective(self.state)  # the URL and key the relay uses, environment included
         name = self.fields[NAME_FIELD].strip()
         if not (saved["url"] and saved["key"] and name):
-            self.message = "create room: save the setup code and the display name first"
+            self.message = t("form.room_need_save")
             return
         trust = self.fields[TRUST_FIELD].strip()
         if not relay_rest.valid_trust(trust):
-            self.message = "create room: the trust code must be 8 digits"
+            self.message = t("form.room_trust")
             return
         try:
             config = relay_rest.config(saved["url"], saved["key"])
@@ -364,7 +373,7 @@ class SettingsForm:
             noise_pk = relay_key.noise_public_hex(self.state)
             short_id = relay_key.load_or_create_short_id(self.state)
         except (ValueError, relay_key.SigningKeyError, OSError) as error:
-            self.message = f"create room failed: {error}"
+            self.message = t("form.room_failed", error=error)
             return
         result = queue.Queue()
 
@@ -381,7 +390,7 @@ class SettingsForm:
 
         self._room_result = result
         threading.Thread(target=work, daemon=True).start()
-        self.message = "create room: working..."
+        self.message = t("form.room_working")
 
     def poll(self):
         """Apply the redeem and create-room answers when they have come back. True when the screen must be drawn again."""
@@ -394,9 +403,9 @@ class SettingsForm:
                 self._redeem_result = None
                 if kind == "ok":
                     self.url, self.key = value
-                    self.redeemed_code = self._redeem_code
+                    self.redeemed_code = self.setup_code = self._redeem_code
                     reason = relay_settings.save_connection(self.state, self.url, self.key, self._redeem_code)
-                    self.message = t("settings.code_ok") if reason is None else f"not saved: {reason}"
+                    self.message = t("settings.code_ok") if reason is None else t("form.not_saved", reason=reason)
                 else:
                     self.message = t("settings.code_failed", error=value)
                 return True
@@ -407,8 +416,7 @@ class SettingsForm:
                 pass
             else:
                 self._issue_result = None
-                self.message = (f"new setup code: {value} (20 uses, 7 days; write it down now)" if kind == "ok"
-                                else f"issue failed: {value}")
+                self.message = (t("form.issued", value=value) if kind == "ok" else t("form.issue_failed", value=value))
                 return True
         if self._room_result is None:
             return False
@@ -419,9 +427,9 @@ class SettingsForm:
         self._room_result = None
         if kind == "ok":
             self.fields[ROOM_FIELD] = value
-            self.message = f"room created: {value} (save with Enter to apply)"
+            self.message = t("form.room_created", value=value)
         else:
-            self.message = f"create room failed: {value}"
+            self.message = t("form.room_failed", error=value)
         return True
 
     def _shown(self, index):
@@ -429,7 +437,9 @@ class SettingsForm:
             if self.fields[CODE_FIELD]:
                 return self.fields[CODE_FIELD]
             if self.from_env[0] or self.from_env[1]:
-                return "(environment)"
+                return t("settings.code_environment")
+            if self.setup_code:
+                return self.setup_code
             return t("settings.code_saved", n=len(self.key)) if self.key else "-"
         return self.fields[index]
 
@@ -438,29 +448,33 @@ class SettingsForm:
         lines = [
             (header(cols, "SYS.VER 1.0"), ACCENT),
             (divider(cols), BORDER),
-            ("SUPABASE SETTINGS", ACCENT + BOLD),
+            (t("form.title"), ACCENT + BOLD),
             ("", ""),
         ]
-        for index, label in enumerate(_labels()):
+        labels = _labels()
+        width = max(22, *(char_width(label) for label in labels))  # the ' : [' column: the widest label
+        for index, label in enumerate(labels):
             value = self._shown(index)
             fill = "_" * max(0, FIELD_WIDTH - char_width(value))  # the blank input, as an underscore line
             selected = self.focus == index
-            lines.append((f"{'▶ ' if selected else '  '}{label:<22} : [{value}{fill}]", ACCENT if selected else (MUTED if local else "")))
+            lines.append((f"{'▶ ' if selected else '  '}{label}{" " * (width - char_width(label))} : [{value}{fill}]", ACCENT if selected else (MUTED if local else "")))
             if index == CODE_FIELD:
-                lines.append(("     Type the setup code, then F2: the URL and key are saved (not shown)", MUTED))
+                lines.append((t("form.hint_code"), MUTED))
             if index == ROOM_FIELD:
-                lines.append(("     Join: type a room ID here, then Enter  ·  New room: press Ctrl+N", MUTED))
+                lines.append((t("form.hint_room"), MUTED))
         if self._operator is not None:
-            lines.append((f"operator passphrase: [{'*' * len(self._operator)}]", ACCENT))
+            lines.append((t("form.operator_line", stars="*" * len(self._operator)), ACCENT))
         lines.append(("", ""))
-        lines.append(("DEVICE IDENTITY", ACCENT))
+        lines.append((t("form.identity"), ACCENT))
         if self.mine:
-            lines.append((f"  Ed25519 public key: {self.mine[0]}", MUTED))
-            lines.append((f"  Noise public key:   {self.mine[1]}", MUTED))
+            lines.append((t("form.ed25519", pk=self.mine[0]), MUTED))
+            lines.append((t("form.noise", pk=self.mine[1]), MUTED))
         else:
-            lines.append(("  (no keys yet)", MUTED))
+            lines.append((t("form.no_keys"), MUTED))
         lines.append(("", ""))
         lines.append((self.message, WARN))
+        # The divider and the key guide sit on the two rows above the status row, as in the Rust edition.
+        lines += [("", "")] * max(0, rows - 3 - len(lines))
         lines.append((divider(cols), BORDER))
-        lines.append(("Tab: next · Enter: next / save · Ctrl+N: create room · Esc: CANCEL", MUTED))
+        lines.append((t("form.footer"), MUTED))
         return _frame(lines, cols, rows)

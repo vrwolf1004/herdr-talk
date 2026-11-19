@@ -439,12 +439,20 @@ class PeerCapTests(unittest.TestCase):
         self.assertIsNone(self._announce(chat, keys[talk.MAX_PEERS - 1], talk.MAX_PEERS - 1), "the tenth other is ignored")
         self.assertIsNotNone(self._announce(chat, keys[0], 0), "a known peer still passes")
 
+    def test_ten_others_in_all_then_the_eleventh_is_ignored_even_unverified(self):
+        chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        keys = [bytes([100 + index]) * 32 for index in range(talk.MAX_TOTAL_PEERS + 1)]
+        for index in range(talk.MAX_TOTAL_PEERS):
+            self.assertIsNotNone(self._announce(chat, keys[index], index), "the first ten are accepted")
+        self.assertIsNone(self._announce(chat, keys[talk.MAX_TOTAL_PEERS], talk.MAX_TOTAL_PEERS), "the eleventh is ignored")
+        self.assertIsNotNone(self._announce(chat, keys[0], 0), "a known peer still passes")
+
     def test_unverified_peers_do_not_take_a_place(self):
         chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
         keys = [self._verified(chat, index) for index in range(talk.MAX_PEERS - 2)]
         for index in range(talk.MAX_PEERS - 2):
             self.assertIsNotNone(self._announce(chat, keys[index], index))
-        for index in range(5):  # unverified: not in the trust list
+        for index in range(1):  # unverified: not in the trust list (more would hit the all-peers cap)
             self.assertIsNotNone(self._announce(chat, bytes([100 + index]) * 32, 50 + index), "unverified peers are not counted")
         last = self._verified(chat, talk.MAX_PEERS - 2)
         self.assertIsNotNone(self._announce(chat, last, talk.MAX_PEERS - 2), "the ninth verified other still fits")

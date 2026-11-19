@@ -143,7 +143,7 @@ pub(crate) fn status_info(badge: &str, peers: &str, mode: &str, room: Option<Str
     if let Some(room) = room {
         info.push_str(&format!(" · {room}"));
     }
-    if status_tag(relay).0 == "[ERROR]" {
+    if status_tag(relay).1 == Tone::Alert {
         info.push_str(&format!(" · {relay}"));
     }
     info
@@ -151,15 +151,15 @@ pub(crate) fn status_info(badge: &str, peers: &str, mode: &str, room: Option<Str
 
 /// The status tag for the relay state: [SYSTEM READY] without a relay, otherwise the state the relay text names.
 // shortcut: the state is read from the relay's status text; a clear state value from talk-core would replace this guess.
-pub(crate) fn status_tag(relay: &str) -> (&'static str, Tone) {
+pub(crate) fn status_tag(relay: &str) -> (String, Tone) {
     if relay.is_empty() {
-        ("[SYSTEM READY]", Tone::Title)
+        (t("tui.tag.ready", &[]), Tone::Title)
     } else if ["failed", "could not", "no identity", "incomplete", "invalid"].iter().any(|word| relay.contains(word)) {
-        ("[ERROR]", Tone::Alert)
+        (t("tui.tag.error", &[]), Tone::Alert)
     } else if relay.contains("room joined") {
-        ("[CONNECTED]", Tone::Title)
+        (t("tui.tag.connected", &[]), Tone::Title)
     } else {
-        ("[CONNECTING...]", Tone::Warn)
+        (t("tui.tag.connecting", &[]), Tone::Warn)
     }
 }
 
@@ -168,7 +168,7 @@ const APP_NAME: &str = "▣ HERDR-TALK";
 
 /// The maker line: alone on the bottom row, at the right end.
 fn footer(width: usize) -> Row {
-    split("", Tone::Dim, "made by Rust", Tone::Dim, width)
+    split("", Tone::Dim, &t("tui.footer.made", &[]), Tone::Dim, width)
 }
 
 /// A classic screen: header, divider, the body (its first row is the title), divider, keyboard guide, the status line and
@@ -181,7 +181,7 @@ pub(crate) fn classic(body: Vec<Row>, guide: &str, relay: &str, width: usize, ro
     frame.resize_with(rows.saturating_sub(4), Vec::new);
     frame.push(dash(width));
     frame.push(vec![(guide.to_string(), Tone::Dim)]);
-    frame.push(vec![(tag.to_string(), tone)]);
+    frame.push(vec![(tag, tone)]);
     frame.push(footer(width));
     frame
 }
@@ -369,8 +369,8 @@ fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows:
     // hint at the end. The left part is cut when the row is too narrow, so the hint stays visible.
     let (tag, tone) = status_tag(&relay);
     let hint = t("chat.help_hint", &[]);
-    let left = fit(&info, width.saturating_sub(char_width(tag) + char_width(&hint) + 4));
-    frame.push(vec![(format!("{left}  "), Tone::Dim), (tag.to_string(), tone), (format!("  {hint}"), Tone::Dim)]);
+    let left = fit(&info, width.saturating_sub(char_width(&tag) + char_width(&hint) + 4));
+    frame.push(vec![(format!("{left}  "), Tone::Dim), (tag, tone), (format!("  {hint}"), Tone::Dim)]);
     frame.push(footer(width));
     (frame, cursor)
 }
@@ -398,6 +398,13 @@ fn on_key(key: KeyEvent, chat: &Chat, input: &mut String) -> bool {
         KeyCode::Char('p') if ctrl => chat.toggle_phone(),
         // Ctrl+H: on Windows it arrives as Backspace with the Control modifier, so both codes are checked.
         KeyCode::F(1) => HELP_OPEN.with(|open| open.set(true)),
+        // F3 switches the language; a save failure is said in the chat (the switch still happens).
+        KeyCode::F(3) => {
+            let notice = talk_core::i18n::switch_language_notice();
+            if !notice.is_empty() {
+                chat.say(notice);
+            }
+        }
         KeyCode::Char('h') | KeyCode::Backspace if ctrl => HELP_OPEN.with(|open| open.set(true)),
         KeyCode::Char(ch) if !ctrl => input.push(ch),
         KeyCode::Backspace => {
@@ -447,6 +454,13 @@ pub fn choose_mode(chat: &Arc<Chat>) -> io::Result<Choice> {
         shown = None;
         match first_run::on_key(&mut chooser, key) {
             Step::Stay => {}
+            Step::Language => {
+                // Same as the chat's F3: a save failure is said in the chat (the switch still happens).
+                let notice = talk_core::i18n::switch_language_notice();
+                if !notice.is_empty() {
+                    chat.say(notice);
+                }
+            }
             Step::Quit => return Ok(Choice::Quit),
             Step::Pick(Mode::Local) => {
                 first_run::save_local(&state).map_err(io::Error::other)?;
@@ -628,12 +642,12 @@ mod tests {
 
     #[test]
     fn the_status_tag_follows_the_relay_text() {
-        assert_eq!(status_tag("").0, "[SYSTEM READY]");
-        assert_eq!(status_tag("relay: room joined (2 members)").0, "[CONNECTED]");
-        assert_eq!(status_tag("relay: room join failed: offline").0, "[ERROR]");
-        assert_eq!(status_tag("relay: settings incomplete").0, "[ERROR]");
-        assert_eq!(status_tag("relay: room code missing or invalid (8 uppercase letters or digits)").0, "[ERROR]");
-        assert_eq!(status_tag("relay: not joined yet").0, "[CONNECTING...]");
+        assert_eq!(status_tag("").0, t("tui.tag.ready", &[]));
+        assert_eq!(status_tag("relay: room joined (2 members)").0, t("tui.tag.connected", &[]));
+        assert_eq!(status_tag("relay: room join failed: offline").0, t("tui.tag.error", &[]));
+        assert_eq!(status_tag("relay: settings incomplete").0, t("tui.tag.error", &[]));
+        assert_eq!(status_tag("relay: room code missing or invalid (8 uppercase letters or digits)").0, t("tui.tag.error", &[]));
+        assert_eq!(status_tag("relay: not joined yet").0, t("tui.tag.connecting", &[]));
     }
 
     #[test]
@@ -709,10 +723,10 @@ mod tests {
         assert!(texts[2].starts_with("COMMUNICATION LOG"), "{}", texts[2]);
         assert!(texts[17].starts_with("MESSAGE > "), "the input: {}", texts[17]);
         assert!(texts[18].ends_with(&t("chat.help_hint", &[])), "the help hint closes the status line: {}", texts[18]);
-        assert!(texts[18].contains("[SYSTEM READY]"), "the connection tag is on the status line: {}", texts[18]);
+        assert!(texts[18].contains(&t("tui.tag.ready", &[])), "the connection tag is on the status line: {}", texts[18]);
         assert!(texts[18].contains(&t("mode.local", &[])), "the mode is on the status line: {}", texts[18]);
         assert!(!texts[18].contains("herdr-talk"), "the status line has no app name: {}", texts[18]);
-        assert_eq!(texts[19].trim(), "made by Rust", "the bottom row holds only the maker");
+        assert_eq!(texts[19].trim(), t("tui.footer.made", &[]), "the bottom row holds only the maker");
         assert!(texts[19].starts_with(' '), "the maker is at the right end");
     }
 

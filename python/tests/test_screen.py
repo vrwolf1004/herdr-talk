@@ -8,6 +8,7 @@ import unittest.mock
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import talk  # noqa: E402
+from core import chat as core_chat  # noqa: E402
 from extend.settings_form import ACCENT, BACKGROUND, BOLD, BORDER, MUTED, RESET, TEXT, place_row as place  # noqa: E402
 
 
@@ -54,7 +55,7 @@ class FrameTest(unittest.TestCase):
         self.assertIn(place(12, " " * 15 + MUTED + "made by Python"), frame)
 
     def test_the_status_tag_is_at_the_right_end_of_the_status_row(self):
-        frame = talk.screen_frame([], "herdr-talk | py-test", "", 60, 12)
+        frame = talk.screen_frame([], "herdr-talk | py-test", "", 80, 12)  # 80 columns: the hint "F1 help · F3: language" fits beside the status
         self.assertIn("[11;1H", frame)
         row = frame.split("[11;1H", 1)[1].split("[12;1H", 1)[0]
         self.assertIn("herdr-talk | py-test", row)
@@ -109,7 +110,7 @@ class KeyTest(unittest.TestCase):
         self.chat.on_event = self.chat.add_event
         self.saved_send = talk.send_to
         self.sent = []
-        talk.send_to = lambda peer, me, text: self.sent.append(text)
+        core_chat.send_to = lambda peer, me, text: self.sent.append(text)  # Chat sends through core/chat.py
 
     def tearDown(self):
         talk.send_to = self.saved_send

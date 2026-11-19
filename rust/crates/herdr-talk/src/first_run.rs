@@ -40,6 +40,8 @@ pub fn remaining(chooser: &Chooser, now: Instant) -> Option<u64> {
 pub enum Step {
     Stay,
     Pick(Mode),
+    /// F3: switch the language (the caller saves it and redraws).
+    Language,
     Quit,
 }
 
@@ -59,6 +61,7 @@ pub fn on_key(chooser: &mut Chooser, key: KeyEvent) -> Step {
             Step::Stay
         }
         KeyCode::Enter => Step::Pick(chooser.selected),
+        KeyCode::F(3) => Step::Language,
         _ => Step::Stay,
     }
 }
@@ -78,16 +81,15 @@ pub fn render(out: &mut Stdout, chooser: &mut Chooser, remaining: Option<u64>, w
         let tone = if selected { Tone::Title } else { Tone::Text };
         vec![vec![(format!("{marker}{number:02}. {name}"), tone)], vec![(format!("     {hint}"), Tone::Dim)]]
     };
-    // shortcut: the menu names and hints are English-only like the classic screen texts; move them to the locales with the room label.
     let mut body: Vec<Row> = vec![vec![(t("mode.first_run_title", &[]), Tone::Title)], vec![]];
-    body.extend(item(Mode::Local, 1, "BASE STATION", &t("mode.hint_local", &[])));
+    body.extend(item(Mode::Local, 1, &t("mode.local", &[]), &t("mode.hint_local", &[])));
     body.push(vec![]);
-    body.extend(item(Mode::Supabase, 2, "CLOUD SERVICE", &t("mode.hint_supabase", &[])));
+    body.extend(item(Mode::Supabase, 2, &t("mode.supabase", &[]), &t("mode.hint_supabase", &[])));
     body.push(vec![]);
     if let Some(seconds) = remaining {
         body.push(vec![(t("mode.timeout_hint", &[("n", &seconds.to_string())]), Tone::Dim)]);
     }
-    let frame = classic(body, "1 / 2, or Tab then Enter · Esc: quit", "", width, rows);
+    let frame = classic(body, &t("tui.first_run.keys", &[]), "", width, rows);
     paint(out, width, rows, frame, &mut chooser.drawn)
 }
 
@@ -115,6 +117,13 @@ mod tests {
         let mut chooser = Chooser::new(Instant::now());
         assert!(matches!(press(&mut chooser, KeyCode::Esc), Step::Quit));
         assert!(matches!(press(&mut chooser, KeyCode::Char('x')), Step::Stay));
+    }
+
+    #[test]
+    fn f3_asks_for_a_language_switch_and_keeps_the_choice() {
+        let mut chooser = Chooser::new(Instant::now());
+        assert!(matches!(press(&mut chooser, KeyCode::F(3)), Step::Language));
+        assert!(chooser.selected == Mode::Local, "F3 does not move the highlight");
     }
 
     #[test]

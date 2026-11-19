@@ -37,7 +37,7 @@ export function sameText(a: string, b: string): boolean {
 
 // The failure limit (the same numbers as redeem-setup-code/checks.ts; kept here so this function deploys alone).
 export const FAILURE_WINDOW_SECONDS = 600;
-export const FAILURE_LIMIT = 10;
+export const FAILURE_LIMIT = 5; // wrong codes in the window before every redeem is refused for a while
 
 // True while the failures in the window are at or above the limit.
 export function tooManyFailures(recentFailures: number): boolean {

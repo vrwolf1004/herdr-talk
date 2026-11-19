@@ -64,7 +64,7 @@ class ModeTest(unittest.TestCase):
         self._peer()
         self.chat.peers["p"]["key"] = None
         self.chat.plaintext = True
-        with self._env(), mock.patch.object(talk, "send_to") as send_to:
+        with self._env(), mock.patch("core.chat.send_to") as send_to:
             self.assertEqual(self.chat.start_relay(), "")
             self.chat.handle("hello")
         self.assertFalse(self.chat.supabase)
@@ -75,7 +75,7 @@ class ModeTest(unittest.TestCase):
         self._peer()
         self.chat.supabase = True
         self.chat.relay = FakeRelay()
-        with mock.patch.object(talk, "send_to") as send_to:
+        with mock.patch("core.chat.send_to") as send_to:
             self.assertTrue(self.chat.handle("hello"))
         send_to.assert_not_called()
         self.assertEqual(self.chat.relay.sent, ["hello"])

@@ -415,7 +415,7 @@ class SettingsFormTests(unittest.TestCase):
         frame = self._form().render(100, 30)
         self.assertNotIn("\x1b[2J", frame)
         self.assertIn(relay_form.place_row(3, "SUPABASE SETTINGS", relay_form.ACCENT + relay_form.BOLD), frame)
-        self.assertIn(relay_form.place_row(29, ""), frame)   # an unused row is blanked, so nothing from an older frame stays
+        self.assertIn("Tab: next", frame)  # the key guide sits on the row above the status row (row 29 of 30)
         self.assertIn("\x1b[30;1H", frame)   # the status line is the bottom row
         self.assertIn("[SYSTEM READY]", frame)
         self.assertIn("made by Python" + relay_form.RESET + relay_form.BACKGROUND + "\x1b[K", frame)

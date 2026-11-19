@@ -12,10 +12,14 @@ use talk_core::t;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Instant;
 
-/// The four field labels in field order, as Python shows them: setup code, trust code, display name, room ID.
-/// shortcut: the labels are written here in English like Python's, not in talk-core/locales; move them there when those are allowed to change.
+/// The four field labels in field order: setup code, trust code, display name, room ID.
 fn labels() -> [String; 4] {
-    ["Setup code", "Trust code (8 digits)", "Display name", "Room ID (8 characters)"].map(str::to_string)
+    [
+        t("gui.relay.label.code", &[]),
+        t("gui.relay.label.trust", &[]),
+        t("gui.relay.label.name", &[]),
+        t("gui.relay.label.room", &[]),
+    ]
 }
 /// The trust check's answer: the refusal shows only while the message is still the one from opening the window,
 /// so a late answer never replaces a newer message.
@@ -28,8 +32,8 @@ fn apply_trust(message: &mut String, opened: &str, refused: bool) {
 /// The bar's text for an issue answer: the new code (shown once, never stored), or the reason it failed.
 fn issue_message(answer: Result<String, String>) -> String {
     match answer {
-        Ok(code) => format!("new setup code: {code} (20 uses, 7 days; write it down now)"),
-        Err(error) => format!("issue failed: {error}"),
+        Ok(code) => t("gui.relay.issued", &[("code", &code)]),
+        Err(error) => t("gui.relay.issue_failed", &[("error", &error)]),
     }
 }
 
@@ -109,17 +113,17 @@ enum Step {
 /// The answer of create-room: the room code on 200, otherwise the status and body.
 fn read_room_code(status: u16, text: &str) -> Result<String, String> {
     if status != 200 {
-        return Err(format!("status {status}: {text}"));
+        return Err(t("gui.relay.answer_status", &[("status", &status.to_string()), ("text", text)]));
     }
-    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| "answer is not JSON".to_string())?;
-    value["room_code"].as_str().map(str::to_string).ok_or_else(|| "answer has no room_code".to_string())
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| t("gui.relay.answer_not_json", &[]))?;
+    value["room_code"].as_str().map(str::to_string).ok_or_else(|| t("gui.relay.answer_no_room", &[]))
 }
 
 fn require_published(outcome: PutOutcome) -> Result<(), String> {
     match outcome {
         PutOutcome::Written => Ok(()),
-        PutOutcome::Taken => Err("이 PC ID가 다른 키에 사용 중입니다 (409)".to_string()),
-        PutOutcome::Failed => Err("이 PC 행을 게시하지 못했습니다".to_string()),
+        PutOutcome::Taken => Err(t("room.put_taken", &[])),
+        PutOutcome::Failed => Err(t("room.put_failed", &[])),
     }
 }
 
@@ -128,14 +132,8 @@ impl Form {
         let saved = relay_settings::load_saved(state);
         let mine = talk_core::relay_chat::my_keys(state).ok();
         let short_id = talk_core::relay_key::short_id(state).unwrap_or_default();
-        let mut fields = [String::new(), saved.trust, saved.name, saved.room_code];
-        let mut message = if mine.is_none() { t("gui.relay.no_keys", &[]) } else { String::new() };
-        if fields[NAME_FIELD].trim().is_empty() {
-            match random_nonce() {
-                Ok(nonce) => fields[NAME_FIELD] = nonce.chars().take(8).collect::<String>().to_ascii_uppercase(),
-                Err(error) => message = format!("DISPLAY ID를 만들 수 없습니다: {error}"),
-            }
-        }
+        let fields = [String::new(), saved.trust, saved.name, saved.room_code];
+        let message = if mine.is_none() { t("gui.relay.no_keys", &[]) } else { String::new() };
         // The join check makes a network call, so it runs in a thread; `show` shows the trust message when it says no.
         let opened = message.clone();
         let (sender, trust_check) = mpsc::channel();
@@ -176,56 +174,56 @@ impl Form {
         let name = self.fields[NAME_FIELD].trim().to_string();
         let trust = self.fields[TRUST_FIELD].trim().to_string();
         if !relay_rest::valid_trust(&trust) {
-            self.message = "방 만들기: trust 코드는 숫자 8자리여야 합니다".to_string();
+            self.message = t("gui.relay.create.bad_trust", &[]);
             return;
         }
         if url.is_empty() || key.is_empty() || name.is_empty() {
-            self.message = "방 만들기: 설정 코드를 먼저 입력하고 저장하세요 (표시 이름도 필요합니다)".to_string();
+            self.message = t("gui.relay.create.need_save", &[]);
             return;
         }
         let config = match relay_rest::config(Some(&url), Some(&key)) {
             Ok(Some(config)) => config,
             Ok(None) => {
-                self.message = "방 만들기: 프로젝트 URL과 키가 필요합니다".to_string();
+                self.message = t("gui.relay.create.need_url", &[]);
                 return;
             }
             Err(error) => {
-                self.message = format!("방 만들기: 릴레이 설정이 올바르지 않습니다: {error}");
+                self.message = t("gui.relay.create.bad_settings", &[("error", &error.to_string())]);
                 return;
             }
         };
         let seed = match talk_core::relay_key::load_or_create(&self.state) {
             Ok(seed) => seed,
             Err(error) => {
-                self.message = format!("방 만들기: 서명 키를 읽을 수 없습니다: {error}");
+                self.message = t("gui.relay.create.keys_unreadable", &[("error", &error.to_string())]);
                 return;
             }
         };
         let (_, noise_pk) = match talk_core::relay_chat::my_keys(&self.state) {
             Ok(keys) => keys,
             Err(error) => {
-                self.message = format!("방 만들기: Noise 키를 읽을 수 없습니다: {error}");
+                self.message = t("gui.relay.create.keys_unreadable", &[("error", &error.to_string())]);
                 return;
             }
         };
         let short_id = match talk_core::relay_key::short_id(&self.state) {
             Ok(short_id) => short_id,
             Err(error) => {
-                self.message = format!("방 만들기: 이 PC ID를 읽을 수 없습니다: {error}");
+                self.message = t("gui.relay.create.keys_unreadable", &[("error", &error.to_string())]);
                 return;
             }
         };
         let nonce = match random_nonce() {
             Ok(nonce) => nonce,
             Err(error) => {
-                self.message = format!("방 만들기: nonce를 만들 수 없습니다: {error}");
+                self.message = t("gui.relay.create.request_unbuilt", &[("error", &error.to_string())]);
                 return;
             }
         };
         let body = match signed_room_body(&seed, RoomAction::Create, "", &name, &trust, unix_now(), &nonce) {
             Ok(body) => body,
             Err(error) => {
-                self.message = format!("방 만들기: 서명 요청을 만들 수 없습니다: {error}");
+                self.message = t("gui.relay.create.request_unbuilt", &[("error", &error.to_string())]);
                 return;
             }
         };
@@ -249,7 +247,7 @@ impl Form {
             ctx.request_repaint();
         });
         self.creating = Some(receiver);
-        self.message = "방 만드는 중...".to_string();
+        self.message = t("gui.relay.creating", &[]);
     }
 
     /// Redeem the setup code in a thread so the window keeps drawing; `show` applies the answer.
@@ -262,14 +260,14 @@ impl Form {
             ctx.request_repaint();
         });
         self.redeeming = Some(receiver);
-        self.message = "설정 코드 확인 중...".to_string();
+        self.message = t("gui.relay.redeeming", &[]);
     }
 
     /// The operator button or Enter: issue a setup code in a thread. The passphrase is taken out of the form first.
     fn start_issue(&mut self, ctx: &egui::Context) {
         let passphrase = std::mem::take(&mut self.passphrase);
         if passphrase.is_empty() {
-            self.message = "운영자 암호를 입력하세요".to_string();
+            self.message = t("gui.relay.operator_empty", &[]);
             return;
         }
         let url = setup_url();
@@ -280,14 +278,14 @@ impl Form {
             ctx.request_repaint();
         });
         self.issuing = Some(receiver);
-        self.message = "설정 코드 발급 중...".to_string();
+        self.message = t("gui.relay.issuing", &[]);
     }
 
     /// The Save setup code button (Python's F2): redeem the typed code now and store its URL and key.
     fn save_setup_code(&mut self, ctx: &egui::Context) {
         match relay_rest::normalize_setup_code(self.fields[CODE_FIELD].trim()) {
             Some(code) => self.start_redeem(ctx, code),
-            None => self.message = "설정 코드는 영문과 숫자 8자리여야 합니다".to_string(),
+            None => self.message = t("setup.invalid", &[]),
         }
     }
 
@@ -318,7 +316,7 @@ impl Form {
         let labels = labels();
         match relay_settings::check_save(&self.settings(), &self.fields[CODE_FIELD]) {
             Ok(()) => Step::Write,
-            Err(SaveRefusal::UnredeemedCode) => Step::Refuse("Save setup code first: Save does not redeem a typed setup code".to_string()),
+            Err(SaveRefusal::UnredeemedCode) => Step::Refuse(t("gui.relay.save_code_first", &[])),
             Err(SaveRefusal::MissingFields(missing)) => {
                 let names: Vec<&str> = missing
                     .iter()
@@ -330,7 +328,7 @@ impl Form {
                     .collect();
                 Step::Refuse(t("settings.save_refused_missing", &[("fields", &names.join(", "))]))
             }
-            Err(SaveRefusal::NoConnection) => Step::Refuse(format!("{}: type it and press Save setup code first", labels[CODE_FIELD])),
+            Err(SaveRefusal::NoConnection) => Step::Refuse(t("gui.relay.code_needed", &[("label", &labels[CODE_FIELD])])),
         }
     }
 
@@ -435,7 +433,7 @@ pub fn choose(ctx: &egui::Context, palette: &Palette, remaining: Option<u64>) ->
             ui.horizontal(|ui| {
                 ui.colored_label(palette.accent, egui::RichText::new("▣ HERDR-TALK").monospace().strong().size(18.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.colored_label(palette.muted, egui::RichText::new("SYS.VER 1.0  ·  SYSTEM READY").monospace());
+                    ui.colored_label(palette.muted, egui::RichText::new(format!("SYS.VER 1.0  ·  {}", t("gui.first.ready", &[]))).monospace());
                 });
             });
         });
@@ -444,32 +442,35 @@ pub fn choose(ctx: &egui::Context, palette: &Palette, remaining: Option<u64>) ->
         .frame(egui::Frame::new().fill(palette.background).stroke(egui::Stroke::new(1.0_f32, palette.border)).inner_margin(egui::Margin::symmetric(18, 10)))
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.colored_label(palette.accent, egui::RichText::new("SYSTEM READY").monospace());
-                ui.colored_label(palette.muted, egui::RichText::new("·  HERDR-TALK TERMINAL  ·  WAITING FOR SELECTION").monospace());
+                ui.colored_label(palette.accent, egui::RichText::new(t("gui.first.ready", &[])).monospace());
+                ui.colored_label(palette.muted, egui::RichText::new(t("gui.first.waiting", &[])).monospace());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.colored_label(palette.muted, egui::RichText::new(t("gui.lang_hint", &[])).monospace());
+                });
             });
         });
     egui::CentralPanel::default().frame(egui::Frame::new().fill(palette.background)).show(ctx, |ui| {
         ui.vertical_centered(|ui| {
             ui.add_space((ui.available_height() * 0.12).max(16.0));
-            ui.colored_label(palette.accent, egui::RichText::new("BASE STATION").monospace().size(15.0));
+            ui.colored_label(palette.accent, egui::RichText::new(t("mode.local", &[])).monospace().size(15.0));
             ui.add_space(6.0);
-            ui.colored_label(palette.text, egui::RichText::new("YOUR PRIVATE COMMUNICATION SPACE").monospace().size(16.0));
+            ui.colored_label(palette.text, egui::RichText::new(t("gui.first.tagline", &[])).monospace().size(16.0));
             ui.add_space(26.0);
             if connection_card(
                 ui,
                 palette,
-                "PRIMARY",
-                "BASE STATION",
-                "▶ CONNECT",
-                "같은 네트워크 내에서 직접 통신합니다.",
+                &t("gui.first.primary", &[]),
+                &t("mode.local", &[]),
+                &t("gui.first.connect", &[]),
+                &t("mode.hint_local", &[]),
             )
             .clicked()
             {
                 picked = Some(Pick::Local);
             }
             ui.add_space(18.0);
-            ui.colored_label(palette.muted, egui::RichText::new("ALTERNATIVE CONNECTION").monospace().size(13.0));
-            if ui.link(egui::RichText::new("CLOUD SERVICE").monospace().size(14.0).color(palette.muted).underline()).clicked() {
+            ui.colored_label(palette.muted, egui::RichText::new(t("gui.first.alternative", &[])).monospace().size(13.0));
+            if ui.link(egui::RichText::new(t("mode.supabase", &[])).monospace().size(14.0).color(palette.muted).underline()).clicked() {
                 picked = Some(Pick::Supabase);
             }
             ui.add_space(20.0);
@@ -502,10 +503,10 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
         form.creating = None;
         match answer {
             Ok(code) => {
-                form.message = format!("방을 만들었습니다: {code} (저장을 눌러야 적용됩니다)");
+                form.message = t("gui.relay.created", &[("code", &code)]);
                 form.fields[ROOM_FIELD] = code;
             }
-            Err(error) => form.message = format!("방 만들기 실패: {error}"),
+            Err(error) => form.message = t("gui.relay.create_failed", &[("error", &error)]),
         }
     }
     // The trust check from `open`: show the refusal in the message line; keep polling until it answers.
@@ -537,11 +538,11 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                 form.key = key;
                 form.setup_code = code;
                 form.message = match relay_settings::save_connection(&form.state, &form.url, &form.key, &form.setup_code) {
-                    Ok(()) => "Setup code saved: the URL and key are stored (not shown).".to_string(),
+                    Ok(()) => t("gui.relay.setup_saved", &[]),
                     Err(error) => t("gui.relay.not_saved", &[("error", &error)]),
                 };
             }
-            Err(error) => form.message = format!("설정 코드 실패: {error}"),
+            Err(error) => form.message = t("gui.relay.redeem_failed", &[("error", &error)]),
         }
     }
     egui::TopBottomPanel::bottom("relay_settings_actions")
@@ -553,13 +554,14 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                     ui.colored_label(palette.muted, egui::RichText::new(form.message.as_str()).monospace());
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let save = egui::Button::new(egui::RichText::new("SAVE SETTINGS").monospace().color(palette.accent)).min_size(egui::vec2(150.0, 40.0));
+                    let save = egui::Button::new(egui::RichText::new(t("gui.relay.button.save", &[])).monospace().color(palette.accent)).min_size(egui::vec2(150.0, 30.0));
                     if ui.add_enabled(form.redeeming.is_none(), save).clicked() {
                         action = form.save();
                     }
-                    if ui.add_sized([90.0, 40.0], egui::Button::new(egui::RichText::new("CANCEL").monospace())).clicked() {
+                    if ui.add_sized([90.0, 30.0], egui::Button::new(egui::RichText::new(t("gui.relay.button.cancel", &[])).monospace())).clicked() {
                         action = Action::Discard;
                     }
+                    ui.colored_label(palette.muted, egui::RichText::new(t("gui.lang_hint", &[])).monospace());
                 });
             });
         });
@@ -568,7 +570,7 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
         .frame(egui::Frame::new().fill(palette.background).inner_margin(egui::Margin::symmetric(24, 24)))
         .show(ctx, |ui| {
             centered_column(ui, |ui| {
-                ui.colored_label(palette.accent, egui::RichText::new("SUPABASE SETTINGS").monospace().heading());
+                ui.colored_label(palette.accent, egui::RichText::new(t("gui.relay.title", &[])).monospace().heading());
             });
         });
     egui::CentralPanel::default().frame(egui::Frame::new().fill(palette.background)).show(ctx, |ui| {
@@ -582,31 +584,31 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                         .stroke(egui::Stroke::new(1.0_f32, palette.border))
                         .inner_margin(egui::Margin::same(20))
                         .show(ui, |ui| {
-                            ui.colored_label(palette.accent, egui::RichText::new("SECTION 01  SUPABASE CONNECTION").monospace());
+                            ui.colored_label(palette.accent, egui::RichText::new(t("gui.relay.section1", &[])).monospace());
                             ui.add_space(14.0);
                             ui.colored_label(palette.text, egui::RichText::new(labels[CODE_FIELD].as_str()).monospace());
                             let redeeming = form.redeeming.is_some();
                             let mut save_setup = false;
                             ui.add_enabled_ui(enabled, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.add_sized([(ui.available_width() - 170.0).max(120.0), 40.0], egui::TextEdit::singleline(&mut form.fields[CODE_FIELD]));
-                                    let button = egui::Button::new(egui::RichText::new("Save setup code").monospace()).min_size(egui::vec2(160.0, 40.0));
+                                    ui.add_sized([(ui.available_width() - 170.0).max(120.0), 30.0], egui::TextEdit::singleline(&mut form.fields[CODE_FIELD]));
+                                    let button = egui::Button::new(egui::RichText::new(t("gui.relay.button.save_code", &[])).monospace()).min_size(egui::vec2(160.0, 30.0));
                                     save_setup = ui.add_enabled(!redeeming, button).clicked();
                                 });
                             });
-                            ui.colored_label(palette.muted, egui::RichText::new("Type the setup code, then Save setup code: the URL and key are saved (not shown)").monospace());
+                            ui.colored_label(palette.muted, egui::RichText::new(t("gui.relay.hint.code", &[])).monospace());
                             if save_setup {
                                 form.save_setup_code(ctx);
                             }
                             if form.operator {
                                 ui.add_space(14.0);
-                                ui.colored_label(palette.text, egui::RichText::new("Operator passphrase").monospace());
+                                ui.colored_label(palette.text, egui::RichText::new(t("gui.relay.label.passphrase", &[])).monospace());
                                 let issuing = form.issuing.is_some() || form.redeeming.is_some();
                                 let mut issue = false;
                                 ui.horizontal(|ui| {
                                     let edit = egui::TextEdit::singleline(&mut form.passphrase).password(true);
-                                    let response = ui.add_sized([(ui.available_width() - 170.0).max(120.0), 40.0], edit);
-                                    let button = egui::Button::new(egui::RichText::new("Issue setup code").monospace()).min_size(egui::vec2(160.0, 40.0));
+                                    let response = ui.add_sized([(ui.available_width() - 170.0).max(120.0), 30.0], edit);
+                                    let button = egui::Button::new(egui::RichText::new(t("gui.relay.button.issue", &[])).monospace()).min_size(egui::vec2(160.0, 30.0));
                                     issue = ui.add_enabled(!issuing, button).clicked() || (response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));
                                 });
                                 if issue && !issuing {
@@ -628,21 +630,19 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                         .stroke(egui::Stroke::new(1.0_f32, palette.border))
                         .inner_margin(egui::Margin::same(20))
                         .show(ui, |ui| {
-                            ui.colored_label(palette.accent, egui::RichText::new("SECTION 02  ROOM SETTINGS").monospace());
+                            ui.colored_label(palette.accent, egui::RichText::new(t("gui.relay.section2", &[])).monospace());
                             ui.add_space(14.0);
-                            // The rows in Python's order: trust code, display name (generated, read-only), room ID.
+                            // The rows in Python's order: trust code, display name (typed by the user, starts empty), room ID.
                             for index in [TRUST_FIELD, NAME_FIELD, ROOM_FIELD] {
-                                let read_only = index == NAME_FIELD;
-                                let label_color = if read_only { palette.muted } else { palette.text };
-                                ui.colored_label(label_color, egui::RichText::new(labels[index].as_str()).monospace());
+                                ui.colored_label(palette.text, egui::RichText::new(labels[index].as_str()).monospace());
                                 let edit = egui::TextEdit::singleline(&mut form.fields[index]);
-                                ui.add_enabled_ui(enabled && !read_only, |ui| {
-                                    ui.add_sized([ui.available_width(), 40.0], edit);
+                                ui.add_enabled_ui(enabled, |ui| {
+                                    ui.add_sized([ui.available_width(), 30.0], edit);
                                 });
                                 ui.add_space(14.0);
                             }
                             let can_create = enabled && form.mine.is_some() && form.creating.is_none();
-                            if ui.add_enabled(can_create, egui::Button::new(egui::RichText::new("CREATE ROOM").monospace()).min_size(egui::vec2(160.0, 40.0))).clicked() {
+                            if ui.add_enabled(can_create, egui::Button::new(egui::RichText::new(t("gui.relay.button.create_room", &[])).monospace()).min_size(egui::vec2(160.0, 30.0))).clicked() {
                                 form.start_create_room(ctx);
                             }
                         });
@@ -653,7 +653,7 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                         .inner_margin(egui::Margin::same(20))
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
-                            ui.colored_label(palette.accent, egui::RichText::new("SECTION 03  DEVICE IDENTITY  /  READ ONLY").monospace());
+                            ui.colored_label(palette.accent, egui::RichText::new(t("gui.relay.section3", &[])).monospace());
                             ui.add_space(14.0);
                             if enabled && !form.short_id.is_empty() {
                                 ui.colored_label(palette.text, egui::RichText::new(t("gui.relay.my_id", &[])).monospace());
@@ -725,7 +725,7 @@ mod tests {
         form.url = "https://example.supabase.co".into();
         form.key = "dummy-test-key".into();
         form.fields[CODE_FIELD] = "abcd-2345".into();
-        assert!(matches!(form.next_step(), Step::Refuse(message) if message.contains("Save setup code")));
+        assert!(matches!(form.next_step(), Step::Refuse(message) if message == t("gui.relay.save_code_first", &[])));
     }
 
     #[test]
@@ -734,7 +734,7 @@ mod tests {
         form.fields[CODE_FIELD] = "ABC".into();
         form.save_setup_code(&egui::Context::default());
         assert!(form.redeeming.is_none());
-        assert!(form.message.contains("8자리"), "{}", form.message);
+        assert_eq!(form.message, t("setup.invalid", &[]));
     }
 
     #[test]
@@ -773,8 +773,8 @@ mod tests {
 
     #[test]
     fn an_issue_answer_shows_the_code_or_the_reason() {
-        assert_eq!(issue_message(Ok("ABCD2345".into())), "new setup code: ABCD2345 (20 uses, 7 days; write it down now)");
-        assert_eq!(issue_message(Err("wrong passphrase".into())), "issue failed: wrong passphrase");
+        assert_eq!(issue_message(Ok("ABCD2345".into())), t("gui.relay.issued", &[("code", "ABCD2345")]));
+        assert_eq!(issue_message(Err("wrong passphrase".into())), t("gui.relay.issue_failed", &[("error", "wrong passphrase")]));
     }
 
     #[test]
@@ -794,7 +794,7 @@ mod tests {
         let mut form = supabase_form(&folder("issue"));
         form.start_issue(&egui::Context::default());
         assert!(form.issuing.is_none());
-        assert!(form.message.contains("운영자 암호"), "{}", form.message);
+        assert_eq!(form.message, t("gui.relay.operator_empty", &[]));
     }
 
     #[test]
@@ -818,6 +818,17 @@ mod tests {
             Step::Refuse(message) => assert!(message.contains(&labels()[CODE_FIELD]), "{message}"),
             other => panic!("expected a refusal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_display_name_starts_empty_and_a_typed_name_is_kept() {
+        let dir = folder("name");
+        let form = Form::open(&dir);
+        assert!(form.fields[NAME_FIELD].is_empty(), "no generated name");
+        let mut typed = supabase_form(&dir);
+        typed.fields[NAME_FIELD] = "Bob".into();
+        assert_eq!(typed.settings().name, "Bob");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

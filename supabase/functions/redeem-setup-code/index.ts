@@ -5,7 +5,7 @@
 // Secrets: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided by Supabase. Set nothing here.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { normalizeSetupCode, tooManyFailures, FAILURE_WINDOW_SECONDS } from "./checks.ts";
+import { normalizeSetupCode, FAILURE_LIMIT, FAILURE_WINDOW_SECONDS } from "./checks.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -42,29 +42,22 @@ Deno.serve(async (req) => {
       return jsonResponse(400, { error: "invalid request" });
     }
 
-    const since = new Date(Date.now() - FAILURE_WINDOW_SECONDS * 1000).toISOString();
-    const { count, error: countError } = await supabase
-      .from("setup_code_failures")
-      .select("id", { count: "exact", head: true })
-      .gte("failed_at", since);
-    if (countError) {
-      return jsonResponse(500, { error: countError.message });
+    // The failure check, the use and the failure record happen in one database call under one lock (migration 0012),
+    // so concurrent wrong codes cannot all pass the limit together.
+    const { data, error: rpcError } = await supabase
+      .rpc("redeem_setup_code_guarded", { p_code: code, p_fail_limit: FAILURE_LIMIT, p_window_seconds: FAILURE_WINDOW_SECONDS })
+      .maybeSingle();
+    if (rpcError) {
+      return jsonResponse(500, { error: rpcError.message });
     }
-    if (tooManyFailures(count ?? 0)) {
+    if (data?.status === "locked") {
       return jsonResponse(429, { error: "잠시 후 다시 시도하세요" });
     }
-
-    // One use is taken in one step (claim_setup_code, migration 0011): only a known code that is not expired and has uses left.
-    const { data: claimed, error: claimError } = await supabase.rpc("claim_setup_code", { p_code: code }).maybeSingle();
-    if (claimError) {
-      return jsonResponse(500, { error: claimError.message });
-    }
-    if (!claimed) {
-      await supabase.from("setup_code_failures").insert({});
+    if (data?.status !== "ok") {
       return jsonResponse(404, { error: "코드가 맞지 않거나 사용 횟수가 다 찼거나 만료되었습니다" });
     }
 
-    return jsonResponse(200, { url: claimed.url, key: claimed.key });
+    return jsonResponse(200, { url: data.url, key: data.key });
   } catch (error) {
     return jsonResponse(500, { error: error.message });
   }

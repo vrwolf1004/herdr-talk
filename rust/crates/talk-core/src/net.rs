@@ -3,7 +3,7 @@
 //! - plain (only with "plaintext": true): one JSON object, as the Python 0.5.x versions sent it.
 //!   Never used for a peer that has a key.
 
-use crate::chat::{default_name, Chat, Line, Me, Peer, MAX_PEERS, MAX_TEXT_CHARS};
+use crate::chat::{default_name, Chat, Line, Me, Peer, MAX_PEERS, MAX_TEXT_CHARS, MAX_TOTAL_PEERS};
 use crate::i18n::t;
 use crate::store::{self, Identity};
 use crate::text::{clean_text, peer_name, plain_sender, sender_name, squeeze_spaces};
@@ -203,6 +203,10 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
     // A room holds MAX_PEERS with this PC. Only verified (trusted) peers count: a new peer is ignored while MAX_PEERS - 1
     // of them are here. Unverified peers do not take a place. Known peers always pass.
     let here = chat.fresh_peers();
+    // Every peer counts here, verified or not; a known peer always passes.
+    if here.len() >= MAX_TOTAL_PEERS && !here.iter().any(|known| known.id == id) {
+        return;
+    }
     let verified = here.iter().filter(|known| known.key.as_deref().is_some_and(|key| chat.trusts(key))).count();
     if verified >= MAX_PEERS - 1 && !here.iter().any(|known| known.id == id) {
         return;
@@ -834,6 +838,28 @@ mod tests {
     }
 
     #[test]
+    fn the_total_list_is_capped_at_ten_and_a_known_peer_still_passes() {
+        let chat = chat();
+        let key = |n: u8| [n; 32];
+        let packet = |n: u8| json!({"app": APP, "id": store::peer_id(&key(n)), "name": format!("P{n}"), "port": 9, "key": store::to_hex(&key(n))}).to_string();
+        // Ten unverified peers fill the list: none of them is verified, so only the total limit applies.
+        for n in 1..=MAX_TOTAL_PEERS as u8 {
+            remember_peer(&chat, packet(n).as_bytes(), format!("10.0.5.{n}"));
+        }
+        assert_eq!(chat.fresh_peers().len(), MAX_TOTAL_PEERS);
+        // The eleventh is refused, verified or not.
+        remember_peer(&chat, packet(50).as_bytes(), "10.0.5.50".into());
+        assert_eq!(chat.fresh_peers().len(), MAX_TOTAL_PEERS, "the unverified eleventh is ignored");
+        chat.trusted.lock().unwrap().push(Trusted { name: "P51".into(), key: key(51).to_vec(), ip: "10.0.5.51".into() });
+        remember_peer(&chat, packet(51).as_bytes(), "10.0.5.51".into());
+        assert_eq!(chat.fresh_peers().len(), MAX_TOTAL_PEERS, "a verified eleventh is ignored too");
+        // A peer already in the list still passes (its announce refreshes it).
+        remember_peer(&chat, packet(4).as_bytes(), "10.0.5.4".into());
+        assert_eq!(chat.fresh_peers().len(), MAX_TOTAL_PEERS, "a known peer still passes");
+        assert!(chat.fresh_peers().iter().any(|peer| peer.key.as_deref() == Some(&key(4)[..])));
+    }
+
+    #[test]
     fn unverified_peers_do_not_take_a_place_in_the_room() {
         let chat = chat();
         let key = |n: u8| [n; 32];
@@ -843,12 +869,10 @@ mod tests {
             chat.trusted.lock().unwrap().push(Trusted { name: format!("P{n}"), key: key(n).to_vec(), ip: format!("10.0.4.{n}") });
             remember_peer(&chat, packet(n).as_bytes(), format!("10.0.4.{n}"));
         }
-        // Three unverified newcomers: they do not count, so all are admitted.
-        for n in 40..43u8 {
-            remember_peer(&chat, packet(n).as_bytes(), format!("10.0.4.{n}"));
-        }
-        assert_eq!(chat.fresh_peers().len(), 11, "eight verified and three unverified");
-        // The ninth verified peer still fits.
+        // One unverified newcomer does not count toward the verified limit (it does count toward the total of ten).
+        remember_peer(&chat, packet(40).as_bytes(), "10.0.4.40".into());
+        assert_eq!(chat.fresh_peers().len(), 9, "eight verified and one unverified");
+        // The ninth verified peer still fits (total 10).
         chat.trusted.lock().unwrap().push(Trusted { name: "P9".into(), key: key(9).to_vec(), ip: "10.0.4.9".into() });
         remember_peer(&chat, packet(9).as_bytes(), "10.0.4.9".into());
         assert!(chat.fresh_peers().iter().any(|peer| peer.key.as_deref() == Some(&key(9)[..])), "the ninth verified peer is admitted");

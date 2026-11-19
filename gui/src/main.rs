@@ -396,6 +396,11 @@ enum Kind {
 }
 
 /// The bottom line as Python shows it: "[host] peers · mode · room ID · setup code", then a problem only (see `relay_problem`).
+/// F3 pressed this frame: switch the language (saved like the TUI's F3) and return the notice, if any. `None`: F3 was not pressed.
+fn language_key(ctx: &egui::Context) -> Option<String> {
+    ctx.input(|input| input.key_pressed(egui::Key::F3)).then(talk_core::i18n::switch_language_notice)
+}
+
 fn bottom_line(hosting: bool, peers: usize, supabase: bool, room: &str, relay: &str) -> String {
     let badge = if hosting { format!("{} ", talk_core::t("host.badge", &[])) } else { String::new() };
     let mode = if supabase { "CLOUD SERVICE" } else { "BASE STATION" };
@@ -559,6 +564,12 @@ impl eframe::App for App {
         ctx.request_repaint_after(POLL);
         // eframe may re-apply the OS theme's visuals, so the chosen theme's colors are set every frame.
         let palette = palette(self.theme);
+        // F3 changes the language on every screen; the texts drawn below already use it.
+        if let Some(notice) = language_key(ctx) {
+            if !notice.is_empty() {
+                self.notice = notice;
+            }
+        }
         self.show_toast(ctx, &palette);
         ctx.set_visuals(visuals(&palette, ctx.theme()));
         if self.frame_theme != Some(self.theme) {
@@ -924,6 +935,32 @@ mod tests {
         assert_eq!(relay_problem(""), None);
         assert_eq!(relay_problem("relay: room joined (2 members)"), None);
         assert_eq!(relay_problem("relay: settings incomplete"), Some("relay: settings incomplete"));
+    }
+
+    #[test]
+    fn f3_switches_the_language_only_when_it_is_pressed() {
+        // No config folder here, so the switch is for this run only and the notice says so; the language is put back at the end.
+        std::env::remove_var("HERDR_PLUGIN_CONFIG_DIR");
+        let before = talk_core::i18n::language();
+        let press = |key: egui::Key| {
+            let ctx = egui::Context::default();
+            let event = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+            ctx.begin_pass(egui::RawInput { events: vec![event], ..Default::default() });
+            let answer = language_key(&ctx);
+            let _ = ctx.end_pass();
+            answer
+        };
+        assert_eq!(press(egui::Key::F8), None);
+        assert_eq!(talk_core::i18n::language(), before);
+        assert_eq!(press(egui::Key::F3), Some(talk_core::t("tui.lang.not_saved", &[])));
+        assert_ne!(talk_core::i18n::language(), before);
+        for _ in 0..8 {
+            if talk_core::i18n::language() == before {
+                break;
+            }
+            talk_core::i18n::switch_language_notice();
+        }
+        assert_eq!(talk_core::i18n::language(), before);
     }
 
     #[test]

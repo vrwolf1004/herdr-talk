@@ -17,12 +17,12 @@ use talk_core::{relay_chat, t, Chat};
 use crate::screen::{classic, paint, Frame, Row, Tone};
 use talk_core::text::char_width;
 
-/// The four field labels, in field order (English, as the Python edition shows them).
+/// The four field labels, in field order.
 fn labels() -> [String; 4] {
-    ["Setup code", "Trust code (8 digits)", "Display name", "Room id (8 characters)"].map(str::to_string)
+    [t("tui.settings.label.setup", &[]), t("tui.settings.label.trust", &[]), t("tui.settings.label.name", &[]), t("tui.settings.label.room", &[])]
 }
 const SETUP_FIELD: usize = 0;
-/// The display name is a read-only code made here (as in the GUI), so typing does not change it.
+/// The display name is typed by the user (empty at first).
 const TRUST_FIELD: usize = 1;
 const NAME_FIELD: usize = 2;
 const ROOM_FIELD: usize = 3;
@@ -63,15 +63,8 @@ impl Form {
     pub fn open(state: &Path) -> Form {
         let saved = relay_settings::load_saved(state);
         let mine = relay_chat::my_keys(state).ok();
-        let mut message = if mine.is_none() { t("tui.settings.no_keys", &[]) } else { String::new() };
-        let mut fields = [String::new(), saved.trust, saved.name, saved.room_code];
-        // The same code the GUI makes when no name is saved: 8 characters of a random value, upper case.
-        if fields[NAME_FIELD].trim().is_empty() {
-            match relay_rest::random_nonce() {
-                Ok(nonce) => fields[NAME_FIELD] = nonce.chars().take(8).collect::<String>().to_ascii_uppercase(),
-                Err(error) => message = format!("표시 이름을 만들 수 없습니다: {error}"),
-            }
-        }
+        let message = if mine.is_none() { t("tui.settings.no_keys", &[]) } else { String::new() };
+        let fields = [String::new(), saved.trust, saved.name, saved.room_code];
         Form {
             mode: saved.mode,
             fields,
@@ -149,7 +142,7 @@ impl Form {
     /// F2 in the setup-code row: redeems the typed code and saves only the URL and key to relay.json. Neither is drawn.
     fn save_setup_code(&mut self) {
         if self.focus != SETUP_FIELD + 1 {
-            self.message = "F2 saves in the setup-code row only".to_string();
+            self.message = t("tui.settings.f2_row_only", &[]);
             return;
         }
         let typed = self.fields[SETUP_FIELD].trim().to_string();
@@ -167,10 +160,15 @@ impl Form {
                     self.key = key;
                     self.setup_code = setup;
                     self.fields[SETUP_FIELD].clear();
-                    self.message = "Setup code saved: the URL and key are stored (not shown)".to_string();
+                    self.message = t("tui.settings.setup_saved", &[]);
                 }
             },
         }
+    }
+
+    /// F3: switches the language and saves it to config.json, as the chat does. A save failure is shown on the message line.
+    fn switch_language(&mut self) {
+        self.message = talk_core::i18n::switch_language_notice();
     }
 
     /// F9: opens the operator passphrase line (hidden: not named on the screen). Nothing is sent until Enter.
@@ -187,7 +185,7 @@ impl Form {
             return;
         }
         if passphrase.is_empty() {
-            self.message = "issue failed: the operator passphrase is empty".to_string();
+            self.message = t("tui.settings.issue_failed", &[("error", &t("tui.settings.passphrase_empty", &[]))]);
             return;
         }
         let url = relay_settings::setup_url();
@@ -196,7 +194,7 @@ impl Form {
             let _ = sender.send(relay_rest::issue_setup_code(&url, &passphrase));
         });
         self.issuing = Some(receiver);
-        self.message = "issuing a new setup code...".to_string();
+        self.message = t("tui.settings.issuing", &[]);
     }
 
     /// Applies an issue-setup-code answer that has come back. True when the screen must be drawn again.
@@ -205,12 +203,12 @@ impl Form {
         let answer = match receiver.try_recv() {
             Ok(answer) => answer,
             Err(mpsc::TryRecvError::Empty) => return false,
-            Err(mpsc::TryRecvError::Disconnected) => Err("the request stopped".to_string()),
+            Err(mpsc::TryRecvError::Disconnected) => Err(t("tui.settings.request_stopped", &[])),
         };
         self.issuing = None;
         self.message = match answer {
-            Ok(code) => format!("new setup code: {code} (20 uses, 7 days; write it down now)"),
-            Err(error) => format!("issue failed: {error}"),
+            Ok(code) => t("tui.settings.new_code", &[("code", &code)]),
+            Err(error) => t("tui.settings.issue_failed", &[("error", &error)]),
         };
         true
     }
@@ -233,11 +231,11 @@ impl Form {
         match relay_settings::check_create(&settings) {
             Ok(()) => {}
             Err(relay_settings::CreateRefusal::NoConnection) => {
-                self.message = "방 만들기: Supabase 모드에서 설정 코드(저장된 URL·키)와 표시 이름을 먼저 입력하세요".to_string();
+                self.message = t("tui.settings.create_need_connection", &[]);
                 return;
             }
             Err(relay_settings::CreateRefusal::BadTrust) => {
-                self.message = "방 만들기: trust 코드는 숫자 8자리여야 합니다".to_string();
+                self.message = t("tui.settings.create_bad_trust", &[]);
                 return;
             }
         }
@@ -248,11 +246,11 @@ impl Form {
         let config = match relay_rest::config(Some(&url), Some(&key)) {
             Ok(Some(config)) => config,
             Ok(None) => {
-                self.message = "방 만들기: 프로젝트 URL 과 키가 필요합니다".to_string();
+                self.message = t("tui.settings.create_need_url_key", &[]);
                 return;
             }
             Err(error) => {
-                self.message = format!("방 만들기 실패: {error}");
+                self.message = t("tui.settings.create_failed", &[("error", &error)]);
                 return;
             }
         };
@@ -260,7 +258,7 @@ impl Form {
         let short_id = match relay_key::short_id(&self.state) {
             Ok(short_id) => short_id,
             Err(error) => {
-                self.message = format!("방 만들기 실패: {error}");
+                self.message = t("tui.settings.create_failed", &[("error", &error)]);
                 return;
             }
         };
@@ -268,21 +266,21 @@ impl Form {
         let seed = match relay_key::load_or_create(&self.state) {
             Ok(seed) => seed,
             Err(error) => {
-                self.message = format!("방 만들기 실패: {error}");
+                self.message = t("tui.settings.create_failed", &[("error", &error)]);
                 return;
             }
         };
         let nonce = match relay_rest::random_nonce() {
             Ok(nonce) => nonce,
             Err(error) => {
-                self.message = format!("방 만들기 실패: {error}");
+                self.message = t("tui.settings.create_failed", &[("error", &error)]);
                 return;
             }
         };
         let body = match relay_rest::signed_room_body(&seed, relay_rest::RoomAction::Create, "", &name, &trust, relay_rest::unix_now(), &nonce) {
             Ok(body) => body,
             Err(error) => {
-                self.message = format!("방 만들기 실패: {error}");
+                self.message = t("tui.settings.create_failed", &[("error", &error)]);
                 return;
             }
         };
@@ -304,7 +302,7 @@ impl Form {
             let _ = sender.send(answer);
         });
         self.creating = Some(receiver);
-        self.message = "방 만드는 중...".to_string();
+        self.message = t("tui.settings.create_busy", &[]);
     }
 
     /// Applies a create-room answer that has come back. True when the screen must be drawn again.
@@ -316,15 +314,15 @@ impl Form {
         let answer = match receiver.try_recv() {
             Ok(answer) => answer,
             Err(mpsc::TryRecvError::Empty) => return false,
-            Err(mpsc::TryRecvError::Disconnected) => Err("방 만들기 중 오류".to_string()),
+            Err(mpsc::TryRecvError::Disconnected) => Err(t("tui.settings.create_stopped", &[])),
         };
         self.creating = None;
         match answer {
             Ok(code) => {
-                self.message = format!("방을 만들었습니다: {code} (저장을 눌러야 적용됩니다)");
+                self.message = t("tui.settings.room_made", &[("code", &code)]);
                 self.fields[ROOM_FIELD] = code;
             }
-            Err(error) => self.message = format!("방 만들기 실패: {error}"),
+            Err(error) => self.message = t("tui.settings.create_failed", &[("error", &error)]),
         }
         true
     }
@@ -334,7 +332,7 @@ impl Form {
 fn save_message(refusal: relay_settings::SaveRefusal) -> String {
     use relay_settings::{Missing, SaveRefusal};
     match refusal {
-        SaveRefusal::UnredeemedCode => "Press F2 to use the setup code (Enter does not redeem it)".to_string(),
+        SaveRefusal::UnredeemedCode => t("tui.settings.press_f2", &[]),
         SaveRefusal::MissingFields(fields) => {
             let labels = labels();
             let names: Vec<&str> = fields
@@ -355,22 +353,22 @@ fn save_message(refusal: relay_settings::SaveRefusal) -> String {
 fn publish_message(outcome: relay_rest::PutOutcome) -> Result<(), String> {
     match outcome {
         relay_rest::PutOutcome::Written => Ok(()),
-        relay_rest::PutOutcome::Taken => Err("이 PC의 짧은 ID 가 다른 키에 이미 있습니다 (409). 다시 시도하세요".to_string()),
-        relay_rest::PutOutcome::Failed => Err("이 PC 의 행을 게시하지 못했습니다 (네트워크나 서버 오류)".to_string()),
+        relay_rest::PutOutcome::Taken => Err(t("tui.settings.publish_taken", &[])),
+        relay_rest::PutOutcome::Failed => Err(t("tui.settings.publish_failed", &[])),
     }
 }
 
 /// The create-room answer: the room code on 200, otherwise the status and body.
 fn read_room_code(status: u16, text: &str) -> Result<String, String> {
     if status != 200 {
-        return Err(format!("status {status}: {text}"));
+        return Err(t("tui.settings.answer_status", &[("status", &status.to_string()), ("text", text)]));
     }
-    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| "answer is not JSON".to_string())?;
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| t("tui.settings.answer_not_json", &[]))?;
     value["room_code"]
         .as_str()
         .filter(|code| relay_rest::valid_room_code(code))
         .map(str::to_string)
-        .ok_or_else(|| "answer has no valid room_code".to_string())
+        .ok_or_else(|| t("tui.settings.answer_no_room", &[]))
 }
 
 /// One key for the form.
@@ -392,76 +390,90 @@ pub fn on_key(form: &mut Form, key: KeyEvent, chat: &Arc<Chat>) -> Action {
             }
         }
         KeyCode::F(2) => form.save_setup_code(),
+        KeyCode::F(3) => form.switch_language(),
         // Focus cycles over the drawn fields only (1 to FIELDS).
         KeyCode::Tab | KeyCode::Down => form.focus = form.focus % FIELDS + 1,
         KeyCode::Up => form.focus = (form.focus + FIELDS - 2) % FIELDS + 1,
         KeyCode::Enter if form.focus < FIELDS => form.focus += 1,
         KeyCode::Enter => form.save(chat),
-        KeyCode::Backspace if form.focus - 1 != NAME_FIELD => {
+        KeyCode::Backspace => {
             form.fields[form.focus - 1].pop();
         }
-        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) && form.focus - 1 != NAME_FIELD => form.fields[form.focus - 1].push(ch),
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => form.fields[form.focus - 1].push(ch),
         _ => {}
     }
     Action::Stay
 }
 
 fn shown(form: &Form, index: usize) -> String {
-    // The saved key is never drawn: only its length, until a new setup code is typed (as the Python edition shows it).
+    // The saved setup code is shown as it is (as the Python edition shows it). The key itself is never drawn:
+    // only its length, when an older settings file has no setup code.
     if index == SETUP_FIELD && form.fields[index].is_empty() {
         if form.from_env.0 || form.from_env.1 {
-            return "(environment)".to_string();
+            return t("settings.code_environment", &[]);
         }
-        return if form.key.is_empty() { "-".to_string() } else { format!("(saved, key {} chars)", form.key.chars().count()) };
+        if !form.setup_code.is_empty() {
+            return form.setup_code.clone();
+        }
+        return if form.key.is_empty() { "-".to_string() } else { t("settings.code_saved", &[("n", &form.key.chars().count().to_string())]) };
     }
     form.fields[index].clone()
 }
 
 /// The lines of the settings screen: the text and its tone. Three sections: the Supabase connection, the room settings,
 /// and this PC's identity. The connection mode is not named on this screen (it is chosen at the start).
-// shortcut: the screen title, section names and key hints are English-only like the other Ctrl key notes; move them to the locales with the room label.
 fn lines(form: &Form) -> Vec<(String, Tone)> {
-    let marker = |row: usize| if form.focus == row { "▶" } else { " " };
     // In Local mode the fields are kept but not used: they are drawn dimmed.
     let field_tone = if form.mode == Mode::Local { Tone::Dim } else { Tone::Text };
     // "LABEL : [value____]": the value is filled with underscores to the input width; the focused field is the bright one.
+    let labels = labels();
+    let column = label_column(&labels);
     let field = |index: usize| {
-        let value = shown(form, index);
-        let blanks = FIELD_WIDTH.saturating_sub(char_width(&value));
-        let text = format!("{} {} : [{value}{}]", marker(index + 1), pad_to(&labels()[index], LABEL_WIDTH), "_".repeat(blanks));
+        let text = field_text(form.focus == index + 1, &labels[index], &shown(form, index), column);
         (text, if form.focus == index + 1 { Tone::Title } else { field_tone })
     };
     // The hints under the setup-code and room rows, as the Python edition shows them.
     let mut lines: Vec<(String, Tone)> = vec![
-        ("SUPABASE SETTINGS".to_string(), Tone::Title),
+        (t("tui.settings.title", &[]), Tone::Title),
         (String::new(), Tone::Text),
         field(SETUP_FIELD),
-        ("     Type the setup code, then F2: the URL and key are saved (not shown)".to_string(), Tone::Dim),
+        (t("tui.settings.hint.setup", &[]), Tone::Dim),
         field(TRUST_FIELD),
         field(NAME_FIELD),
         field(ROOM_FIELD),
-        ("     Join: type a room ID here, then Enter  ·  New room: press Ctrl+N".to_string(), Tone::Dim),
+        (t("tui.settings.hint.room", &[]), Tone::Dim),
     ];
     // Opened by F9 (not named on the screen): only the passphrase's length is drawn.
     if let Some(passphrase) = &form.passphrase {
-        lines.push((format!("operator passphrase: [{}]", "*".repeat(passphrase.chars().count())), Tone::Title));
+        lines.push((t("tui.settings.passphrase", &[("stars", &"*".repeat(passphrase.chars().count()))]), Tone::Title));
     }
-    lines.extend([(String::new(), Tone::Text), ("DEVICE IDENTITY".to_string(), Tone::Title)]);
+    lines.extend([(String::new(), Tone::Text), (t("tui.settings.identity", &[]), Tone::Title)]);
     match &form.mine {
         Some((ed, noise)) => {
-            lines.push((format!("  Ed25519 public key: {ed}"), Tone::Dim));
-            lines.push((format!("  Noise public key:   {noise}"), Tone::Dim));
+            lines.push((t("tui.settings.ed25519", &[("key", ed)]), Tone::Dim));
+            lines.push((t("tui.settings.noise", &[("key", noise)]), Tone::Dim));
         }
-        None => lines.push(("  (no keys yet)".to_string(), Tone::Dim)),
+        None => lines.push((t("tui.settings.no_identity", &[]), Tone::Dim)),
     }
     lines.push((String::new(), Tone::Text));
-    lines.push((form.message.clone(), Tone::Text));
+    lines.push((form.message.clone(), Tone::Warn));
     lines
 }
 
-/// Columns of the label and of the input brackets in the field rows.
-const LABEL_WIDTH: usize = 22;
+/// The width of the input line in the field rows.
 const FIELD_WIDTH: usize = 24;
+
+/// The label column: the widest label of the current language, and at least 22 columns (as the Python edition does),
+/// so the ' : [' column is the same on every row.
+fn label_column(labels: &[String]) -> usize {
+    labels.iter().map(|label| char_width(label)).max().unwrap_or(0).max(22)
+}
+
+/// One field row: the marker, the label padded to the column, then the value in brackets with its underscore fill.
+fn field_text(selected: bool, label: &str, value: &str, column: usize) -> String {
+    let blanks = FIELD_WIDTH.saturating_sub(char_width(value));
+    format!("{} {} : [{value}{}]", if selected { "▶" } else { " " }, pad_to(label, column), "_".repeat(blanks))
+}
 
 /// `text` padded with spaces to `cols` columns.
 fn pad_to(text: &str, cols: usize) -> String {
@@ -470,8 +482,7 @@ fn pad_to(text: &str, cols: usize) -> String {
 
 pub fn render(out: &mut Stdout, form: &mut Form, width: usize, rows: usize) -> io::Result<()> {
     let body: Vec<Row> = lines(form).into_iter().map(|(text, tone)| vec![(text, tone)]).collect();
-    // shortcut: the key hint is English-only like the other key notes; move it to the locales with them.
-    let frame = classic(body, "Tab: next · Enter: next / save · Ctrl+N: create room · Esc: CANCEL", "", width, rows);
+    let frame = classic(body, &t("tui.settings.guide", &[]), "", width, rows);
     paint(out, width, rows, frame, &mut form.drawn)
 }
 
@@ -532,17 +543,17 @@ mod tests {
     }
 
     #[test]
-    fn the_display_name_is_a_generated_read_only_code() {
-        let dir = folder("name-code");
+    fn the_display_name_starts_empty_and_can_be_typed() {
+        let dir = folder("name-typed");
         let form = Form::open(&dir);
-        assert_eq!(form.fields[NAME_FIELD].len(), 8);
-        assert!(form.fields[NAME_FIELD].chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_lowercase()), "{}", form.fields[NAME_FIELD]);
+        assert!(form.fields[NAME_FIELD].is_empty(), "no generated name");
         let (chat, mut form) = (chat(), form);
-        let code = form.fields[NAME_FIELD].clone();
         form.focus = NAME_FIELD + 1;
-        press(&mut form, &chat, KeyCode::Char('x'));
+        press(&mut form, &chat, KeyCode::Char('A'));
+        press(&mut form, &chat, KeyCode::Char('l'));
         press(&mut form, &chat, KeyCode::Backspace);
-        assert_eq!(form.fields[NAME_FIELD], code, "typing does not change the code");
+        press(&mut form, &chat, KeyCode::Char('i'));
+        assert_eq!(form.fields[NAME_FIELD], "Ai", "typing and backspace reach the name");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -572,7 +583,7 @@ mod tests {
     fn the_saved_key_is_shown_as_its_length_only() {
         let mut form = form_at(&folder("mask"));
         form.key = "dummy-test-key".into();
-        assert_eq!(shown(&form, SETUP_FIELD), "(saved, key 14 chars)");
+        assert_eq!(shown(&form, SETUP_FIELD), t("settings.code_saved", &[("n", "14")]));
         form.fields[SETUP_FIELD] = "ABCD2345".into();
         assert_eq!(shown(&form, SETUP_FIELD), "ABCD2345", "a typed code is shown until it is redeemed");
     }
@@ -581,7 +592,7 @@ mod tests {
     fn environment_values_are_marked() {
         let mut form = form_at(&folder("env"));
         form.from_env = (true, false);
-        assert_eq!(shown(&form, SETUP_FIELD), "(environment)", "an env value is said, never shown");
+        assert_eq!(shown(&form, SETUP_FIELD), t("settings.code_environment", &[]), "an env value is said, never shown");
         assert!(!shown(&form, NAME_FIELD).contains("environment"));
     }
 
@@ -606,7 +617,7 @@ mod tests {
         form.url = "https://x.example".into();
         form.key = "dummy-test-key".into();
         form.save(&chat);
-        assert!(form.message.contains("Display name"), "{}", form.message);
+        assert!(form.message.contains(&t("tui.settings.label.name", &[])), "{}", form.message);
         assert!(!dir.join(relay_settings::FILE).exists());
     }
 
@@ -629,7 +640,7 @@ mod tests {
         form.fields = ["ABCD2345".into(), "12345678".into(), "Alice".into(), "ABCD2345".into()];
         form.focus = FIELDS;
         press(&mut form, &chat, KeyCode::Enter);
-        assert_eq!(form.message, "Press F2 to use the setup code (Enter does not redeem it)");
+        assert_eq!(form.message, t("tui.settings.press_f2", &[]));
         assert_eq!(form.fields[SETUP_FIELD], "ABCD2345", "the typed code stays for F2");
         assert!(!dir.join(relay_settings::FILE).exists());
     }
@@ -640,7 +651,7 @@ mod tests {
         form.fields[SETUP_FIELD] = "ABCD2345".into();
         form.focus = NAME_FIELD + 1;
         press(&mut form, &chat, KeyCode::F(2));
-        assert_eq!(form.message, "F2 saves in the setup-code row only");
+        assert_eq!(form.message, t("tui.settings.f2_row_only", &[]));
         assert_eq!(form.fields[SETUP_FIELD], "ABCD2345");
     }
 
@@ -681,15 +692,15 @@ mod tests {
     fn the_screen_has_the_python_sections_and_rows() {
         let form = form_at(&folder("sections"));
         let texts: Vec<String> = lines(&form).into_iter().map(|(text, _)| text).collect();
-        assert_eq!(texts[0], "SUPABASE SETTINGS");
-        assert!(texts.iter().any(|text| text == "DEVICE IDENTITY"));
+        assert_eq!(texts[0], t("tui.settings.title", &[]));
+        assert!(texts.iter().any(|text| text == &t("tui.settings.identity", &[])));
         assert!(!texts.iter().any(|text| text.contains("[0")), "no numbered sections");
         assert!(!texts.iter().any(|text| text.contains("Publishable key") || text.contains("Ctrl+N: create room (Supabase")), "no key row or old note");
         let rows: Vec<&String> = texts.iter().filter(|text| text.contains(" : [")).collect();
         let labels: Vec<&str> = rows.iter().map(|text| text.split(" : [").next().unwrap().trim_start_matches(['▶', ' '])).map(str::trim_end).collect();
-        assert_eq!(labels, ["Setup code", "Trust code (8 digits)", "Display name", "Room id (8 characters)"]);
-        assert!(texts.iter().any(|text| text == "     Type the setup code, then F2: the URL and key are saved (not shown)"));
-        assert!(texts.iter().any(|text| text == "     Join: type a room ID here, then Enter  ·  New room: press Ctrl+N"));
+        assert_eq!(labels, [t("tui.settings.label.setup", &[]), t("tui.settings.label.trust", &[]), t("tui.settings.label.name", &[]), t("tui.settings.label.room", &[])]);
+        assert!(texts.iter().any(|text| text == &t("tui.settings.hint.setup", &[])));
+        assert!(texts.iter().any(|text| text == &t("tui.settings.hint.room", &[])));
     }
 
     #[test]
@@ -714,7 +725,7 @@ mod tests {
         sender.send(Err("status 500".to_string())).unwrap();
         assert!(form.poll());
         assert!(form.fields[ROOM_FIELD].is_empty());
-        assert_eq!(form.message, "방 만들기 실패: status 500");
+        assert_eq!(form.message, t("tui.settings.create_failed", &[("error", "status 500")]));
     }
 
     #[test]
@@ -731,6 +742,51 @@ mod tests {
     }
 
     #[test]
+    fn the_input_column_is_the_same_in_every_language() {
+        let files = [
+            ("en", include_str!("../../talk-core/locales/en.json")),
+            ("ko", include_str!("../../talk-core/locales/ko.json")),
+            ("ru", include_str!("../../talk-core/locales/ru.json")),
+            ("fr", include_str!("../../talk-core/locales/fr.json")),
+            ("es", include_str!("../../talk-core/locales/es.json")),
+            ("de", include_str!("../../talk-core/locales/de.json")),
+            ("ja", include_str!("../../talk-core/locales/ja.json")),
+        ];
+        let keys = ["tui.settings.label.setup", "tui.settings.label.trust", "tui.settings.label.name", "tui.settings.label.room"];
+        for (lang, text) in files {
+            let messages: serde_json::Value = serde_json::from_str(text).unwrap();
+            let labels: Vec<String> = keys.iter().map(|key| messages[*key].as_str().unwrap().to_string()).collect();
+            let column = label_column(&labels);
+            assert!(column >= 22 && labels.iter().all(|label| char_width(label) <= column), "{lang}");
+            let bracket_columns: Vec<usize> = labels
+                .iter()
+                .map(|label| char_width(field_text(false, label, "value", column).split(" : [").next().unwrap()))
+                .collect();
+            assert!(bracket_columns.iter().all(|at| *at == bracket_columns[0]), "{lang}: {bracket_columns:?}");
+        }
+    }
+
+    #[test]
+    fn f3_switches_the_language_and_saves_it() {
+        let dir = folder("f3-language");
+        let _ = std::fs::create_dir_all(&dir);
+        std::env::set_var("HERDR_PLUGIN_CONFIG_DIR", &dir);
+        let (chat, mut form) = (chat(), form_at(&dir));
+        let before = talk_core::i18n::language();
+        assert!(matches!(press(&mut form, &chat, KeyCode::F(3)), Action::Stay));
+        let after = talk_core::i18n::language();
+        assert_ne!(before, after, "the language moved to the next one");
+        assert!(form.message.is_empty(), "{}", form.message);
+        let saved = std::fs::read_to_string(dir.join("config.json")).unwrap();
+        assert!(saved.contains(&format!("\"lang\": \"{after}\"")) || saved.contains(&format!("\"lang\":\"{after}\"")), "{saved}");
+        // Without a config folder the switch still happens, and the reason is shown on the message line.
+        std::env::remove_var("HERDR_PLUGIN_CONFIG_DIR");
+        press(&mut form, &chat, KeyCode::F(3));
+        assert_eq!(form.message, t("tui.lang.not_saved", &[]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn f9_opens_a_masked_passphrase_line_and_keys_go_there() {
         let (chat, mut form) = (chat(), form_at(&folder("f9")));
         press(&mut form, &chat, KeyCode::F(9));
@@ -739,7 +795,7 @@ mod tests {
         }
         assert_eq!(form.passphrase.as_deref(), Some("pw1"));
         assert_eq!(form.focus, 1, "the keys do not move the field");
-        assert!(lines(&form).iter().any(|(text, _)| text == "operator passphrase: [***]"), "only the length is drawn");
+        assert!(lines(&form).iter().any(|(text, _)| text == &t("tui.settings.passphrase", &[("stars", "***")])), "only the length is drawn");
         press(&mut form, &chat, KeyCode::Backspace);
         assert_eq!(form.passphrase.as_deref(), Some("pw"));
         assert!(!lines(&form).iter().any(|(text, _)| text.contains("F9")), "F9 is not named on the screen");
@@ -759,7 +815,7 @@ mod tests {
         let (chat, mut form) = (chat(), form_at(&folder("f9-empty")));
         press(&mut form, &chat, KeyCode::F(9));
         press(&mut form, &chat, KeyCode::Enter);
-        assert_eq!(form.message, "issue failed: the operator passphrase is empty");
+        assert_eq!(form.message, t("tui.settings.issue_failed", &[("error", &t("tui.settings.passphrase_empty", &[]))]));
         assert!(form.issuing.is_none());
     }
 
@@ -770,13 +826,13 @@ mod tests {
         form.issuing = Some(receiver);
         sender.send(Ok("ABCD2345".to_string())).unwrap();
         assert!(form.poll());
-        assert_eq!(form.message, "new setup code: ABCD2345 (20 uses, 7 days; write it down now)");
+        assert_eq!(form.message, t("tui.settings.new_code", &[("code", "ABCD2345")]));
         assert!(form.issuing.is_none());
         let (sender, receiver) = mpsc::channel();
         form.issuing = Some(receiver);
         sender.send(Err("the operator passphrase is wrong".to_string())).unwrap();
         assert!(form.poll());
-        assert_eq!(form.message, "issue failed: the operator passphrase is wrong");
+        assert_eq!(form.message, t("tui.settings.issue_failed", &[("error", "the operator passphrase is wrong")]));
     }
 
     #[test]
@@ -797,7 +853,7 @@ mod tests {
         assert_eq!(form.message, t("tui.settings.no_keys", &[]));
         form.mine = Some(("11".repeat(32), "22".repeat(32)));
         on_key(&mut form, ctrl_n, &chat);
-        assert!(form.message.starts_with("방 만들기:"), "{}", form.message);
+        assert_eq!(form.message, t("tui.settings.create_need_connection", &[]), "{}", form.message);
         assert!(form.fields[ROOM_FIELD].is_empty());
     }
 

@@ -95,6 +95,33 @@ def language():
     return _language
 
 
+def cycle_language():
+    """F3: the next supported language, applied at once and saved to config.json (see save_language). Returns the code."""
+    code = SUPPORTED[(SUPPORTED.index(_language) + 1) % len(SUPPORTED)]
+    set_language(code)
+    save_language(code)
+    return code
+
+
+def save_language(language):
+    """Write "lang" into HERDR_PLUGIN_CONFIG_DIR/config.json, keeping the other keys. False when nothing was written:
+    no config folder, or an existing config.json that is not a readable JSON object (it is left as it is)."""
+    config_dir = os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
+    if not config_dir:
+        return False
+    path = Path(config_dir) / "config.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
+        if not isinstance(data, dict):
+            return False
+        data["lang"] = language
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def t(key, **values):
     global _english
     text = _messages.get(key)
