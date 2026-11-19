@@ -8,7 +8,7 @@
 // Secrets: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided to the function by Supabase. Set nothing here.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { checkBeforeNonce, messageFor, statusFor, type RoomBody } from "./checks.ts";
+import { checkBeforeNonce, messageFor, newSalt, statusFor, trustHash, type RoomBody } from "./checks.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -54,7 +54,7 @@ Deno.serve(async (req) => {
     if (verdict !== "ok") {
       return jsonResponse(statusFor(verdict), { error: messageFor(verdict) });
     }
-    const { peer_pk, display_name, ts, nonce } = body as RoomBody;
+    const { peer_pk, display_name, ts, nonce, trust } = body as RoomBody;
 
     // 재전송 방지: 이 nonce 를 기록한다. 이미 있으면 (23505) 재전송이다.
     const { error: nonceError } = await supabase.from("put_nonces").insert({ nonce, ts });
@@ -72,11 +72,16 @@ Deno.serve(async (req) => {
     // 방 기한: 생성 시점부터 24시간, 연장 없음 (join-room 이 기한이 지난 방을 410 으로 막는다)
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
+    // 운영자가 정한 trust 코드: 솔트와 해시만 저장한다 (코드 자체는 저장하지 않는다)
+    const trustSalt = newSalt();
+
     // 방 생성
     const { error: roomError } = await supabase.from("rooms").insert({
       code: roomCode,
       owner_pk: peer_pk,
       expires_at: expiresAt,
+      trust_salt: trustSalt,
+      trust_hash: await trustHash(trust, trustSalt),
     });
 
     if (roomError) {

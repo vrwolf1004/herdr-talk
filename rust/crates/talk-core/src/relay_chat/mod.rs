@@ -73,6 +73,10 @@ pub fn start_with(chat: &Arc<Chat>, state: &Path, settings: Settings) -> Result<
         chat.set_relay_status("relay: room code missing or invalid (8 uppercase letters or digits)");
         return Ok(false);
     }
+    if !relay_rest::valid_trust(&settings.trust) {
+        chat.set_relay_status("relay: trust code missing or invalid (8 digits)");
+        return Ok(false);
+    }
     let (tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     chat.attach_relay(tx, stop.clone());
@@ -160,7 +164,7 @@ Connection: close
     fn start_with_valid_settings_runs_until_stopped() {
         let chat = Arc::new(Chat::new(crate::chat::Me { id: "a".into(), name: "A".into(), port: 1, key: vec![], secret: vec![] }));
         let state = std::env::temp_dir().join(format!("herdr-talk-relay-run-{}", std::process::id()));
-        let settings = Settings { mode: Mode::Supabase, url: "http://127.0.0.1:9".into(), key: "dummy-test-key".into(), name: String::new(), room_code: "ABCD1234".into() };
+        let settings = Settings { mode: Mode::Supabase, url: "http://127.0.0.1:9".into(), key: "dummy-test-key".into(), name: String::new(), room_code: "ABCD1234".into(), trust: "12345678".into(), setup_code: String::new() };
         assert_eq!(start_with(&chat, &state, settings), Ok(true));
         chat.stop_relay();
     }
@@ -169,7 +173,7 @@ Connection: close
     fn local_mode_never_starts_the_relay_even_with_relay_values() {
         let chat = Arc::new(Chat::new(crate::chat::Me { id: "a".into(), name: "A".into(), port: 1, key: vec![], secret: vec![] }));
         let state = std::env::temp_dir().join(format!("herdr-talk-relay-local-{}", std::process::id()));
-        let settings = Settings { mode: Mode::Local, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), room_code: "ABCD1234".into() };
+        let settings = Settings { mode: Mode::Local, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), room_code: "ABCD1234".into(), trust: "12345678".into(), setup_code: String::new() };
         assert_eq!(start_with(&chat, &state, settings), Ok(false));
         assert!(!chat.is_supabase());
         assert_eq!(chat.relay_status(), "");
@@ -179,10 +183,95 @@ Connection: close
     fn supabase_mode_turns_the_lan_path_off() {
         let chat = Arc::new(Chat::new(crate::chat::Me { id: "a".into(), name: "A".into(), port: 1, key: vec![], secret: vec![] }));
         let state = std::env::temp_dir().join(format!("herdr-talk-relay-mode-{}", std::process::id()));
-        let settings = Settings { mode: Mode::Supabase, url: "http://127.0.0.1:9".into(), key: "k".into(), name: "A".into(), room_code: "ABCD1234".into() };
+        let settings = Settings { mode: Mode::Supabase, url: "http://127.0.0.1:9".into(), key: "k".into(), name: "A".into(), room_code: "ABCD1234".into(), trust: "12345678".into(), setup_code: String::new() };
         assert_eq!(start_with(&chat, &state, settings), Ok(true));
         assert!(chat.is_supabase());
         assert_eq!(chat.mode_name(), "supabase");
         chat.stop_relay();
+    }
+}
+
+/// True when the saved room refuses this trust code (join-room answers 403): the chat must not open the room then. Any other
+/// failure (offline, no keys yet) is not a refusal: the chat starts as before and shows it.
+/// The trust check gives up after this long and does not refuse (the chat then starts as before).
+const ROOM_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+pub fn room_refuses(state: &Path) -> bool {
+    let settings = relay_settings::effective(state);
+    if settings.mode != Mode::Supabase || settings.room_code.is_empty() {
+        return false;
+    }
+    let Ok(Some(config)) = relay_rest::config(Some(&settings.url), Some(&settings.key)) else { return false };
+    let Ok(seed) = relay_key::load_or_create(state) else { return false };
+    let Ok(request) = relay_rest::join_room_request(&config, &seed, &settings.room_code, &settings.name, &settings.trust) else { return false };
+    let Ok((status, body)) = relay_rest::http_post_within(&request, ROOM_CHECK_TIMEOUT) else { return false };
+    matches!(relay_rest::read_join_room_response(status, &body), Err(error) if error == crate::i18n::t("room.trust_wrong", &[]))
+}
+
+#[cfg(test)]
+mod room_refuses_tests {
+    use super::*;
+
+    #[test]
+    fn no_saved_room_is_never_refused() {
+        let dir = std::env::temp_dir().join("herdr-talk-room-refuses-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!room_refuses(&dir), "no relay.json means no room to refuse");
+    }
+
+    fn saved_room(dir: &Path, url: &str) {
+        relay_settings::save(dir, &relay_settings::Settings {
+            mode: Mode::Supabase,
+            url: url.to_string(),
+            key: "dummy-test-key".into(),
+            name: "Alice".into(),
+            room_code: "ABCD2345".into(),
+            trust: "12345678".into(),
+            setup_code: String::new(),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_slow_trust_check_gives_up_after_three_seconds_and_does_not_refuse() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        // The server takes the connection and never answers.
+        std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(8));
+        });
+        let dir = std::env::temp_dir().join("herdr-talk-room-refuses-slow");
+        let _ = std::fs::remove_dir_all(&dir);
+        saved_room(&dir, &url);
+        let started = std::time::Instant::now();
+        assert!(!room_refuses(&dir), "no answer in time is not a refusal");
+        let took = started.elapsed();
+        assert!(took >= std::time::Duration::from_secs(2) && took < std::time::Duration::from_secs(7), "{took:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_wrong_trust_code_403_is_refused_and_other_answers_are_not() {
+        use crate::relay_rest::tests::serve_once;
+        let dir = std::env::temp_dir().join("herdr-talk-room-refuses-403");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (config, _sent) = serve_once("HTTP/1.1 403 Forbidden
+Content-Length: 0
+Connection: close
+
+");
+        saved_room(&dir, config.url());
+        assert!(room_refuses(&dir), "403 means the trust code is wrong");
+        let (config, _sent) = serve_once("HTTP/1.1 500 Internal Server Error
+Content-Length: 0
+Connection: close
+
+");
+        saved_room(&dir, config.url());
+        assert!(!room_refuses(&dir), "a server error is not a refusal");
+        saved_room(&dir, "http://127.0.0.1:9");
+        assert!(!room_refuses(&dir), "no network is not a refusal");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

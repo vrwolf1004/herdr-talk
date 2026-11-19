@@ -1,8 +1,8 @@
 //! The relay settings screen (Ctrl+R). The connection mode is not on this screen (the first-run choice sets it).
-//! Four fields: project URL, publishable key, display name (a read-only code) and the room ID (8 characters). Tab or Up/Down
-//! moves between rows; Enter goes on, and saves on the last field; Esc leaves without saving.
-//! Ctrl+N asks the relay for a new room (Supabase mode) and puts its code in the room ID field; it still needs a save.
-//! The key is never drawn: only its length. Environment variables win over the saved values, and the screen says so.
+//! Four fields: setup code (redeemed for the project URL and key on save), display name (a read-only code), the room ID
+//! (8 characters) and the trust code (8 digits). Tab or Up/Down moves between rows; Enter goes on, and saves on the last field;
+//! Esc leaves without saving. Ctrl+N asks the relay for a new room (Supabase mode) and puts its code in the room ID field.
+//! The URL and key are never drawn: only the key's length. Environment variables win over the saved values, and the screen says so.
 //! Saving in Local mode keeps the typed fields; saving in Supabase mode checks them all (talk-core validate).
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -17,36 +17,39 @@ use talk_core::{relay_chat, t, Chat};
 use crate::screen::{classic, paint, Frame, Row, Tone};
 use talk_core::text::char_width;
 
-/// The four field labels, in field order.
-/// shortcut: the room ID label is written here because locales have no key for it; move it to talk-core/locales when those may change.
+/// The four field labels, in field order (English, as the Python edition shows them).
 fn labels() -> [String; 4] {
-    [
-        t("tui.settings.label.url", &[]),
-        t("tui.settings.label.key", &[]),
-        t("tui.settings.label.name", &[]),
-        "방 ID (8자리)".to_string(),
-    ]
+    ["Setup code", "Trust code (8 digits)", "Display name", "Room id (8 characters)"].map(str::to_string)
 }
-const KEY_FIELD: usize = 1;
+const SETUP_FIELD: usize = 0;
 /// The display name is a read-only code made here (as in the GUI), so typing does not change it.
+const TRUST_FIELD: usize = 1;
 const NAME_FIELD: usize = 2;
+const ROOM_FIELD: usize = 3;
 /// The fields, numbered 1 to 4. The mode has no row: the first-run choice sets it, and focus never rests on a row that is not drawn.
 const FIELDS: usize = 4;
 
 pub struct Form {
     mode: Mode,
     fields: [String; 4],
+    /// The saved project URL and key (never drawn; the setup code row replaces them).
+    url: String,
+    key: String,
+    /// The setup code last redeemed, saved with the URL and key (shown on the chat status line).
+    setup_code: String,
     focus: usize,
     message: String,
     from_env: (bool, bool),
     mine: Option<(String, String)>,
-    /// This PC's short ID (what the peer types to find it); empty when it cannot be read.
-    short_id: String,
     state: PathBuf,
     /// True once a setting was written (the first-run choice then goes on to the chat).
     saved: bool,
     /// A create-room request running in the background: its answer (the code, or the reason it failed).
     creating: Option<mpsc::Receiver<Result<String, String>>>,
+    /// The operator passphrase being typed (F9 opens the line): never drawn, only its length.
+    passphrase: Option<String>,
+    /// An issue-setup-code request running in the background: its answer (the new code, or the reason it failed).
+    issuing: Option<mpsc::Receiver<Result<String, String>>>,
     /// The last frame drawn, so an unchanged screen is not drawn again.
     drawn: Frame,
 }
@@ -60,9 +63,8 @@ impl Form {
     pub fn open(state: &Path) -> Form {
         let saved = relay_settings::load_saved(state);
         let mine = relay_chat::my_keys(state).ok();
-        let short_id = relay_key::short_id(state).unwrap_or_default();
         let mut message = if mine.is_none() { t("tui.settings.no_keys", &[]) } else { String::new() };
-        let mut fields = [saved.url, saved.key, saved.name, saved.room_code];
+        let mut fields = [String::new(), saved.trust, saved.name, saved.room_code];
         // The same code the GUI makes when no name is saved: 8 characters of a random value, upper case.
         if fields[NAME_FIELD].trim().is_empty() {
             match relay_rest::random_nonce() {
@@ -73,16 +75,27 @@ impl Form {
         Form {
             mode: saved.mode,
             fields,
+            url: saved.url,
+            key: saved.key,
+            setup_code: saved.setup_code,
             focus: 1,
             message,
             from_env: relay_settings::from_environment(),
             mine,
-            short_id,
             state: state.to_path_buf(),
             saved: false,
             creating: None,
+            passphrase: None,
+            issuing: None,
             drawn: Frame::default(),
         }
+    }
+
+    /// The settings screen opened because the saved room refused this PC's trust code: the reason is on the message line.
+    pub fn refused(state: &Path) -> Form {
+        let mut form = Form::open(state);
+        form.message = t("room.trust_wrong", &[]);
+        form
     }
 
     /// The settings screen opened for Supabase (the first-run choice): the mode row is on Supabase, the cursor on the URL.
@@ -100,24 +113,21 @@ impl Form {
     fn settings(&self) -> Settings {
         Settings {
             mode: self.mode,
-            url: self.fields[0].trim().to_string(),
-            key: self.fields[1].trim().to_string(),
-            name: self.fields[2].trim().to_string(),
-            room_code: self.fields[3].trim().to_ascii_uppercase(),
+            url: self.url.trim().to_string(),
+            key: self.key.trim().to_string(),
+            setup_code: self.setup_code.clone(),
+            name: self.fields[NAME_FIELD].trim().to_string(),
+            room_code: self.fields[ROOM_FIELD].trim().to_ascii_uppercase(),
+            trust: self.fields[TRUST_FIELD].trim().to_string(),
         }
     }
 
-    /// Save, then start the relay with the new settings. The message says what happened, never a key value.
+    /// Save, then start the relay with the new settings. A typed setup code is redeemed first; the message never shows the key.
     fn save(&mut self, chat: &Arc<Chat>) {
         let settings = self.settings();
-        // Supabase needs every field: name the missing ones instead of a generic refusal.
-        if settings.mode == Mode::Supabase {
-            let labels = labels();
-            let missing: Vec<&str> = (0..labels.len()).filter(|&index| self.fields[index].trim().is_empty()).map(|index| labels[index].as_str()).collect();
-            if !missing.is_empty() {
-                self.message = t("settings.save_refused_missing", &[("fields", &missing.join(", "))]);
-                return;
-            }
+        if let Err(refusal) = relay_settings::check_save(&settings, &self.fields[SETUP_FIELD]) {
+            self.message = save_message(refusal);
+            return;
         }
         match relay_settings::save(&self.state, &settings) {
             Err(error) => self.message = t("tui.settings.not_saved", &[("error", &error.to_string())]),
@@ -136,6 +146,75 @@ impl Form {
         }
     }
 
+    /// F2 in the setup-code row: redeems the typed code and saves only the URL and key to relay.json. Neither is drawn.
+    fn save_setup_code(&mut self) {
+        if self.focus != SETUP_FIELD + 1 {
+            self.message = "F2 saves in the setup-code row only".to_string();
+            return;
+        }
+        let typed = self.fields[SETUP_FIELD].trim().to_string();
+        if typed.is_empty() {
+            self.message = t("setup.invalid", &[]);
+            return;
+        }
+        let setup = relay_rest::normalize_setup_code(&typed).unwrap_or_default();
+        match relay_rest::redeem_setup_code(&typed, &relay_settings::setup_url()) {
+            Err(error) => self.message = error,
+            Ok((url, key)) => match relay_settings::save_connection(&self.state, &url, &key, &setup) {
+                Err(error) => self.message = t("tui.settings.not_saved", &[("error", &error)]),
+                Ok(()) => {
+                    self.url = url;
+                    self.key = key;
+                    self.setup_code = setup;
+                    self.fields[SETUP_FIELD].clear();
+                    self.message = "Setup code saved: the URL and key are stored (not shown)".to_string();
+                }
+            },
+        }
+    }
+
+    /// F9: opens the operator passphrase line (hidden: not named on the screen). Nothing is sent until Enter.
+    fn open_passphrase(&mut self) {
+        if self.passphrase.is_none() {
+            self.passphrase = Some(String::new());
+        }
+    }
+
+    /// Enter on the passphrase line: asks the relay for a new setup code in the background. The passphrase is not kept after that.
+    fn issue_setup_code(&mut self) {
+        let Some(passphrase) = self.passphrase.take() else { return };
+        if self.issuing.is_some() {
+            return;
+        }
+        if passphrase.is_empty() {
+            self.message = "issue failed: the operator passphrase is empty".to_string();
+            return;
+        }
+        let url = relay_settings::setup_url();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(relay_rest::issue_setup_code(&url, &passphrase));
+        });
+        self.issuing = Some(receiver);
+        self.message = "issuing a new setup code...".to_string();
+    }
+
+    /// Applies an issue-setup-code answer that has come back. True when the screen must be drawn again.
+    fn poll_issue(&mut self) -> bool {
+        let Some(receiver) = self.issuing.as_ref() else { return false };
+        let answer = match receiver.try_recv() {
+            Ok(answer) => answer,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => Err("the request stopped".to_string()),
+        };
+        self.issuing = None;
+        self.message = match answer {
+            Ok(code) => format!("new setup code: {code} (20 uses, 7 days; write it down now)"),
+            Err(error) => format!("issue failed: {error}"),
+        };
+        true
+    }
+
     /// Ctrl+N: ask the relay for a new room with this PC's key and put the code in the room ID field (saved with Enter).
     fn create_room(&mut self) {
         if self.creating.is_some() {
@@ -150,13 +229,22 @@ impl Form {
             self.message = t("tui.settings.no_keys", &[]);
             return;
         }
-        let url = self.fields[0].trim().trim_end_matches('/').to_string();
-        let key = self.fields[1].trim().to_string();
-        let name = self.fields[2].trim().to_string();
-        if self.mode != Mode::Supabase || url.is_empty() || key.is_empty() || name.is_empty() {
-            self.message = "방 만들기: Supabase 모드에서 프로젝트 URL, 키, 표시 이름을 먼저 입력하세요".to_string();
-            return;
+        let settings = self.settings();
+        match relay_settings::check_create(&settings) {
+            Ok(()) => {}
+            Err(relay_settings::CreateRefusal::NoConnection) => {
+                self.message = "방 만들기: Supabase 모드에서 설정 코드(저장된 URL·키)와 표시 이름을 먼저 입력하세요".to_string();
+                return;
+            }
+            Err(relay_settings::CreateRefusal::BadTrust) => {
+                self.message = "방 만들기: trust 코드는 숫자 8자리여야 합니다".to_string();
+                return;
+            }
         }
+        let url = settings.url.trim_end_matches('/').to_string();
+        let key = settings.key.clone();
+        let name = settings.name.clone();
+        let trust = settings.trust.clone();
         let config = match relay_rest::config(Some(&url), Some(&key)) {
             Ok(Some(config)) => config,
             Ok(None) => {
@@ -191,7 +279,7 @@ impl Form {
                 return;
             }
         };
-        let body = match relay_rest::signed_room_body(&seed, relay_rest::RoomAction::Create, "", &name, relay_rest::unix_now(), &nonce) {
+        let body = match relay_rest::signed_room_body(&seed, relay_rest::RoomAction::Create, "", &name, &trust, relay_rest::unix_now(), &nonce) {
             Ok(body) => body,
             Err(error) => {
                 self.message = format!("방 만들기 실패: {error}");
@@ -221,6 +309,9 @@ impl Form {
 
     /// Applies a create-room answer that has come back. True when the screen must be drawn again.
     pub fn poll(&mut self) -> bool {
+        if self.poll_issue() {
+            return true;
+        }
         let Some(receiver) = self.creating.as_ref() else { return false };
         let answer = match receiver.try_recv() {
             Ok(answer) => answer,
@@ -231,11 +322,32 @@ impl Form {
         match answer {
             Ok(code) => {
                 self.message = format!("방을 만들었습니다: {code} (저장을 눌러야 적용됩니다)");
-                self.fields[3] = code;
+                self.fields[ROOM_FIELD] = code;
             }
             Err(error) => self.message = format!("방 만들기 실패: {error}"),
         }
         true
+    }
+}
+
+/// The message for a refused final save (Enter), as the screen shows it.
+fn save_message(refusal: relay_settings::SaveRefusal) -> String {
+    use relay_settings::{Missing, SaveRefusal};
+    match refusal {
+        SaveRefusal::UnredeemedCode => "Press F2 to use the setup code (Enter does not redeem it)".to_string(),
+        SaveRefusal::MissingFields(fields) => {
+            let labels = labels();
+            let names: Vec<&str> = fields
+                .iter()
+                .map(|field| match field {
+                    Missing::Name => labels[NAME_FIELD].as_str(),
+                    Missing::Room => labels[ROOM_FIELD].as_str(),
+                    Missing::Trust => labels[TRUST_FIELD].as_str(),
+                })
+                .collect();
+            t("settings.save_refused_missing", &[("fields", &names.join(", "))])
+        }
+        SaveRefusal::NoConnection => t("setup.needed", &[]),
     }
 }
 
@@ -264,8 +376,22 @@ fn read_room_code(status: u16, text: &str) -> Result<String, String> {
 /// One key for the form.
 pub fn on_key(form: &mut Form, key: KeyEvent, chat: &Arc<Chat>) -> Action {
     match key.code {
+        KeyCode::Esc if form.passphrase.is_some() => form.passphrase = None,
         KeyCode::Esc => return Action::Leave,
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => form.create_room(),
+        KeyCode::F(9) => form.open_passphrase(),
+        KeyCode::Enter if form.passphrase.is_some() => form.issue_setup_code(),
+        KeyCode::Backspace if form.passphrase.is_some() => {
+            if let Some(passphrase) = form.passphrase.as_mut() {
+                passphrase.pop();
+            }
+        }
+        KeyCode::Char(ch) if form.passphrase.is_some() && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(passphrase) = form.passphrase.as_mut() {
+                passphrase.push(ch);
+            }
+        }
+        KeyCode::F(2) => form.save_setup_code(),
         // Focus cycles over the drawn fields only (1 to FIELDS).
         KeyCode::Tab | KeyCode::Down => form.focus = form.focus % FIELDS + 1,
         KeyCode::Up => form.focus = (form.focus + FIELDS - 2) % FIELDS + 1,
@@ -281,23 +407,21 @@ pub fn on_key(form: &mut Form, key: KeyEvent, chat: &Arc<Chat>) -> Action {
 }
 
 fn shown(form: &Form, index: usize) -> String {
-    let env = match index {
-        0 if form.from_env.0 => t("tui.settings.from_env", &[]),
-        KEY_FIELD if form.from_env.1 => t("tui.settings.from_env", &[]),
-        _ => String::new(),
-    };
-    if index == KEY_FIELD {
-        format!("{}{env}", relay_settings::key_label(&form.fields[index]))
-    } else {
-        format!("{}{env}", form.fields[index])
+    // The saved key is never drawn: only its length, until a new setup code is typed (as the Python edition shows it).
+    if index == SETUP_FIELD && form.fields[index].is_empty() {
+        if form.from_env.0 || form.from_env.1 {
+            return "(environment)".to_string();
+        }
+        return if form.key.is_empty() { "-".to_string() } else { format!("(saved, key {} chars)", form.key.chars().count()) };
     }
+    form.fields[index].clone()
 }
 
 /// The lines of the settings screen: the text and its tone. Three sections: the Supabase connection, the room settings,
 /// and this PC's identity. The connection mode is not named on this screen (it is chosen at the start).
 // shortcut: the screen title, section names and key hints are English-only like the other Ctrl key notes; move them to the locales with the room label.
 fn lines(form: &Form) -> Vec<(String, Tone)> {
-    let marker = |row: usize| if form.focus == row { ">" } else { " " };
+    let marker = |row: usize| if form.focus == row { "▶" } else { " " };
     // In Local mode the fields are kept but not used: they are drawn dimmed.
     let field_tone = if form.mode == Mode::Local { Tone::Dim } else { Tone::Text };
     // "LABEL : [value____]": the value is filled with underscores to the input width; the focused field is the bright one.
@@ -307,30 +431,28 @@ fn lines(form: &Form) -> Vec<(String, Tone)> {
         let text = format!("{} {} : [{value}{}]", marker(index + 1), pad_to(&labels()[index], LABEL_WIDTH), "_".repeat(blanks));
         (text, if form.focus == index + 1 { Tone::Title } else { field_tone })
     };
+    // The hints under the setup-code and room rows, as the Python edition shows them.
     let mut lines: Vec<(String, Tone)> = vec![
         ("SUPABASE SETTINGS".to_string(), Tone::Title),
         (String::new(), Tone::Text),
-        ("[01] SUPABASE CONNECTION".to_string(), Tone::Title),
-        field(0),
-        field(1),
-        (String::new(), Tone::Text),
-        ("[02] ROOM SETTINGS".to_string(), Tone::Title),
-        field(2),
-        field(3),
-        ("Ctrl+N: create room (Supabase mode, needs the URL, key and name)".to_string(), Tone::Dim),
-        (String::new(), Tone::Text),
-        ("[03] DEVICE IDENTITY".to_string(), Tone::Title),
+        field(SETUP_FIELD),
+        ("     Type the setup code, then F2: the URL and key are saved (not shown)".to_string(), Tone::Dim),
+        field(TRUST_FIELD),
+        field(NAME_FIELD),
+        field(ROOM_FIELD),
+        ("     Join: type a room ID here, then Enter  ·  New room: press Ctrl+N".to_string(), Tone::Dim),
     ];
-    // The short ID is this PC's room row ID: shown only in Supabase mode (not on the LAN screen).
-    if form.mode == Mode::Supabase && !form.short_id.is_empty() {
-        lines.push((t("tui.settings.my_id", &[("id", &form.short_id)]), Tone::Dim));
+    // Opened by F9 (not named on the screen): only the passphrase's length is drawn.
+    if let Some(passphrase) = &form.passphrase {
+        lines.push((format!("operator passphrase: [{}]", "*".repeat(passphrase.chars().count())), Tone::Title));
     }
+    lines.extend([(String::new(), Tone::Text), ("DEVICE IDENTITY".to_string(), Tone::Title)]);
     match &form.mine {
         Some((ed, noise)) => {
-            lines.push((t("tui.settings.my_ed", &[("key", ed)]), Tone::Dim));
-            lines.push((t("tui.settings.my_noise", &[("key", noise)]), Tone::Dim));
+            lines.push((format!("  Ed25519 public key: {ed}"), Tone::Dim));
+            lines.push((format!("  Noise public key:   {noise}"), Tone::Dim));
         }
-        None => lines.push((t("tui.settings.no_keys_yet", &[]), Tone::Dim)),
+        None => lines.push(("  (no keys yet)".to_string(), Tone::Dim)),
     }
     lines.push((String::new(), Tone::Text));
     lines.push((form.message.clone(), Tone::Text));
@@ -338,7 +460,7 @@ fn lines(form: &Form) -> Vec<(String, Tone)> {
 }
 
 /// Columns of the label and of the input brackets in the field rows.
-const LABEL_WIDTH: usize = 18;
+const LABEL_WIDTH: usize = 22;
 const FIELD_WIDTH: usize = 24;
 
 /// `text` padded with spaces to `cols` columns.
@@ -349,7 +471,7 @@ fn pad_to(text: &str, cols: usize) -> String {
 pub fn render(out: &mut Stdout, form: &mut Form, width: usize, rows: usize) -> io::Result<()> {
     let body: Vec<Row> = lines(form).into_iter().map(|(text, tone)| vec![(text, tone)]).collect();
     // shortcut: the key hint is English-only like the other key notes; move it to the locales with them.
-    let frame = classic(body, "Esc: CANCEL · Enter: SAVE SETTINGS · Tab/Up/Down: MOVE", "", width, rows);
+    let frame = classic(body, "Tab: next · Enter: next / save · Ctrl+N: create room · Esc: CANCEL", "", width, rows);
     paint(out, width, rows, frame, &mut form.drawn)
 }
 
@@ -366,14 +488,18 @@ mod tests {
         Form {
             mode: Mode::Local,
             fields: Default::default(),
+            url: String::new(),
+            key: String::new(),
+            setup_code: String::new(),
             focus: 1,
             message: String::new(),
             from_env: (false, false),
             mine: None,
-            short_id: String::new(),
             state: state.to_path_buf(),
             saved: false,
             creating: None,
+            passphrase: None,
+            issuing: None,
             drawn: Frame::default(),
         }
     }
@@ -430,36 +556,40 @@ mod tests {
     #[test]
     fn typing_goes_to_the_focused_field_and_enter_moves_on() {
         let (chat, mut form) = (chat(), form_at(&folder("typing")));
-        for ch in "https://x.example".chars() {
+        for ch in "ab-cd".chars() {
             press(&mut form, &chat, KeyCode::Char(ch));
         }
         press(&mut form, &chat, KeyCode::Enter);
+        press(&mut form, &chat, KeyCode::Enter);
+        press(&mut form, &chat, KeyCode::Enter);
         press(&mut form, &chat, KeyCode::Char('k'));
-        assert_eq!(form.fields[0], "https://x.example");
-        assert_eq!(form.fields[1], "k");
-        assert_eq!(form.focus, 2);
+        assert_eq!(form.fields[SETUP_FIELD], "ab-cd");
+        assert_eq!(form.fields[ROOM_FIELD], "k");
+        assert_eq!(form.focus, 4);
     }
 
     #[test]
-    fn the_key_field_shows_its_length_only() {
+    fn the_saved_key_is_shown_as_its_length_only() {
         let mut form = form_at(&folder("mask"));
-        form.fields[KEY_FIELD] = "dummy-test-key".into();
-        assert_eq!(shown(&form, KEY_FIELD), "(14 chars)");
+        form.key = "dummy-test-key".into();
+        assert_eq!(shown(&form, SETUP_FIELD), "(saved, key 14 chars)");
+        form.fields[SETUP_FIELD] = "ABCD2345".into();
+        assert_eq!(shown(&form, SETUP_FIELD), "ABCD2345", "a typed code is shown until it is redeemed");
     }
 
     #[test]
     fn environment_values_are_marked() {
         let mut form = form_at(&folder("env"));
         form.from_env = (true, false);
-        assert!(shown(&form, 0).ends_with(&t("tui.settings.from_env", &[])));
-        assert!(!shown(&form, KEY_FIELD).contains(&t("tui.settings.from_env", &[])));
+        assert_eq!(shown(&form, SETUP_FIELD), "(environment)", "an env value is said, never shown");
+        assert!(!shown(&form, NAME_FIELD).contains("environment"));
     }
 
     #[test]
     fn local_save_keeps_the_fields_and_saves_the_mode() {
         let dir = folder("local");
         let (chat, mut form) = (chat(), form_at(&dir));
-        form.fields[2] = "Alice".into();
+        form.fields[NAME_FIELD] = "Alice".into();
         form.save(&chat);
         assert_eq!(form.message, t("settings.save_ok_local", &[]), "{}", form.message);
         let saved = relay_settings::load_saved(&dir);
@@ -473,9 +603,58 @@ mod tests {
         let dir = folder("refused");
         let (chat, mut form) = (chat(), form_at(&dir));
         form.mode = Mode::Supabase;
-        form.fields[0] = "https://x.example".into();
+        form.url = "https://x.example".into();
+        form.key = "dummy-test-key".into();
         form.save(&chat);
-        assert!(form.message.contains(&t("tui.settings.label.name", &[])) && form.message.contains(&t("tui.settings.label.key", &[])), "{}", form.message);
+        assert!(form.message.contains("Display name"), "{}", form.message);
+        assert!(!dir.join(relay_settings::FILE).exists());
+    }
+
+    #[test]
+    fn supabase_save_without_a_setup_code_or_saved_connection_asks_for_the_code() {
+        let dir = folder("no-setup");
+        let (chat, mut form) = (chat(), form_at(&dir));
+        form.mode = Mode::Supabase;
+        form.fields = [String::new(), "12345678".into(), "Alice".into(), "ABCD2345".into()];
+        form.save(&chat);
+        assert_eq!(form.message, t("setup.needed", &[]));
+        assert!(!dir.join(relay_settings::FILE).exists());
+    }
+
+    #[test]
+    fn enter_does_not_redeem_a_typed_setup_code() {
+        let dir = folder("enter-setup");
+        let (chat, mut form) = (chat(), form_at(&dir));
+        form.mode = Mode::Supabase;
+        form.fields = ["ABCD2345".into(), "12345678".into(), "Alice".into(), "ABCD2345".into()];
+        form.focus = FIELDS;
+        press(&mut form, &chat, KeyCode::Enter);
+        assert_eq!(form.message, "Press F2 to use the setup code (Enter does not redeem it)");
+        assert_eq!(form.fields[SETUP_FIELD], "ABCD2345", "the typed code stays for F2");
+        assert!(!dir.join(relay_settings::FILE).exists());
+    }
+
+    #[test]
+    fn f2_outside_the_setup_row_says_so() {
+        let (chat, mut form) = (chat(), form_at(&folder("f2-elsewhere")));
+        form.fields[SETUP_FIELD] = "ABCD2345".into();
+        form.focus = NAME_FIELD + 1;
+        press(&mut form, &chat, KeyCode::F(2));
+        assert_eq!(form.message, "F2 saves in the setup-code row only");
+        assert_eq!(form.fields[SETUP_FIELD], "ABCD2345");
+    }
+
+    #[test]
+    fn f2_with_a_malformed_or_empty_code_is_refused_before_any_request() {
+        let dir = folder("f2-bad");
+        let (chat, mut form) = (chat(), form_at(&dir));
+        press(&mut form, &chat, KeyCode::F(2));
+        assert_eq!(form.message, t("setup.invalid", &[]), "empty");
+        form.fields[SETUP_FIELD] = "ABCD".into();
+        press(&mut form, &chat, KeyCode::F(2));
+        assert_eq!(form.message, t("setup.invalid", &[]));
+        assert_eq!(form.fields[SETUP_FIELD], "ABCD", "the typed code stays for a fix");
+        assert!(form.url.is_empty() && form.key.is_empty());
         assert!(!dir.join(relay_settings::FILE).exists());
     }
 
@@ -492,32 +671,25 @@ mod tests {
     fn a_bad_peer_key_is_refused_with_a_message() {
         let dir = folder("badpeer");
         let (chat, mut form) = (chat(), form_at(&dir));
-        form.fields[3] = "not a key".into();
-        form.focus = 4;
+        form.fields[ROOM_FIELD] = "not a key".into();
+        form.focus = FIELDS;
         press(&mut form, &chat, KeyCode::Enter);
         assert!(form.message.starts_with(&t("tui.settings.not_saved", &[("error", "")])), "{}", form.message);
     }
 
     #[test]
-    fn the_screen_has_three_sections_and_does_not_name_the_connection_mode() {
+    fn the_screen_has_the_python_sections_and_rows() {
         let form = form_at(&folder("sections"));
         let texts: Vec<String> = lines(&form).into_iter().map(|(text, _)| text).collect();
         assert_eq!(texts[0], "SUPABASE SETTINGS");
-        for section in ["[01] SUPABASE CONNECTION", "[02] ROOM SETTINGS", "[03] DEVICE IDENTITY"] {
-            assert!(texts.iter().any(|text| text == section), "{section}");
-        }
-        // The mode choice (its name and hints) is not on this screen; the Ctrl+N note still says it needs Supabase mode.
-        assert!(!texts.iter().any(|text| text.contains(&t("mode.local", &[])) || text.contains(&t("mode.hint_local", &[]))));
-    }
-
-    #[test]
-    fn the_short_id_is_shown_only_in_supabase_mode() {
-        let mut form = form_at(&folder("my-id"));
-        form.short_id = "ABCD2345".into();
-        let shown = t("tui.settings.my_id", &[("id", "ABCD2345")]);
-        assert!(!lines(&form).iter().any(|(text, _)| *text == shown), "Local mode");
-        form.mode = Mode::Supabase;
-        assert!(lines(&form).iter().any(|(text, _)| *text == shown), "Supabase mode");
+        assert!(texts.iter().any(|text| text == "DEVICE IDENTITY"));
+        assert!(!texts.iter().any(|text| text.contains("[0")), "no numbered sections");
+        assert!(!texts.iter().any(|text| text.contains("Publishable key") || text.contains("Ctrl+N: create room (Supabase")), "no key row or old note");
+        let rows: Vec<&String> = texts.iter().filter(|text| text.contains(" : [")).collect();
+        let labels: Vec<&str> = rows.iter().map(|text| text.split(" : [").next().unwrap().trim_start_matches(['▶', ' '])).map(str::trim_end).collect();
+        assert_eq!(labels, ["Setup code", "Trust code (8 digits)", "Display name", "Room id (8 characters)"]);
+        assert!(texts.iter().any(|text| text == "     Type the setup code, then F2: the URL and key are saved (not shown)"));
+        assert!(texts.iter().any(|text| text == "     Join: type a room ID here, then Enter  ·  New room: press Ctrl+N"));
     }
 
     #[test]
@@ -529,7 +701,7 @@ mod tests {
         assert!(form.creating.is_some());
         sender.send(Ok("ABCD1234".to_string())).unwrap();
         assert!(form.poll());
-        assert_eq!(form.fields[3], "ABCD1234");
+        assert_eq!(form.fields[ROOM_FIELD], "ABCD1234");
         assert!(form.creating.is_none());
         assert!(form.message.contains("ABCD1234"), "{}", form.message);
     }
@@ -541,7 +713,7 @@ mod tests {
         form.creating = Some(receiver);
         sender.send(Err("status 500".to_string())).unwrap();
         assert!(form.poll());
-        assert!(form.fields[3].is_empty());
+        assert!(form.fields[ROOM_FIELD].is_empty());
         assert_eq!(form.message, "방 만들기 실패: status 500");
     }
 
@@ -550,6 +722,61 @@ mod tests {
         assert_eq!(publish_message(relay_rest::PutOutcome::Written), Ok(()));
         assert!(publish_message(relay_rest::PutOutcome::Taken).unwrap_err().contains("409"));
         assert!(publish_message(relay_rest::PutOutcome::Failed).unwrap_err().contains("게시하지 못했습니다"));
+    }
+
+    #[test]
+    fn a_refused_room_opens_the_settings_with_the_trust_message() {
+        let form = Form::refused(&folder("refused-room"));
+        assert_eq!(form.message, t("room.trust_wrong", &[]));
+    }
+
+    #[test]
+    fn f9_opens_a_masked_passphrase_line_and_keys_go_there() {
+        let (chat, mut form) = (chat(), form_at(&folder("f9")));
+        press(&mut form, &chat, KeyCode::F(9));
+        for ch in "pw1".chars() {
+            press(&mut form, &chat, KeyCode::Char(ch));
+        }
+        assert_eq!(form.passphrase.as_deref(), Some("pw1"));
+        assert_eq!(form.focus, 1, "the keys do not move the field");
+        assert!(lines(&form).iter().any(|(text, _)| text == "operator passphrase: [***]"), "only the length is drawn");
+        press(&mut form, &chat, KeyCode::Backspace);
+        assert_eq!(form.passphrase.as_deref(), Some("pw"));
+        assert!(!lines(&form).iter().any(|(text, _)| text.contains("F9")), "F9 is not named on the screen");
+    }
+
+    #[test]
+    fn esc_closes_the_passphrase_line_without_leaving() {
+        let (chat, mut form) = (chat(), form_at(&folder("f9-esc")));
+        press(&mut form, &chat, KeyCode::F(9));
+        assert!(matches!(press(&mut form, &chat, KeyCode::Esc), Action::Stay));
+        assert!(form.passphrase.is_none());
+        assert!(matches!(press(&mut form, &chat, KeyCode::Esc), Action::Leave));
+    }
+
+    #[test]
+    fn an_empty_passphrase_is_refused_without_a_request() {
+        let (chat, mut form) = (chat(), form_at(&folder("f9-empty")));
+        press(&mut form, &chat, KeyCode::F(9));
+        press(&mut form, &chat, KeyCode::Enter);
+        assert_eq!(form.message, "issue failed: the operator passphrase is empty");
+        assert!(form.issuing.is_none());
+    }
+
+    #[test]
+    fn an_issue_answer_shows_the_code_or_the_reason() {
+        let mut form = form_at(&folder("issue-poll"));
+        let (sender, receiver) = mpsc::channel();
+        form.issuing = Some(receiver);
+        sender.send(Ok("ABCD2345".to_string())).unwrap();
+        assert!(form.poll());
+        assert_eq!(form.message, "new setup code: ABCD2345 (20 uses, 7 days; write it down now)");
+        assert!(form.issuing.is_none());
+        let (sender, receiver) = mpsc::channel();
+        form.issuing = Some(receiver);
+        sender.send(Err("the operator passphrase is wrong".to_string())).unwrap();
+        assert!(form.poll());
+        assert_eq!(form.message, "issue failed: the operator passphrase is wrong");
     }
 
     #[test]
@@ -571,7 +798,7 @@ mod tests {
         form.mine = Some(("11".repeat(32), "22".repeat(32)));
         on_key(&mut form, ctrl_n, &chat);
         assert!(form.message.starts_with("방 만들기:"), "{}", form.message);
-        assert!(form.fields[3].is_empty());
+        assert!(form.fields[ROOM_FIELD].is_empty());
     }
 
     #[test]
@@ -592,13 +819,18 @@ mod tests {
         let dir = folder("first-run-supabase");
         let chat = chat();
         let mut form = Form::open_supabase(&dir);
-        form.fields = ["http://127.0.0.1:9".into(), "dummy-test-key".into(), "Alice".into(), "ABCD2345".into()];
+        form.url = "http://127.0.0.1:9".into();
+        form.key = "dummy-test-key".into();
+        form.fields = [String::new(), "12345678".into(), "Alice".into(), "ABCD2345".into()];
         press(&mut form, &chat, KeyCode::Enter);
         assert!(!form.is_saved(), "Enter on a field row only moves on");
-        form.focus = 4;
+        form.focus = FIELDS;
         press(&mut form, &chat, KeyCode::Enter);
         assert!(form.is_saved(), "{}", form.message);
-        assert_eq!(relay_settings::load_saved(&dir).mode, Mode::Supabase);
+        let saved = relay_settings::load_saved(&dir);
+        assert_eq!(saved.mode, Mode::Supabase);
+        assert_eq!((saved.url.as_str(), saved.key.as_str()), ("http://127.0.0.1:9", "dummy-test-key"), "no code typed: the saved URL and key are kept");
+        assert_eq!(saved.trust, "12345678");
         chat.stop_relay();
         std::fs::remove_dir_all(&dir).unwrap();
     }

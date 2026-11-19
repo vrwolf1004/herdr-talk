@@ -10,7 +10,7 @@ import relay_settings as rs  # noqa: E402
 
 
 def _sample():
-    return {"mode": rs.SUPABASE, "url": "https://example.supabase.co", "key": "dummy-test-key", "name": "Alice", "room_code": "ABCD1234"}
+    return {"mode": rs.SUPABASE, "url": "https://example.supabase.co", "key": "dummy-test-key", "name": "Alice", "room_code": "ABCD1234", "trust": "12345678", "setup_code": ""}
 
 
 class SettingsTests(unittest.TestCase):
@@ -51,7 +51,7 @@ class SettingsTests(unittest.TestCase):
             self.assertNotEqual(handle.read(3), b"\xef\xbb\xbf")
 
     def test_supabase_needs_all_four_and_valid_values(self):
-        for name in ("url", "key", "name", "room_code"):
+        for name in ("url", "key", "name", "room_code", "trust"):
             incomplete = {**_sample(), name: ""}
             self.assertIsNotNone(rs.validate(incomplete), name)
         self.assertIsNotNone(rs.validate({**_sample(), "url": "http://example.com"}))
@@ -61,7 +61,7 @@ class SettingsTests(unittest.TestCase):
         self.assertIsNone(rs.validate(_sample()))
 
     def test_local_mode_keeps_partial_values(self):
-        partial = {"mode": rs.LOCAL, "url": "https://example.supabase.co", "key": "", "name": "", "room_code": ""}
+        partial = {"mode": rs.LOCAL, "url": "https://example.supabase.co", "key": "", "name": "", "room_code": "", "trust": "", "setup_code": ""}
         self.assertIsNone(rs.save(self.dir, partial))
         self.assertEqual(rs.load_saved(self.dir), partial)
 

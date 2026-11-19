@@ -34,7 +34,7 @@ Rust 도구 체인이 없거나 실행 파일 내려받기를 피하려면 Pytho
 herdr plugin install vrwolf1004/herdr-talk/python
 ```
 
-Python 판도 Rust 판과 같은 방식으로 암호화합니다 (순수 Python, 추가 패키지 없음). 코드를 비교하고 `/trust` 하면 두 판이 서로 대화합니다. 키가 없는 옛 Python 판과 대화할 때만 Rust 쪽 `config.json`에 `"plaintext": true`가 필요합니다. [docs/encryption-protocol.md](docs/encryption-protocol.md) 참고.
+Python 판도 Rust 판과 같은 방식으로 암호화합니다 (순수 Python, 추가 패키지 없음). 코드를 비교하고 `/join` 하면 두 판이 서로 대화합니다. 키가 없는 옛 Python 판과 대화할 때만 Rust 쪽 `config.json`에 `"plaintext": true`가 필요합니다. [docs/encryption-protocol.md](docs/encryption-protocol.md) 참고.
 
 ## 액션
 
@@ -57,6 +57,7 @@ herdr pane 안에서 액션을 실행해야 합니다. 직접 pane을 여는 방
 - [사용법 (한국어)](docs/usage.ko.md)
 - [Usage (English)](docs/usage.md)
 - [설정](docs/configuration.md)
+- [운영자 가이드 (Supabase, 설정 코드)](docs/operator-setup.md)
 - [문제 해결](docs/troubleshooting.md)
 - [개발](docs/development.md)
 - [할 일](docs/todo.md)

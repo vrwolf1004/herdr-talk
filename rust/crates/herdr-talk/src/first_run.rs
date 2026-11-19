@@ -74,20 +74,20 @@ pub fn render(out: &mut Stdout, chooser: &mut Chooser, remaining: Option<u64>, w
     // A text menu: the selected item is bright and marked with ▶; the other item is body text.
     let item = |mode: Mode, number: u8, name: &str, hint: &str| -> Vec<Row> {
         let selected = chooser.selected == mode;
-        let marker = if selected { "▶" } else { " " };
+        let marker = if selected { "▶ " } else { "  " };
         let tone = if selected { Tone::Title } else { Tone::Text };
-        vec![vec![(format!("  {marker} {number:02}. {name}"), tone)], vec![(format!("       {hint}"), Tone::Dim)]]
+        vec![vec![(format!("{marker}{number:02}. {name}"), tone)], vec![(format!("     {hint}"), Tone::Dim)]]
     };
     // shortcut: the menu names and hints are English-only like the classic screen texts; move them to the locales with the room label.
     let mut body: Vec<Row> = vec![vec![(t("mode.first_run_title", &[]), Tone::Title)], vec![]];
-    body.extend(item(Mode::Local, 1, "BASE STATION", "LAN DIRECT COMMUNICATION"));
+    body.extend(item(Mode::Local, 1, "BASE STATION", &t("mode.hint_local", &[])));
     body.push(vec![]);
-    body.extend(item(Mode::Supabase, 2, "CLOUD SERVICE", "REMOTE COMMUNICATION"));
+    body.extend(item(Mode::Supabase, 2, "CLOUD SERVICE", &t("mode.hint_supabase", &[])));
     body.push(vec![]);
     if let Some(seconds) = remaining {
         body.push(vec![(t("mode.timeout_hint", &[("n", &seconds.to_string())]), Tone::Dim)]);
     }
-    let frame = classic(body, &t("tui.first_run.keys", &[]), "", width, rows);
+    let frame = classic(body, "1 / 2, or Tab then Enter · Esc: quit", "", width, rows);
     paint(out, width, rows, frame, &mut chooser.drawn)
 }
 

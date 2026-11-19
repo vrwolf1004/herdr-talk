@@ -81,11 +81,11 @@ pub fn sas_code(own_key: &[u8], own_nonce: &[u8], peer_key: &[u8], peer_nonce: &
     hasher.update(second_key);
     hasher.update(second_nonce);
     let digest = hasher.finalize();
-    let mut value = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes")) % 36u64.pow(8);
+    let mut value = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes")) % 10u64.pow(8);
     let mut chars = [0u8; 8];
     for slot in chars.iter_mut().rev() {
-        *slot = CODE_ALPHABET[(value % 36) as usize];
-        value /= 36;
+        *slot = b'0' + (value % 10) as u8;
+        value /= 10;
     }
     chars.iter().map(|byte| *byte as char).collect()
 }
@@ -487,12 +487,12 @@ mod tests {
     fn sas_and_commit_match_the_python_reference() {
         // Vectors from python/src/store.py (same values in the Python tests).
         assert_eq!(commit(&[1; 32], &[2; 32]).iter().map(|b| format!("{b:02x}")).collect::<String>(), "8d02d5ba2bcdc8c3392ffda99d1a66c4eede8c57cc4443c7d0fc00d5f39d7b59");
-        assert_eq!(sas_code(&[1; 32], &[2; 32], &[3; 32], &[4; 32]), "HWCFKZ1W");
-        assert_eq!(sas_code(&[3; 32], &[4; 32], &[1; 32], &[2; 32]), "HWCFKZ1W", "order does not matter");
+        assert_eq!(sas_code(&[1; 32], &[2; 32], &[3; 32], &[4; 32]), "56324468");
+        assert_eq!(sas_code(&[3; 32], &[4; 32], &[1; 32], &[2; 32]), "56324468", "order does not matter");
         let initiator = store_vector("initiatorPublic");
         let responder = store_vector("responderPublic");
-        assert_eq!(sas_code(&initiator, &[0x11; 32], &responder, &[0x22; 32]), "I81XP7D6");
-        assert_ne!(sas_code(&initiator, &[0x11; 32], &responder, &[0x23; 32]), "I81XP7D6", "a changed nonce changes the code");
+        assert_eq!(sas_code(&initiator, &[0x11; 32], &responder, &[0x22; 32]), "55024010");
+        assert_ne!(sas_code(&initiator, &[0x11; 32], &responder, &[0x23; 32]), "55024010", "a changed nonce changes the code");
     }
 
     fn store_vector(key: &str) -> Vec<u8> {

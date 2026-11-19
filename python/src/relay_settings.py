@@ -14,11 +14,11 @@ from core import relay_rest
 FILE = "relay.json"
 LOCAL = "local"
 SUPABASE = "supabase"
-_FIELDS = ("url", "key", "name", "room_code")
+_FIELDS = ("url", "key", "name", "room_code", "trust", "setup_code")
 
 
 def empty():
-    return {"mode": LOCAL, "url": "", "key": "", "name": "", "room_code": ""}
+    return {"mode": LOCAL, "url": "", "key": "", "name": "", "room_code": "", "trust": "", "setup_code": ""}
 
 
 def _read(state):
@@ -77,12 +77,14 @@ def from_environment():
 
 def validate(settings):
     """None when the settings can be saved, else the reason. Empty fields are allowed in local mode."""
-    if settings["mode"] == SUPABASE and any(not settings.get(name) for name in _FIELDS):
-        return "Supabase mode needs the URL, the key, the display name and the room code"
+    if settings["mode"] == SUPABASE and any(not settings.get(name) for name in _FIELDS if name != "setup_code"):
+        return "Supabase mode needs the setup code (URL and key), the display name, the room code and the trust code"
     if settings["name"] and not relay_rest.valid_name(settings["name"]):
         return "name must be 1 to 32 characters without control characters"
     if settings.get("room_code") and not relay_rest.valid_room_code(settings["room_code"]):
         return "room code must be 8 uppercase letters or digits"
+    if settings.get("trust") and not relay_rest.valid_trust(settings["trust"]):
+        return "trust code must be 8 digits"
     if settings["mode"] == SUPABASE:
         try:
             if relay_rest.config(settings["url"], settings["key"]) is None:
@@ -99,6 +101,16 @@ def save(state, settings):
     reason = validate(settings)
     if reason:
         return reason
+    return _write(state, settings)
+
+
+def save_connection(state, url, key, setup_code):
+    """The middle save after a setup code: URL, key and the setup code change; the other saved values stay. The room and
+    name are checked by the final save, not here. Returns None or the reason."""
+    return _write(state, {**load_saved(state), "mode": SUPABASE, "url": url, "key": key, "setup_code": setup_code})
+
+
+def _write(state, settings):
     try:
         os.makedirs(state, exist_ok=True)
         text = json.dumps({"mode": settings["mode"], **{name: settings.get(name, "") for name in _FIELDS}}, ensure_ascii=False)

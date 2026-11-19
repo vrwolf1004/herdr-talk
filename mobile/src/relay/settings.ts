@@ -18,25 +18,41 @@ export function normalizeRoomCode(text: string): string {
 }
 
 export type RelaySettings = {
-  url: string; // project URL, https://<ref>.supabase.co
-  key: string; // publishable key (not a secret, but it is never printed in full)
+  url: string; // project URL, https://<ref>.supabase.co: saved by a setup code, never typed
+  key: string; // publishable key (not a secret, but it is never printed in full): saved by a setup code
+  setupCode: string; // the setup code that gave url and key (8 uppercase letters or digits)
   name: string; // display name, 1 to 32 characters, no control characters; assigned by the app, never typed
   roomCode: string; // the room ID, 8 uppercase letters or digits
+  trust: string; // the trust code, 8 digits
 };
 
 // The display name is not a field: the app assigns it (store.loadOrCreateDisplayName).
-export const FIELD_IDS = ["url", "key", "roomCode"] as const;
+export const FIELD_IDS = ["setupCode", "trust", "roomCode"] as const;
 export type FieldId = (typeof FIELD_IDS)[number];
 
+/** The project URL used when no URL is set (the same as the desktop app's default). */
+export const DEFAULT_URL = "https://coekrspnpcjzcbydarco.supabase.co";
+
 export function emptySettings(): RelaySettings {
-  return { url: "", key: "", name: "", roomCode: "" };
+  return { url: "", key: "", setupCode: "", name: "", roomCode: "", trust: "" };
 }
 
-/** Field ids that are missing or not valid. Empty means the settings can be saved. */
+/** A setup code: 8 letters or digits; spaces and dashes are ignored and letters become uppercase. Null when it is not one. */
+export function normalizeSetupCode(text: string): string | null {
+  const code = text.replace(/[\s-]/g, "").toUpperCase();
+  return /^[A-Z0-9]{8}$/.test(code) ? code : null;
+}
+
+/** A trust code: 8 digits. */
+export function isTrustCode(text: string): boolean {
+  return /^[0-9]{8}$/.test(text);
+}
+
+/** Field ids that are missing or not valid. The URL and key come from a setup code, so only the code is named for them. */
 export function missingFields(settings: RelaySettings): FieldId[] {
   const missing: FieldId[] = [];
-  if (!isHttpsUrl(settings.url)) missing.push("url");
-  if (settings.key.trim().length === 0) missing.push("key");
+  if (!isHttpsUrl(settings.url) || settings.key.trim().length === 0) missing.push("setupCode");
+  if (!isTrustCode(settings.trust)) missing.push("trust");
   if (!isRoomCode(settings.roomCode)) missing.push("roomCode");
   return missing;
 }

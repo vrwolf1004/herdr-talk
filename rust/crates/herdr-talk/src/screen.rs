@@ -135,6 +135,20 @@ pub(crate) fn paint(out: &mut Stdout, width: usize, rows: usize, body: Vec<Row>,
     Ok(())
 }
 
+/// The chat status line text: the host badge, peers, mode, the room part when a room is saved, then a relay error
+/// (a success text is never added).
+pub(crate) fn status_info(badge: &str, peers: &str, mode: &str, room: Option<String>, relay: &str) -> String {
+    let mut info = format!("{badge}{}", t("status.line", &[("peers", peers)]).trim());
+    info.push_str(&format!(" · {mode}"));
+    if let Some(room) = room {
+        info.push_str(&format!(" · {room}"));
+    }
+    if status_tag(relay).0 == "[ERROR]" {
+        info.push_str(&format!(" · {relay}"));
+    }
+    info
+}
+
 /// The status tag for the relay state: [SYSTEM READY] without a relay, otherwise the state the relay text names.
 // shortcut: the state is read from the relay's status text; a clear state value from talk-core would replace this guess.
 pub(crate) fn status_tag(relay: &str) -> (&'static str, Tone) {
@@ -342,8 +356,8 @@ fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows:
     let peers = chat.fresh_peers().len().to_string();
     let badge = if chat.is_host() { format!("{} ", t("host.badge", &[])) } else { String::new() };
     let mode = if chat.is_supabase() { t("mode.supabase", &[]) } else { t("mode.local", &[]) };
-    let info = format!("{badge}{} · {}", t("status.line", &[("name", &name), ("peers", &peers)]).trim(), t("mode.status", &[("mode", &mode)]));
     let relay = chat.relay_status();
+    let info = status_info(&badge, &peers, &mode, chat.room_status(), &relay);
     let (input, cursor) = input_row(input, width);
 
     let mut frame = vec![split(APP_NAME, Tone::Title, "SYS.VER 1.0", Tone::Dim, width), dash(width), vec![("COMMUNICATION LOG".to_string(), Tone::Title)]];
@@ -465,11 +479,12 @@ pub fn choose_mode(chat: &Arc<Chat>) -> io::Result<Choice> {
     }
 }
 
-pub fn run(chat: &Arc<Chat>) -> io::Result<()> {
+/// The chat screen. `refused`: the saved room refused this PC's trust code, so the settings screen opens first with the reason.
+pub fn run(chat: &Arc<Chat>, refused: bool) -> io::Result<()> {
     let mut terminal = Terminal::enter()?;
     let mut input = String::new();
     let mut last_status = String::new();
-    let mut form: Option<Form> = None;
+    let mut form: Option<Form> = refused.then(|| Form::refused(&talk_core::store::state_dir()));
     let mut stamps = Stamps::default();
     let mut drawn = Frame::default();
     render(&mut terminal.0, chat, &input, &mut stamps, &mut drawn)?;
@@ -655,7 +670,7 @@ mod tests {
         chat.my_nonce_for(&key);
         assert!(chat.set_reveal(&key, [9; 32]));
         let rows: Vec<String> = nodes_block(&chat, "Ann", 30).iter().map(text_of).collect();
-        assert!(rows.iter().any(|row| row.starts_with("[1] rust-supa (10.0.0.7)")), "the list shows the same number as /trust: {rows:?}");
+        assert!(rows.iter().any(|row| row.starts_with("[1] rust-supa (10.0.0.7)")), "the list shows the same number as /join: {rows:?}");
     }
 
     #[test]
@@ -674,6 +689,18 @@ mod tests {
     }
 
     #[test]
+    fn the_status_line_has_peers_mode_room_and_only_an_error() {
+        let peers = t("status.line", &[("peers", "3")]).trim().to_string();
+        let room = Some("room ID: ABCD2345 · setup code: -".to_string());
+        let line = status_info("[host] ", "3", "CLOUD SERVICE", room.clone(), "relay: room joined (2 members)");
+        assert_eq!(line, format!("[host] {peers} · CLOUD SERVICE · room ID: ABCD2345 · setup code: -"), "a success text is not added");
+        let line = status_info("", "3", "CLOUD SERVICE", room.clone(), "relay: room join failed: offline");
+        assert_eq!(line, format!("{peers} · CLOUD SERVICE · room ID: ABCD2345 · setup code: - · relay: room join failed: offline"));
+        let local = status_info("", "0", "BASE STATION", None, "");
+        assert_eq!(local, format!("{} · {}", t("status.line", &[("peers", "0")]).trim(), t("mode.local", &[])));
+    }
+
+    #[test]
     fn the_chat_rows_follow_the_python_order_with_the_maker_alone_at_the_bottom() {
         let (frame, _) = chat_frame(&chat(), "", &mut Stamps::default(), 100, 20);
         let texts: Vec<String> = frame.iter().map(text_of).collect();
@@ -683,7 +710,8 @@ mod tests {
         assert!(texts[17].starts_with("MESSAGE > "), "the input: {}", texts[17]);
         assert!(texts[18].ends_with(&t("chat.help_hint", &[])), "the help hint closes the status line: {}", texts[18]);
         assert!(texts[18].contains("[SYSTEM READY]"), "the connection tag is on the status line: {}", texts[18]);
-        assert!(texts[18].contains(&t("mode.status", &[("mode", &t("mode.local", &[]))])), "the mode is on the status line: {}", texts[18]);
+        assert!(texts[18].contains(&t("mode.local", &[])), "the mode is on the status line: {}", texts[18]);
+        assert!(!texts[18].contains("herdr-talk"), "the status line has no app name: {}", texts[18]);
         assert_eq!(texts[19].trim(), "made by Rust", "the bottom row holds only the maker");
         assert!(texts[19].starts_with(' '), "the maker is at the right end");
     }

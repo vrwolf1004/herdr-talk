@@ -17,7 +17,7 @@ cargo run --release
 
 ## Connection mode: Local or Supabase
 
-- **Local (LAN)**: the default. UDP broadcast discovers peers and messages go to every visible peer, so LAN chat supports multiple participants.
+- **Local (LAN)**: the default. UDP broadcast discovers peers. A LAN chat holds up to 10 people, this PC included.
 - **Supabase**: a many-participant room relay. The server generates a random 8-character room ID when **Create room** is used; share it so others can join. **Retired:** the peer-ID-based one-to-one relay.
 - Room IDs are 8-character `A-Z0-9` values; input ignores case, spaces and dashes. Legacy peer IDs remain only for signed peer-row publishing, not as a room-join input. Trust codes are also 8 characters, but the SAS commit design is decided and implementation is pending.
 - Rooms expire 24 hours after creation and cannot be extended; expired joins return `410`. Expiry cleanup is implemented but not deployed.

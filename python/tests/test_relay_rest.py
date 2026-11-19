@@ -119,12 +119,21 @@ class RoomTests(unittest.TestCase):
             self.assertFalse(relay_rest.valid_room_code(bad), bad)
 
     def test_create_room_request_sends_the_key_and_a_signed_body(self):
-        request = relay_rest.create_room_request(dummy(), SEED, "Alice", ts=1700000000, nonce=VECTOR_NONCE)
+        request = relay_rest.create_room_request(dummy(), SEED, "Alice", "12345678", ts=1700000000, nonce=VECTOR_NONCE)
         self.assertEqual(request["url"], dummy().url + "/functions/v1/create-room")
         self.assertEqual(request["headers"]["apikey"], DUMMY_KEY)
         self.assertEqual(request["headers"]["Authorization"], "Bearer " + DUMMY_KEY)
         self.assertEqual(json.loads(request["body"]), {"peer_pk": PK_OF_SEED, "display_name": "Alice", "ts": 1700000000,
-                                                        "nonce": VECTOR_NONCE, "sig": ROOM_CREATE_SIG})
+                                                        "nonce": VECTOR_NONCE, "sig": ROOM_CREATE_SIG, "trust": "12345678"})
+
+    def test_the_trust_code_is_eight_digits_and_is_refused_before_a_request_exists(self):
+        self.assertTrue(relay_rest.valid_trust("12345678"))
+        for bad in ("1234567", "123456789", "1234567a", "１２３４５６７８", "", None):
+            self.assertFalse(relay_rest.valid_trust(bad), bad)
+            with self.assertRaises(ValueError):
+                relay_rest.join_room_request(dummy(), SEED, "ABCD1234", "Bob", bad)
+            with self.assertRaises(ValueError):
+                relay_rest.create_room_request(dummy(), SEED, "Alice", bad)
 
     def test_room_signature_matches_the_fixed_vector_and_verifies(self):
         message = relay_rest.room_message("create", "", PK_OF_SEED, "Alice", 1700000000, VECTOR_NONCE)
@@ -137,11 +146,11 @@ class RoomTests(unittest.TestCase):
 
     def test_bad_input_is_refused_before_a_request_exists(self):
         with self.assertRaises(ValueError):
-            relay_rest.create_room_request(dummy(), SEED, "")
+            relay_rest.create_room_request(dummy(), SEED, "", "12345678")
         with self.assertRaises(ValueError):
-            relay_rest.create_room_request(dummy(), SEED, "Alice", ts=True, nonce=VECTOR_NONCE)
+            relay_rest.create_room_request(dummy(), SEED, "Alice", "12345678", ts=True, nonce=VECTOR_NONCE)
         with self.assertRaises(ValueError):
-            relay_rest.join_room_request(dummy(), SEED, "abcd1234", "Alice")
+            relay_rest.join_room_request(dummy(), SEED, "abcd1234", "Alice", "12345678")
 
     def test_create_room_answer_is_checked(self):
         self.assertEqual(relay_rest.read_room_code(200, '{"room_code":"ABCD1234","message":"ok"}'), "ABCD1234")
@@ -149,11 +158,30 @@ class RoomTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=f"{status} {body}"):
                 relay_rest.read_room_code(status, body)
 
+    def test_the_operator_issue_answers_are_read(self):
+        self.assertEqual(relay_rest.read_issue_answer(200, '{"code": "T5N9Q1ZB", "max_uses": 20}'), "T5N9Q1ZB")
+        for status, text in ((401, "wrong"), (429, "later"), (503, "secrets")):
+            with self.subTest(status=status):
+                with self.assertRaises(ValueError):
+                    relay_rest.read_issue_answer(status, "{}")
+        with self.assertRaises(ValueError):
+            relay_rest.read_issue_answer(200, "not json")
+
+    def test_a_wrong_trust_code_is_refused_and_says_so(self):
+        with self.assertRaises(ValueError) as caught:
+            relay_rest.read_join_room(403, "")
+        self.assertIn("trust", str(caught.exception))
+
+    def test_a_full_room_says_so(self):
+        with self.assertRaises(ValueError) as caught:
+            relay_rest.read_join_room(409, "{}")
+        self.assertIn("10", str(caught.exception))
+
     def test_join_room_request_and_answer(self):
-        request = relay_rest.join_room_request(dummy(), SEED, "ABCD1234", "Bob", ts=1700000000, nonce=VECTOR_NONCE)
+        request = relay_rest.join_room_request(dummy(), SEED, "ABCD1234", "Bob", "12345678", ts=1700000000, nonce=VECTOR_NONCE)
         self.assertEqual(request["url"], dummy().url + "/functions/v1/join-room")
         self.assertEqual(json.loads(request["body"]), {"room_code": "ABCD1234", "peer_pk": PK_OF_SEED, "display_name": "Bob",
-                                                        "ts": 1700000000, "nonce": VECTOR_NONCE, "sig": ROOM_JOIN_SIG})
+                                                        "ts": 1700000000, "nonce": VECTOR_NONCE, "sig": ROOM_JOIN_SIG, "trust": "12345678"})
         info = relay_rest.read_join_room(200, json.dumps({"room_code": "ABCD1234", "owner_pk": self.PK, "members": [self.PK]}))
         self.assertEqual(info, {"room_code": "ABCD1234", "owner_pk": self.PK, "members": [self.PK]})
         with self.assertRaises(ValueError):
@@ -165,11 +193,68 @@ class RoomTests(unittest.TestCase):
 
     def test_create_and_join_send_one_request_each(self):
         with mock.patch.object(relay_rest, "_send", return_value=(200, '{"room_code":"ABCD1234"}')) as send:
-            self.assertEqual(relay_rest.create_room(dummy(), SEED, "Alice"), "ABCD1234")
+            self.assertEqual(relay_rest.create_room(dummy(), SEED, "Alice", "12345678"), "ABCD1234")
         self.assertIn("create-room", send.call_args.args[0]["url"])
         with mock.patch.object(relay_rest, "_send", side_effect=OSError("offline")):
             with self.assertRaises(OSError):
-                relay_rest.join_room(dummy(), SEED, "ABCD1234", "Bob")
+                relay_rest.join_room(dummy(), SEED, "ABCD1234", "Bob", "12345678")
+
+
+class SetupCodeTests(unittest.TestCase):
+    ANSWER = '{"url": "https://new.supabase.co", "key": "new-dummy-key"}'
+
+    def test_normalize_drops_spaces_and_dashes_and_uppercases(self):
+        self.assertEqual(relay_rest.normalize_setup_code(" abcd-2345 "), "ABCD2345")
+        self.assertEqual(relay_rest.normalize_setup_code("ab cd 23 45"), "ABCD2345")
+        self.assertEqual(relay_rest.normalize_setup_code("AB12CD34"), "AB12CD34")
+
+    def test_normalize_refuses_wrong_length_symbols_and_non_ascii(self):
+        for text in ("ABC", "ABCD23456", "ABCD234!", "ABCD_234", "ABCD234É", "ＡＢＣＤ２３４５", "", None):
+            with self.subTest(text=text):
+                self.assertIsNone(relay_rest.normalize_setup_code(text))
+
+    def test_setup_url_env_wins_else_default(self):
+        with mock.patch.dict(os.environ, {relay_rest.URL_VARIABLE: " http://127.0.0.1:9/ "}):
+            self.assertEqual(relay_rest.setup_url(), "http://127.0.0.1:9/")
+        with mock.patch.dict(os.environ, {relay_rest.URL_VARIABLE: ""}):
+            self.assertEqual(relay_rest.setup_url(), relay_rest.DEFAULT_URL)
+
+    def test_redeem_posts_the_normalized_code_without_an_apikey(self):
+        with mock.patch.object(relay_rest, "_send", return_value=(200, self.ANSWER)) as send:
+            url, key = relay_rest.redeem_setup_code("abcd-2345", "https://base.supabase.co/")
+        self.assertEqual((url, key), ("https://new.supabase.co", "new-dummy-key"))
+        request = send.call_args.args[0]
+        self.assertEqual(request["method"], "POST")
+        self.assertEqual(request["url"], "https://base.supabase.co/functions/v1/redeem-setup-code")
+        self.assertEqual(request["headers"], {"Content-Type": "application/json"})
+        self.assertEqual(json.loads(request["body"]), {"code": "ABCD2345"})
+
+    def test_redeem_uses_the_env_url_or_the_default(self):
+        with mock.patch.object(relay_rest, "_send", return_value=(200, self.ANSWER)) as send, \
+                mock.patch.dict(os.environ, {relay_rest.URL_VARIABLE: ""}):
+            relay_rest.redeem_setup_code("ABCD2345")
+        self.assertEqual(send.call_args.args[0]["url"], relay_rest.DEFAULT_URL + "/functions/v1/redeem-setup-code")
+
+    def test_redeem_answers(self):
+        cases = [(404, "", "wrong, used or expired"), (429, "", "too many wrong codes"), (500, "", "status 500"),
+                 (200, "not json", "not JSON"), (200, '{"url": "https://x.supabase.co"}', "no url and key"),
+                 (200, '{"url": "http://example.com", "key": "k"}', "https")]
+        for status, body, reason in cases:
+            with self.subTest(status=status, body=body):
+                with mock.patch.object(relay_rest, "_send", return_value=(status, body)):
+                    with self.assertRaisesRegex(ValueError, reason):
+                        relay_rest.redeem_setup_code("ABCD2345")
+
+    def test_a_bad_code_is_refused_before_any_request(self):
+        with mock.patch.object(relay_rest, "_send") as send:
+            with self.assertRaisesRegex(ValueError, "8 letters or digits"):
+                relay_rest.redeem_setup_code("ABC")
+        send.assert_not_called()
+
+    def test_a_network_error_is_raised_for_the_caller(self):
+        with mock.patch.object(relay_rest, "_send", side_effect=OSError("offline")):
+            with self.assertRaises(OSError):
+                relay_rest.redeem_setup_code("ABCD2345")
 
 
 if __name__ == "__main__":

@@ -5,19 +5,22 @@ import { Alert, BackHandler, KeyboardAvoidingView, Platform, Pressable, ScrollVi
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { clearDisplayName, clearSettings, defaultSettings, loadOrCreateDisplayName, loadOrCreateKeys, loadOrCreateShortId, loadSettings, randomBytes, replaceShortId, saveSettings } from '../relay/store.ts';
-import { PUT_TRIES, deleteRow, putRow } from '../relay/client.ts';
+import { PUT_TRIES, deleteRow, putRow, redeemSetupCode } from '../relay/client.ts';
 import { bytesToHex } from '../relay/bytes.ts';
 import { NonceCache } from '../relay/protocol.ts';
 import { checkRow, createRoom, displayName, fetchRows, loadMembers, postBody, postMessageBody, roomPayload, sealDeliveries } from '../relay/room.ts';
-import { FIELD_IDS, emptySettings, isHttpsUrl, keyLabel, missingFields, normalizeRoomCode, type FieldId, type RelaySettings } from '../relay/settings.ts';
+import { DEFAULT_URL, FIELD_IDS, emptySettings, isHttpsUrl, isTrustCode, missingFields, normalizeRoomCode, normalizeSetupCode, type FieldId, type RelaySettings } from '../relay/settings.ts';
 import { palette } from '../theme';
 import { SIZE, TOUCH_MIN } from '../typography.ts';
 
 const LABELS: Record<FieldId, string> = {
-  url: 'Project URL',
-  key: 'Publishable key',
+  setupCode: 'Setup code',
+  trust: 'Trust code (8 digits)',
   roomCode: 'Room ID (8 characters)',
 };
+
+/** The project URL for the setup-code call: the app default from .env, else the built-in one. */
+const setupUrl = () => process.env.EXPO_PUBLIC_RELAY_URL?.trim() || DEFAULT_URL;
 
 const POLL_MS = 3000;
 const MEMBERS_MS = 10000;
@@ -34,7 +37,8 @@ export default function RelayScreen() {
   const colors = palette('Green');
   const [settings, setSettings] = useState<RelaySettings>(emptySettings());
   const [draft, setDraft] = useState<RelaySettings>(emptySettings());
-  const [status, setStatus] = useState('starting');
+  // A problem with the room (shown in the status line); success texts are not kept.
+  const [problem, setProblem] = useState('');
   const [notice, setNotice] = useState('');
   const [editing, setEditing] = useState(false);
   const [usingDefaults, setUsingDefaults] = useState(false);
@@ -52,12 +56,12 @@ export default function RelayScreen() {
       const { settings: loaded, fromDefaults } = await loadSettings();
       const current: RelaySettings = { ...loaded, name: await loadOrCreateDisplayName() };
       setSettings(current);
-      setDraft(current);
+      setDraft({ ...current, setupCode: '' }); // the setup-code field starts empty; the saved code is in the status line
       setUsingDefaults(fromDefaults);
       if (missingFields(current).length === 0) {
         startRoom(current);
       } else {
-        setStatus('set the settings');
+        setNotice('set the settings first');
         setEditing(true);
       }
     })();
@@ -80,9 +84,13 @@ export default function RelayScreen() {
 
   /** Make a new room owned by this phone and put its code in the room ID field (saving joins it). */
   async function makeRoom() {
-    const current: RelaySettings = { ...draft, name: settings.name };
+    const current: RelaySettings = { ...settings, trust: draft.trust.trim() };
     if (!isHttpsUrl(current.url) || current.key.trim() === '') {
-      setNotice('create room: fill in the URL and the key first');
+      setNotice('create room: save a setup code first');
+      return;
+    }
+    if (!isTrustCode(current.trust)) {
+      setNotice('create room: the trust code must be 8 digits');
       return;
     }
     setNotice('create room: working...');
@@ -105,6 +113,7 @@ export default function RelayScreen() {
     if (session.current) session.current.run.stopped = true;
     setInRoom(false);
     setLeft(false);
+    setProblem('');
     const run = { stopped: false };
     setLines([]);
     setMembers(new Map());
@@ -113,7 +122,7 @@ export default function RelayScreen() {
       const { keys, signingSeed } = await loadOrCreateKeys();
       const shortId = await publishRow(current, keys.noisePublic, signingSeed);
       if (shortId === null) {
-        setStatus("this phone's row could not be published");
+        setProblem("this phone's row could not be published");
         return;
       }
       setInRoom(true);
@@ -129,9 +138,9 @@ export default function RelayScreen() {
           try {
             membersRef.current = await loadMembers(current, signingSeed, nowSeconds(), randomHex(16));
             setMembers(membersRef.current);
-            setStatus(`room ${current.roomCode} · ${membersRef.current.size + 1} members`);
+            setProblem('');
           } catch (error) {
-            setStatus(`room join failed: ${reason(error)}`);
+            setProblem(`room join failed: ${reason(error)}`);
             await sleep(MEMBERS_MS);
             continue;
           }
@@ -147,12 +156,12 @@ export default function RelayScreen() {
             setLines((prev) => [...prev, line].slice(-MAX_LINES));
           }
         } catch (error) {
-          setStatus(`room: ${reason(error)}`);
+          setProblem(`room: ${reason(error)}`);
         }
         await sleep(POLL_MS);
       }
     } catch (error) {
-      setStatus(`room could not start: ${reason(error)}`);
+      setProblem(`room could not start: ${reason(error)}`);
     }
   }
 
@@ -167,10 +176,9 @@ export default function RelayScreen() {
     setMembers(new Map());
     membersRef.current = new Map();
     setLeft(true); // the quit button shows at once
-    setStatus('leaving the room...');
+    setNotice('leaving the room...');
     const done = deleteRow(now.settings, now.seed, now.shortId, nowSeconds(), randomHex(16)).then((deleted) => {
-      setStatus('left the room');
-      setNotice(deleted ? '' : 'left, but the relay did not confirm the delete');
+      setNotice(deleted ? 'left the room' : 'left, but the relay did not confirm the delete');
     });
     leaving.current = done;
     await done;
@@ -211,8 +219,33 @@ export default function RelayScreen() {
     setNotice('');
   }
 
+  /** Save Setup code: redeem the typed code now and store its URL, key and code (the rest of the settings stay). */
+  async function saveSetupCode() {
+    const code = normalizeSetupCode(draft.setupCode);
+    if (code === null) {
+      setNotice(`${LABELS.setupCode}: 8 letters or digits (spaces and dashes are ignored)`);
+      return;
+    }
+    setNotice('setup code: checking...');
+    try {
+      const { url, key } = await redeemSetupCode(code, setupUrl());
+      const next = { ...settings, url, key, setupCode: code };
+      await saveSettings(next);
+      setSettings(next);
+      setDraft({ ...draft, setupCode: '' });
+      setNotice('Setup code saved: the URL and key are stored (not shown).');
+    } catch (error) {
+      setNotice(reason(error));
+    }
+  }
+
+  /** Join: the final save of the room ID and trust code. A typed setup code is not redeemed here (Save setup code does that). */
   async function save() {
-    const next = { ...draft, roomCode: normalizeRoomCode(draft.roomCode) };
+    if (draft.setupCode.trim() !== '') {
+      setNotice('Save setup code first: Join does not redeem a typed setup code');
+      return;
+    }
+    const next: RelaySettings = { ...settings, roomCode: normalizeRoomCode(draft.roomCode), trust: draft.trust.trim() };
     const missing = missingFields(next);
     if (missing.length > 0) {
       setNotice(`not saved. missing: ${missing.map((id) => LABELS[id]).join(', ')}`);
@@ -224,7 +257,7 @@ export default function RelayScreen() {
       setNotice('could not save the settings on this device');
       return;
     }
-    setDraft(next);
+    setDraft({ ...next, setupCode: '' });
     setSettings(next);
     setEditing(false);
     setNotice('saved');
@@ -246,19 +279,30 @@ export default function RelayScreen() {
           setDraft(next);
           setUsingDefaults(true);
           setEditing(true);
+          setProblem('');
           setNotice('settings cleared');
-          setStatus('set the settings');
         },
       },
     ]);
   }
+
+  // The status line as Python shows it (English), with the room and setup code; only a problem is added after them.
+  const statusLine = [
+    `peers: ${members.size}`,
+    'CLOUD SERVICE',
+    settings.roomCode ? `room ID: ${settings.roomCode}` : null,
+    settings.roomCode ? `setup code: ${settings.setupCode || '-'}` : null,
+    problem || null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]}>
       <StatusBar style="light" />
       <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <View style={[styles.statusRow, { borderColor: colors.border }]}>
-          <Text style={[styles.statusText, { color: colors.accent }]}>mode: Supabase · {status}</Text>
+          <Text style={[styles.statusText, { color: problem ? colors.danger : colors.accent }]}>{statusLine}</Text>
           <View style={styles.actions}>
             {inRoom ? (
               <Pressable onPress={leave} style={[styles.topButton, { borderColor: colors.danger }]}>
@@ -287,10 +331,9 @@ export default function RelayScreen() {
                     style={[styles.input, styles.grow, { color: colors.text, borderColor: colors.border }]}
                     value={draft[id]}
                     onChangeText={(value) => setDraft({ ...draft, [id]: value })}
-                    autoCapitalize={id === 'roomCode' ? 'characters' : 'none'}
+                    autoCapitalize={id === 'trust' ? 'none' : 'characters'}
                     autoCorrect={false}
-                    secureTextEntry={id === 'key'}
-                    placeholder={id === 'key' ? keyLabel(draft.key) : undefined}
+                    keyboardType={id === 'trust' ? 'number-pad' : 'default'}
                     placeholderTextColor={colors.muted}
                   />
                   {id === 'roomCode' ? (
@@ -298,7 +341,15 @@ export default function RelayScreen() {
                       <Text style={{ fontSize: SIZE.body, color: colors.accent }}>+</Text>
                     </Pressable>
                   ) : null}
+                  {id === 'setupCode' ? (
+                    <Pressable onPress={saveSetupCode} accessibilityRole="button" accessibilityLabel="Save setup code" style={[styles.inputButton, { borderColor: colors.accent }]}>
+                      <Text style={{ fontSize: SIZE.label, color: colors.accent }}>Save setup code</Text>
+                    </Pressable>
+                  ) : null}
                 </View>
+                {id === 'setupCode' ? (
+                  <Text style={[styles.label, { color: colors.muted }]}>Type the setup code, then Save setup code: the URL and key are saved (not shown)</Text>
+                ) : null}
               </View>
             ))}
             <View style={styles.row}>

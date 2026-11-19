@@ -2,7 +2,7 @@
 // Only fetch and the platform WebSocket are used (Expo Go has both). Nothing here is printed with the key.
 
 import { deleteBody, isKeyHex, putBody, signPut } from "./protocol.ts";
-import { isPeerInput, isValidName, type RelaySettings } from "./settings.ts";
+import { isHttpsUrl, isPeerInput, isValidName, normalizeSetupCode, type RelaySettings } from "./settings.ts";
 
 export const TIMEOUT_MS = 5000;
 const JOIN_TIMEOUT_MS = 10000;
@@ -75,6 +75,37 @@ export async function deleteRow(
   } catch {
     return false;
   }
+}
+
+/** Exchange a setup code for the URL and key (redeem-setup-code). Throws with the reason; no key or code is put in the message. */
+export async function redeemSetupCode(code: string, url: string, fetcher: Fetch = fetch as unknown as Fetch): Promise<{ url: string; key: string }> {
+  const normalized = normalizeSetupCode(code);
+  if (normalized === null) throw new Error("Setup code: 8 letters or digits (spaces and dashes are ignored)");
+  if (!isHttpsUrl(url)) throw new Error("Setup code: the relay URL must start with https://");
+  let response: Awaited<ReturnType<Fetch>>;
+  try {
+    response = await withTimeout(
+      fetcher(`${url.trim().replace(/\/+$/, "")}/functions/v1/redeem-setup-code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: normalized }),
+      }),
+    );
+  } catch {
+    throw new Error("Setup code: the server could not be reached");
+  }
+  if (response.status === 404) throw new Error("Setup code is wrong, already used, or expired");
+  if (response.status === 429) throw new Error("Too many wrong codes. Try again later");
+  if (response.status !== 200) throw new Error(`Setup code: the server answered ${response.status}`);
+  try {
+    const value = JSON.parse(await response.text()) as { url?: unknown; key?: unknown };
+    if (typeof value.url === "string" && typeof value.key === "string" && value.url !== "" && value.key !== "") {
+      return { url: value.url, key: value.key };
+    }
+  } catch {
+    // fall through to the one message below
+  }
+  throw new Error("Setup code: the server answer was not valid");
 }
 
 function withTimeout<T>(promise: Promise<T>): Promise<T> {

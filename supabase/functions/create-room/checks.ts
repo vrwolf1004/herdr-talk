@@ -5,6 +5,7 @@
 
 export const ROOM_TAG = "herdr-talk-room-v1";
 export const WINDOW_SECONDS = 300;
+export const ROOM_MEMBER_LIMIT = 10; // people in a room, the owner included
 const NL = String.fromCharCode(10);
 
 export type Action = "create" | "join";
@@ -17,7 +18,14 @@ export interface RoomBody {
   ts: number;
   nonce: string;
   sig: string;
+  trust: string;
 }
+
+// The room's trust code: 8 digits, set by the owner at create, typed by each participant at join. Not in the signed bytes.
+export const TRUST_PATTERN = /^[0-9]{8}$/;
+export const TRUST_FAILS_LIMIT = 10; // wrong codes in a row before the room is locked
+export const TRUST_LOCK_SECONDS = 3600;
+const TRUST_ITERATIONS = 100000;
 
 const PK_PATTERN = /^[0-9a-f]{64}$/;
 const ROOM_PATTERN = /^[A-Z0-9]{8}$/;
@@ -41,8 +49,9 @@ export function validName(name: string): boolean {
 // Shape only. Anything that fails here is a 400 and never reaches the signature check. A join needs a room code.
 export function checkFormat(body: unknown, action: Action): body is RoomBody {
   if (!isPlainObject(body)) return false;
-  const { peer_pk, room_code, display_name, ts, nonce, sig } = body;
+  const { peer_pk, room_code, display_name, ts, nonce, sig, trust } = body;
   if (typeof peer_pk !== "string" || !PK_PATTERN.test(peer_pk)) return false;
+  if (typeof trust !== "string" || !TRUST_PATTERN.test(trust)) return false;
   if (action === "join" && (typeof room_code !== "string" || !ROOM_PATTERN.test(room_code))) return false;
   if (typeof display_name !== "string" || !validName(display_name)) return false;
   if (typeof ts !== "number" || !Number.isSafeInteger(ts)) return false;
@@ -80,6 +89,27 @@ export async function signatureOk(body: RoomBody, action: Action): Promise<boole
   } catch {
     return false;
   }
+}
+
+// The stored form of a trust code: PBKDF2-SHA256 over the code with the room's salt (hex), 32 bytes, as hex.
+export async function trustHash(trust: string, saltHex: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(trust), "PBKDF2", false, ["deriveBits"]);
+  const salt = hexToBytes(saltHex);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: TRUST_ITERATIONS }, key, 256);
+  return [...new Uint8Array(bits)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// A new random salt for a room (16 bytes, hex).
+export function newSalt(): string {
+  return [...crypto.getRandomValues(new Uint8Array(16))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Equal strings compared over every character, so the time does not show where they differ.
+export function sameHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
 // The order the function applies: format, time window, signature. The nonce check comes after these (in index.ts).

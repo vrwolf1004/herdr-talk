@@ -43,6 +43,10 @@ pub struct Settings {
     pub name: String,
     /// Room code (8 uppercase letters or digits). All peers in the room share messages.
     pub room_code: String,
+    /// Trust code (8 digits): the owner's code at create, the code each participant types to join.
+    pub trust: String,
+    /// The setup code last redeemed (shown on the chat status line). Not checked and not needed by the relay.
+    pub setup_code: String,
 }
 
 /// True before the connection mode has been chosen: no relay.json, a damaged one, or one without a `mode` key.
@@ -63,7 +67,9 @@ pub fn load_saved(state: &Path) -> Settings {
     let Ok(value) = serde_json::from_str::<Value>(text) else { return Settings::default() };
     let field = |name: &str| value[name].as_str().unwrap_or("").to_string();
     let room_code = field("room_code");
-    Settings { mode: Mode::from_saved(&field("mode")), url: field("url"), key: field("key"), name: field("name"), room_code }
+    let trust = field("trust");
+    let setup_code = field("setup_code");
+    Settings { mode: Mode::from_saved(&field("mode")), url: field("url"), key: field("key"), name: field("name"), room_code, trust, setup_code }
 }
 
 /// The settings the relay uses: the environment wins for URL and key when it is set and not empty.
@@ -83,6 +89,11 @@ pub fn effective_with(state: &Path, env_url: Option<String>, env_key: Option<Str
     settings
 }
 
+/// The relay URL that a setup code is redeemed at: HERDR_TALK_RELAY_URL when set, else the default project.
+pub fn setup_url() -> String {
+    non_empty_env(URL_VARIABLE).map(|url| url.trim_end_matches('/').to_string()).unwrap_or_else(|| relay_rest::DEFAULT_URL.to_string())
+}
+
 fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
 }
@@ -92,16 +103,85 @@ pub fn from_environment() -> (bool, bool) {
     (non_empty_env(URL_VARIABLE).is_some(), non_empty_env(KEY_VARIABLE).is_some())
 }
 
+/// A field a final save needs in Supabase mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Missing {
+    Name,
+    Room,
+    Trust,
+}
+
+/// Why a final save (Enter) is refused before anything is written.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SaveRefusal {
+    /// A setup code is typed but not redeemed: Enter does not redeem it (F2 does).
+    UnredeemedCode,
+    /// Supabase needs these fields; the list is in form order.
+    MissingFields(Vec<Missing>),
+    /// No URL and key are saved yet: redeem a setup code first.
+    NoConnection,
+}
+
+/// Checks run before a final save, in the order the screen reports them. `typed_code` is what the setup-code row holds.
+pub fn check_save(settings: &Settings, typed_code: &str) -> Result<(), SaveRefusal> {
+    if !typed_code.trim().is_empty() {
+        return Err(SaveRefusal::UnredeemedCode);
+    }
+    if settings.mode != Mode::Supabase {
+        return Ok(());
+    }
+    let mut missing = Vec::new();
+    if settings.name.trim().is_empty() {
+        missing.push(Missing::Name);
+    }
+    if settings.room_code.trim().is_empty() {
+        missing.push(Missing::Room);
+    }
+    if settings.trust.trim().is_empty() {
+        missing.push(Missing::Trust);
+    }
+    if !missing.is_empty() {
+        return Err(SaveRefusal::MissingFields(missing));
+    }
+    if settings.url.trim().is_empty() || settings.key.trim().is_empty() {
+        return Err(SaveRefusal::NoConnection);
+    }
+    Ok(())
+}
+
+/// Why a new room cannot be asked for yet.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CreateRefusal {
+    /// Supabase mode with a URL, a key and a display name are needed.
+    NoConnection,
+    /// The trust code must be 8 digits.
+    BadTrust,
+}
+
+/// Checks for creating a room (Ctrl+N), after the one-room and keys checks the screen makes itself.
+pub fn check_create(settings: &Settings) -> Result<(), CreateRefusal> {
+    if settings.mode != Mode::Supabase || settings.url.trim().is_empty() || settings.key.trim().is_empty() || settings.name.trim().is_empty() {
+        return Err(CreateRefusal::NoConnection);
+    }
+    if !relay_rest::valid_trust(settings.trust.trim()) {
+        return Err(CreateRefusal::BadTrust);
+    }
+    Ok(())
+}
+
 /// Checks before saving. Empty fields are allowed (they turn the relay off); a filled field must be valid.
 pub fn validate(settings: &Settings) -> Result<(), String> {
-    if settings.mode == Mode::Supabase && [&settings.url, &settings.key, &settings.name, &settings.room_code].iter().any(|field| field.is_empty()) {
-        return Err("Supabase mode needs the URL, the key, the display name and the room code".to_string());
+    if settings.mode == Mode::Supabase && [&settings.url, &settings.key, &settings.name, &settings.room_code, &settings.trust].iter().any(|field| field.is_empty()) {
+        return Err("Supabase mode needs the URL, the key, the display name, the room code and the trust code".to_string());
     }
     if !settings.name.is_empty() && !relay_rest::valid_name(&settings.name) {
         return Err("name must be 1 to 32 characters without control characters".to_string());
     }
     if !settings.room_code.is_empty() && !relay_rest::valid_room_code(&settings.room_code) {
         return Err("room code must be 8 uppercase letters or digits".to_string());
+    }
+    if !settings.trust.is_empty() && !relay_rest::valid_trust(&settings.trust) {
+        return Err("trust code must be 8 digits".to_string());
     }
     // Local mode keeps whatever was typed; the URL and key are checked when Supabase is in use.
     if settings.mode == Mode::Supabase {
@@ -122,8 +202,22 @@ pub fn save(state: &Path, settings: &Settings) -> Result<(), String> {
     if !settings.room_code.is_empty() && has_other_room(state, &settings.room_code) {
         return Err(t("settings.one_room_only", &[]));
     }
+    write_file(state, settings)
+}
+
+/// Saves the URL, key and setup code (from a redeemed setup code) and sets the mode to Supabase. The other saved values stay as they are and are not checked.
+pub fn save_connection(state: &Path, url: &str, key: &str, setup_code: &str) -> Result<(), String> {
+    let mut settings = load_saved(state);
+    settings.mode = Mode::Supabase;
+    settings.url = url.to_string();
+    settings.key = key.to_string();
+    settings.setup_code = setup_code.to_string();
+    write_file(state, &settings)
+}
+
+fn write_file(state: &Path, settings: &Settings) -> Result<(), String> {
     fs::create_dir_all(state).map_err(|error| error.to_string())?;
-    let text = json!({"mode": settings.mode.as_str(), "url": settings.url, "key": settings.key, "name": settings.name, "room_code": settings.room_code}).to_string();
+    let text = json!({"mode": settings.mode.as_str(), "url": settings.url, "key": settings.key, "name": settings.name, "room_code": settings.room_code, "trust": settings.trust, "setup_code": settings.setup_code}).to_string();
     let temp = state.join(format!("{FILE}.{}.tmp", std::process::id()));
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -172,6 +266,8 @@ mod tests {
             key: "dummy-test-key".into(),
             name: "Alice".into(),
             room_code: "ABCD2345".into(),
+            trust: "12345678".into(),
+            setup_code: "WXYZ6789".into(),
         }
     }
 
@@ -232,8 +328,68 @@ mod tests {
     }
 
     #[test]
+    fn a_setup_code_saves_only_the_connection_and_keeps_the_rest() {
+        let dir = folder("connection");
+        let _ = fs::remove_dir_all(&dir);
+        save_connection(&dir, "https://p.supabase.co", "k1", "ABCD2345").unwrap();
+        let saved = load_saved(&dir);
+        assert_eq!((saved.mode, saved.url.as_str(), saved.key.as_str(), saved.setup_code.as_str()), (Mode::Supabase, "https://p.supabase.co", "k1", "ABCD2345"));
+        assert!(saved.name.is_empty(), "the other values are not checked or invented");
+        save(&dir, &Settings { name: "Alice".into(), ..sample() }).unwrap();
+        save_connection(&dir, "https://q.supabase.co", "k2", "WXYZ6789").unwrap();
+        let saved = load_saved(&dir);
+        assert_eq!((saved.mode, saved.url.as_str(), saved.key.as_str(), saved.name.as_str()), (Mode::Supabase, "https://q.supabase.co", "k2", "Alice"));
+        assert_eq!(saved.setup_code, "WXYZ6789");
+        assert_eq!(saved.room_code, sample().room_code, "the room ID is kept");
+        assert_eq!(saved.trust, sample().trust, "the trust code is kept");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_redeemed_setup_code_is_saved_with_its_url_and_key() {
+        let dir = folder("redeem-save");
+        let _ = fs::remove_dir_all(&dir);
+        let body = r#"{"url":"https://p.supabase.co","key":"k1"}"#;
+        let response: &'static str = Box::leak(format!("HTTP/1.1 200 OK
+Content-Length: {}
+Connection: close
+
+{body}", body.len()).into_boxed_str());
+        let (config, received) = relay_rest::tests::serve_once(response);
+        let (url, key) = relay_rest::redeem_setup_code("abcd-2345", config.url()).unwrap();
+        assert!(received.recv().unwrap().ends_with(r#"{"code":"ABCD2345"}"#));
+        save_connection(&dir, &url, &key, "ABCD2345").unwrap();
+        let saved = load_saved(&dir);
+        assert_eq!((saved.mode, saved.url.as_str(), saved.key.as_str(), saved.setup_code.as_str()), (Mode::Supabase, "https://p.supabase.co", "k1", "ABCD2345"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_refused_setup_code_saves_nothing() {
+        let dir = folder("redeem-refused");
+        let _ = fs::remove_dir_all(&dir);
+        let (config, _received) = relay_rest::tests::serve_once("HTTP/1.1 404 Not Found
+Content-Length: 0
+Connection: close
+
+");
+        assert_eq!(relay_rest::redeem_setup_code("ABCD2345", config.url()), Err(crate::i18n::t("setup.wrong", &[])));
+        assert!(!dir.join(FILE).exists(), "nothing is written when the code is refused");
+    }
+
+    #[test]
+    fn the_setup_code_is_saved_and_read_but_not_required() {
+        let dir = folder("setup-code");
+        let _ = fs::remove_dir_all(&dir);
+        save(&dir, &Settings { setup_code: "ABCD2345".into(), ..sample() }).unwrap();
+        assert_eq!(load_saved(&dir).setup_code, "ABCD2345");
+        assert!(validate(&Settings { setup_code: String::new(), ..sample() }).is_ok(), "a missing setup code is fine");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_peer_id_is_eight_lowercase_characters_only() {
-        let base = Settings { mode: Mode::Supabase, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), room_code: String::new() };
+        let base = Settings { mode: Mode::Supabase, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), room_code: String::new(), trust: "12345678".into(), setup_code: String::new() };
         assert!(validate(&Settings { room_code: "ABCD2345".into(), ..base.clone() }).is_ok());
         for bad in ["abcdefgh", "ABCDEFGHI", "abcd2345", "AB".repeat(32).as_str()] {
             assert!(validate(&Settings { room_code: bad.into(), ..base.clone() }).is_err(), "{bad}");
@@ -304,7 +460,7 @@ mod tests {
 
     #[test]
     fn supabase_mode_needs_every_field() {
-        let full = Settings { mode: Mode::Supabase, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), room_code: "ABCD2345".into() };
+        let full = Settings { mode: Mode::Supabase, url: "https://example.supabase.co".into(), key: "k".into(), name: "A".into(), room_code: "ABCD2345".into(), trust: "12345678".into(), setup_code: String::new() };
         assert!(validate(&full).is_ok());
         assert!(validate(&Settings { name: String::new(), ..full.clone() }).is_err());
         assert!(validate(&Settings { room_code: String::new(), ..full.clone() }).is_err());
@@ -320,5 +476,25 @@ mod tests {
         let text = fs::read_to_string(file_path(&dir)).unwrap();
         assert!(text.contains(r#""mode":"local""#), "{text}");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn check_save_names_what_is_missing_in_order() {
+        let full = sample();
+        assert_eq!(check_save(&full, ""), Ok(()));
+        assert_eq!(check_save(&full, "ABCD2345"), Err(SaveRefusal::UnredeemedCode));
+        assert_eq!(check_save(&Settings { name: String::new(), room_code: String::new(), ..full.clone() }, ""), Err(SaveRefusal::MissingFields(vec![Missing::Name, Missing::Room])));
+        assert_eq!(check_save(&Settings { trust: String::new(), ..full.clone() }, ""), Err(SaveRefusal::MissingFields(vec![Missing::Trust])));
+        assert_eq!(check_save(&Settings { url: String::new(), ..full.clone() }, ""), Err(SaveRefusal::NoConnection));
+        assert_eq!(check_save(&Settings { mode: Mode::Local, url: String::new(), name: String::new(), ..full }, ""), Ok(()), "Local mode has no fields to check");
+    }
+
+    #[test]
+    fn check_create_needs_a_connection_and_a_trust_code() {
+        assert_eq!(check_create(&sample()), Ok(()));
+        assert_eq!(check_create(&Settings { key: String::new(), ..sample() }), Err(CreateRefusal::NoConnection));
+        assert_eq!(check_create(&Settings { name: " ".into(), ..sample() }), Err(CreateRefusal::NoConnection));
+        assert_eq!(check_create(&Settings { mode: Mode::Local, ..sample() }), Err(CreateRefusal::NoConnection));
+        assert_eq!(check_create(&Settings { trust: "1234".into(), ..sample() }), Err(CreateRefusal::BadTrust));
     }
 }

@@ -4,6 +4,58 @@
 
 Improvement list for herdr-talk. Items are grouped by area, most important first inside each group.
 
+## 이번 작업 상태 (2026-11-19 최신)
+
+완료
+- [x] **설정 코드:** 상환(F2 / Save setup code)과 저장. Python, Rust TUI, GUI 모두 같은 흐름.
+- [x] **운영자 발급 (F9):** 앱의 숨은 키로 운영자 암호를 입력하면 서버가 설정 코드를 만든다. 세 화면 모두 구현.
+- [x] **설정 화면 순서:** 설정 코드, Trust code, 표시 이름, 방 ID. 세 화면 모두 같은 순서.
+- [x] **채팅 상태 줄:** `상대: N · CLOUD SERVICE · room ID · setup code`. 성공 문구는 붙이지 않고 오류만 붙인다. 세 화면 모두.
+- [x] **trust 게이트:** 틀리면 채팅을 열지 않고 설정 화면으로 돌아간다. talk-core, Python core, Rust 시작 흐름, GUI 설정 창.
+- [x] **인원 10명:** LAN은 나를 포함해 10명, Supabase 방은 서버 `join-room`에서 10명(409).
+- [x] **실패 제한:** 설정 코드 실패 10회(10분), 방 trust 실패 10회 잠금(1시간).
+- [x] **저장 규칙 함수:** talk-core `check_save`, `check_create`. Rust TUI 사용, GUI 연결 대기 중이던 것은 GUI 워커 보고 기준으로 확인 필요.
+- [x] **Python 설정 화면 이동:** `python/src/extend/settings_form.py`.
+- [x] **모바일:** trust, 설정 코드, 403/409 메시지, 상태 줄 반영. 타입 검사와 릴레이 테스트 통과.
+- [x] **문서:** 운영자 가이드(`docs/operator-setup.md`), 테스트 결과(`docs/test-results.md`), 사용자 문서 정리.
+- [x] **서버 함수 배포:** `join-room`(10명, trust), `redeem-setup-code`(사용 횟수, 실패 제한), `issue-setup-code`(F9 발급). 배포 명령은 사용자 승인 후 실행.
+- [x] **테스트:** Rust 워크스페이스, GUI, Python, Supabase 함수, 모바일 모두 통과 (세부는 `docs/test-results.md`).
+
+남은 것
+- [x] **운영 적용 확인 (2026-11-19):** 마이그레이션 0006–0011 적용, 설정 코드 테이블과 함수(`claim_setup_code`), 함수 7개 ACTIVE, 시크릿 2개 존재 확인.
+- [ ] **미확인 실환경 테스트:** 설정 코드 발급과 상환의 실제 응답, 틀린 trust 403, 11번째 참가 409, LAN 10명, 실제 터미널 화면, F2·F9 키 입력. (세부는 아래 "개선점")
+- [ ] **모바일 기기 실행:** 변경된 화면과 방 참가를 실제 기기에서 확인. 모바일 1:1 경로 정리 포함.
+- [ ] **모바일 브리지 결정:** 폰에서 LAN 채팅이 필요한지 정한다. 필요 없으면 브리지와 관련 문서를 지운다.
+- [ ] **코어 2단계:** Python `Chat`과 네트워크 함수를 `core/`로 옮긴다(talk-core `chat.rs`, `net.rs`와 맞춤).
+- [ ] **extend 2단계:** `talk.py`의 화면 그리기를 `extend/`로 분리한다.
+- [ ] **커밋 범위 결정:** 1:1 제거 2단계 코드(미커밋)와 이번 작업을 나눠서 커밋할지 정한다.
+- [ ] **죽은 로케일 키 정리:** `tui.settings.label.*`, `mode.status` 등 쓰지 않는 키를 지울지 정한다.
+
+## LAN 참가 (2026-11-19 결정)
+
+- [x] (이후 10명 제한으로 바뀜) **LAN 은 1대1, `/trust` 를 `/join` 으로.** 한 명이 이미 있으면 다른 PC 의 announce 는 무시한다 (Rust net.rs, Python talk.py). `/join CODE` 또는 `/join N` 으로 받아들이고, 상대 목록의 '확인 대기' 는 '참가 대기' 로 표시한다. 8자리 확인 코드는 숫자만 쓴다 (SAS, 10^8 가지). GUI 확인 버튼과 문서도 `/join` 으로 맞췄다. 방 메시지의 `/trust` 문구 (room.none_trusted, room.left_out) 는 방 쪽 설계가 남은 것이라 따로 정한다.
+- [x] **20초 안에 join 하지 않는 상대는 강퇴.** 처음 announce 한 뒤 20초 안에 `/join` 하지 않으면 목록에서 빼고, 이 대화가 끝날 때까지 그 키의 announce 와 메시지를 무시한다. 키가 바뀌면 새 키로 다시 20초를 잰다. 강퇴 때 `peer.kicked` 줄을 한 번 보여 준다. 테스트: Rust chat.rs, Python test_encryption.py (JoinLimitTests).
+- [x] **`/set` 과 HMAC 안, 방 만들기 때 trust 값 넣는 안:** 폐기. 설정 코드와 trust 방식으로 대체됨.
+- [x] **워커 세션 작업:** 이번 라운드 워커는 모두 보고를 받았다. 이전 세션 4곳은 더 이상 작업을 맡기지 않는다.
+
+## 개선점 (2026-11-19, 테스트 결과 기준: `docs/test-results.md`)
+
+- [x] **trust 403 경로 테스트 추가 (Rust, GUI)**: 틀린 trust에서 `room_refuses`가 true를 돌려주고 설정 화면으로 돌아가는지 테스트가 없다.
+- [x] **상태 줄 전체 문자열 테스트 (Rust, GUI)**: `[방장] 상대: N · CLOUD SERVICE · room ID · setup code`와 "오류만 붙는다" 규칙을 테스트로 고정한다.
+- [ ] **F2 중간 저장 전체 경로 테스트 (Rust, GUI)**: 상환 성공 후 `save_connection`까지 가는 흐름을 mock 서버로 테스트한다.
+- [x] **F9 운영자 발급 키 입력 테스트 (GUI)**: 빈 암호만 테스트되어 있다. 실제 키 입력과 발급 응답 처리를 확인한다.
+- [x] **GUI 하단 바 성공 문구 정리**: 지금은 "relay: room joined" 문구만 숨긴다. Python처럼 성공 문구는 숨기고 오류만 보이게 한다.
+- [x] **GUI 메시지 덮어쓰기 방지**: 늦게 도착한 trust 확인 결과가 더 새로운 메시지를 덮어쓸 수 있다. 메시지 순서를 맞춘다.
+- [x] **Python 도우미 `_join_room` 정리**: 실제 흐름에서 쓰지 않는 함수이고 테스트에서만 쓴다. 지우거나 실제 흐름과 맞춘다.
+- [ ] **trust 확인 시간 제한**: `room_refuses`가 기존 HTTP 시간 제한만 써서, 서버가 느리면 첫 화면이 늦게 뜬다. 짧은 시간 제한을 따로 둘지 정한다.
+- [ ] **실환경 확인**: 설정 코드 발급, 상환, 방 참가, 틀린 trust 403, 11번째 참가 409를 실제 서버에서 확인한다.
+- [ ] **LAN 10명 실제 확인**: 여러 PC 또는 노드로 10명 참가와 11번째 거부를 확인한다.
+- [ ] **모바일 기기 실행**: 모바일 변경(trust, 설정 코드, 상태 줄)을 실제 기기에서 확인한다. 1:1 경로 정리도 함께 본다.
+- [ ] **모바일 브리지 결정**: 폰에서 LAN 채팅이 필요한지 정하고, 필요 없으면 브리지와 관련 문서를 지운다.
+- [ ] **코어 2단계**: Python `Chat`과 네트워크 함수를 `core/`로 옮긴다(talk-core `chat.rs`, `net.rs`와 맞춘다).
+- [ ] **extend 2단계**: `talk.py`의 화면 그리기를 `extend/`로 분리한다.
+- [ ] **Rust 설정 화면 테스트 보강**: 중간 저장과 최종 저장 규칙을 화면 단위로 확인한다.
+
 ## Bugs
 
 - [x] **Idle timer ignores the plain-terminal path.** `run_ansi()` sends lines to `add_message()`, which does not update `chat.last_activity`. Only `Chat.add_line()` does. So in that path, received messages and your own messages do not reset the 10-minute idle timer, and the pane can leave while people are chatting. Fix: update `last_activity` in `add_message()` too, or move the update into one shared place. (`Chat.touch()`를 모든 화면이 쓴다. `IdleTimerTest`)

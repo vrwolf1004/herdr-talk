@@ -36,8 +36,9 @@ import herdr_api
 from core import noise
 import phone
 import relay_chat
-import relay_form
+from extend import settings_form as relay_form
 import relay_settings
+from core import relay_key
 from core import relay_rest
 from core import sessions
 from core import store
@@ -76,6 +77,8 @@ def udp_port():
     return parse_udp_port(os.environ.get(UDP_PORT_VARIABLE))
 ANNOUNCE_SECONDS = 2
 PEER_TIMEOUT_SECONDS = 10
+MAX_PEERS = 10  # people in a LAN chat, this PC included; only verified ones count: a new peer is ignored once that many others are verified
+JOIN_LIMIT_SECONDS = 20  # a LAN peer must be joined (/join) this long after its first announce, or it is kicked for this chat
 AUTO_RENAME_GAP_SECONDS = 60  # 자동 이름 변경 사이의 최소 간격
 MAX_MESSAGE_BYTES = 64 * 1024
 LOOP_POLL_SECONDS = 0.5  # 종료 신호를 이 간격으로 확인한다
@@ -165,6 +168,8 @@ class Chat:
         if me.get("key") is not None:
             me["commits"] = {}
         self.trusted = []         # verified peers: {"name", "key", "ip"}
+        self.waiting_since = {}   # key -> time of its first announce, until it is joined (starts the JOIN_LIMIT_SECONDS clock)
+        self.kicked = set()       # keys kicked for not joining in time: ignored for the rest of this chat
         self.state_dir = None     # where /trust saves; None keeps it for this session
         self.received = {}        # sender address -> arrival times of recent messages
         self.host = None          # phone.Host while this node is the phone host (방장) of this PC
@@ -214,7 +219,22 @@ class Chat:
     def fresh_peers(self):
         cutoff = time.time() - PEER_TIMEOUT_SECONDS
         with self.peers_lock:
-            return {pid: info for pid, info in self.peers.items() if info["seen"] >= cutoff}
+            fresh = {pid: info for pid, info in self.peers.items() if info["seen"] >= cutoff}
+        return {pid: info for pid, info in fresh.items() if info.get("key") is None or not self.is_kicked(info["key"], info["name"], info["ip"])}
+
+    def is_kicked(self, key, name, ip):
+        """True for a kicked key: not joined within JOIN_LIMIT_SECONDS (kicked for the rest of this chat). A joined key is never
+        kicked. The first kick says so once in the chat."""
+        if self.trusts(key):
+            return False
+        if key in self.kicked:
+            return True
+        since = self.waiting_since.get(key)
+        if since is None or time.time() - since < JOIN_LIMIT_SECONDS:
+            return False
+        self.kicked.add(key)
+        self.emit(Notice("peer.kicked", {"name": name, "ip": ip}))
+        return True
 
     def is_host(self):
         return self.host is not None
@@ -481,8 +501,8 @@ class Chat:
             else:
                 self.emit(Notice("usage.phone"))
             return True
-        if text == "/trust" or text.startswith("/trust "):
-            code = store.normalize_code(text[6:])
+        if text == "/join" or text.startswith("/join "):
+            code = store.normalize_code(text[5:])
             if code:
                 self.trust(code)
             else:
@@ -664,6 +684,17 @@ def remember_peer(chat, info, ip):
     trusted = key is not None and chat.trusts(key)
     trusted_name = chat.trusted_name(key) if key is not None else None
     name = trusted_name if trusted_name is not None else peer_name(info.get("name", "unknown"))
+    # A key kicked for not joining in time stays out for this chat. Otherwise its join clock starts with this announce.
+    if key is not None and chat.is_kicked(key, name, ip):
+        return None
+    if key is not None and not trusted:
+        chat.waiting_since.setdefault(key, time.time())
+    # At most MAX_PEERS people including this PC, counting only verified peers: a new peer past that is ignored (a known
+    # peer's announcements always pass). An unverified peer does not take a place.
+    here = chat.fresh_peers()
+    verified = sum(1 for known in here.values() if known.get("key") is not None and chat.trusts(known["key"]))
+    if verified >= MAX_PEERS - 1 and not any(known.get("id") == peer_id for known in here.values()):
+        return None
     entry = {"id": peer_id, "name": name, "ip": ip, "port": port, "seen": time.time(), "key": key}
     with chat.peers_lock:
         if trusted:
@@ -1192,7 +1223,7 @@ def read_char():
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):   # arrow and function keys send a second code; only F1 is used
             code = msvcrt.getwch()
-            return KEY_F1 if code == ";" else ""
+            return KEY_F1 if code == ";" else relay_form.KEY_F2 if code == "<" else relay_form.KEY_F9 if code == "C" else ""
         return ch
     fd = sys.stdin.fileno()
     first = os.read(fd, 1)
@@ -1425,9 +1456,10 @@ def _draw(frame):
     sys.stdout.flush()
 
 
-def settings_screen(state, open_supabase=False, left=False):
+def settings_screen(state, open_supabase=False, left=False, notice=""):
     """The Ctrl+R screen (inside the full-screen mode that is already on). Returns ("saved" | "cancel", message)."""
     form = relay_form.SettingsForm(state)
+    form.message = notice
     if open_supabase:
         form.open_supabase(left)
     dirty = True
@@ -1531,7 +1563,11 @@ def run_ansi(chat):
             return
         size = shutil.get_terminal_size((80, 24))
         status = t("status.line", name=chat.me["name"], peers=len(chat.fresh_peers()))
-        status += " · " + t("mode.status", mode=t("mode.supabase" if chat.supabase else "mode.local"))
+        status += " · " + t("mode.supabase" if chat.supabase else "mode.local")
+        if chat.supabase and chat.state_dir:
+            saved = relay_settings.load_saved(chat.state_dir)
+            if saved["room_code"]:
+                status += f" · room ID: {saved['room_code']} · setup code: {saved['setup_code'] or '-'}"
         if chat.relay_status:
             status += f" · {chat.relay_status}"
         if chat.is_host():
@@ -1692,6 +1728,15 @@ def run(args):
         control.close()
         server.close()
         return 0
+    # A room that refuses this trust code is not entered: back to the settings screen with the reason, until saved or cancelled.
+    while chat.state_dir and relay_chat.room_refuses(chat.state_dir):
+        outcome, _ = settings_screen(chat.state_dir, open_supabase=True, notice=relay_rest.TRUST_WRONG)
+        if outcome != "saved":
+            STOP.set()
+            chat.release_host()
+            control.close()
+            server.close()
+            return 0
     chat.start_relay()
 
     if args.dock:

@@ -64,11 +64,13 @@ struct Shared {
     me: Option<(String, u16)>,
     /// The relay state as the chat reports it ("" when the relay is off).
     relay: String,
+    /// The room ID and setup code as the chat reports them ("" when no room is saved or in Local mode).
+    room: String,
     /// The connection mode as the chat reports it: "local" or "supabase".
     mode: String,
     /// Ctrl+L was pressed: the chat clears its message lines (in the node it runs in).
     clear: bool,
-    /// Peers waiting for a /trust, with the code to compare: (name, code).
+    /// Peers waiting for a /join, with the code to compare: (name, code).
     pending: Vec<(String, String)>,
 }
 
@@ -342,6 +344,7 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
             (chat.link_of(peer) == talk_core::chat::Link::Unverified).then(|| (peer.name.clone(), code))
         }).collect();
         state.relay = chat.relay_status();
+        state.room = chat.room_status().unwrap_or_default();
         state.mode = chat.mode_name().to_string();
         drop(state);
         thread::sleep(POLL);
@@ -390,6 +393,21 @@ enum Kind {
     Ok,
     Pending,
     Problem,
+}
+
+/// The bottom line as Python shows it: "[host] peers · mode · room ID · setup code", then a problem only (see `relay_problem`).
+fn bottom_line(hosting: bool, peers: usize, supabase: bool, room: &str, relay: &str) -> String {
+    let badge = if hosting { format!("{} ", talk_core::t("host.badge", &[])) } else { String::new() };
+    let mode = if supabase { "CLOUD SERVICE" } else { "BASE STATION" };
+    let room = if room.is_empty() { String::new() } else { format!(" · {room}") };
+    let relay = relay_problem(relay).map(|text| format!(" · {text}")).unwrap_or_default();
+    format!("{badge}상대: {peers} · {mode}{room}{relay}")
+}
+
+/// The relay text when it is a problem. Success texts are never shown: the chat's only one is "relay: room joined".
+fn relay_problem(relay: &str) -> Option<&str> {
+    const SUCCESS: [&str; 1] = ["relay: room joined"];
+    (!relay.is_empty() && !SUCCESS.iter().any(|success| relay.starts_with(success))).then_some(relay)
 }
 
 fn status_label(status: &str, supabase: bool) -> (String, Kind) {
@@ -632,6 +650,7 @@ impl eframe::App for App {
         }
         let mut open_settings = false;
         let supabase = talk_core::relay_settings::Mode::from_saved(&state.mode) == talk_core::relay_settings::Mode::Supabase;
+        let hosting = talk_core::phone::read(&state_dir()).is_some_and(|phone| state.me.as_ref().is_some_and(|(_, port)| phone.owner_port == *port));
         let (status_short, status_kind) = status_label(&state.status, supabase);
         egui::TopBottomPanel::top("status")
             .exact_height(40.0)
@@ -644,7 +663,7 @@ impl eframe::App for App {
                     Kind::Problem => palette.danger,
                 };
                 ui.colored_label(palette.accent, egui::RichText::new("▣ HERDR-TALK").monospace().strong());
-                if talk_core::phone::read(&state_dir()).is_some_and(|phone| state.me.as_ref().is_some_and(|(_, port)| phone.owner_port == *port)) {
+                if hosting {
                     ui.colored_label(palette.accent, talk_core::t("host.badge", &[]));
                 }
                 let shown = if state.status.starts_with(&status_connected()) {
@@ -702,35 +721,17 @@ impl eframe::App for App {
         if verify_open.is_some() {
             self.verify = verify_open;
         }
-        let system_label = match status_kind {
-            Kind::Ok => "● SYSTEM ONLINE",
-            Kind::Pending => "● SYSTEM STARTING",
-            Kind::Problem => "● SYSTEM ATTENTION",
-        };
-        let relay_status = (!state.relay.is_empty()).then(|| {
-            let mut chars = state.relay.chars();
-            let mut text: String = chars.by_ref().take(36).collect();
-            if chars.next().is_some() {
-                text.push_str("...");
-            }
-            text
-        });
+        // The bottom line as Python shows it: "[host] peers · mode · room ID · setup code", then only a relay failure (never a success text).
+        let line = bottom_line(hosting, state.peers.len(), supabase, &state.room, &state.relay);
         egui::TopBottomPanel::bottom("terminal_status")
             .exact_height(38.0)
             .frame(egui::Frame::new().fill(palette.background).stroke(egui::Stroke::new(1.0_f32, palette.border)).inner_margin(egui::Margin::symmetric(12, 8)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let color = if status_kind == Kind::Problem { palette.danger } else { palette.accent };
-                    ui.colored_label(color, egui::RichText::new(system_label).monospace());
+                    ui.add_sized([ui.available_width() - 200.0, 18.0], egui::Label::new(egui::RichText::new(line).monospace().size(12.0).color(color)).truncate());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.colored_label(palette.muted, egui::RichText::new(talk_core::t("chat.help_hint", &[])).monospace());
-                        ui.colored_label(palette.muted, egui::RichText::new("BASE STATION").monospace());
-                        if let Some(relay_status) = &relay_status {
-                            ui.add_sized(
-                                [ui.available_width().min(280.0), 18.0],
-                                egui::Label::new(egui::RichText::new(relay_status).monospace().size(12.0).color(palette.muted)).truncate(),
-                            );
-                        }
                     });
                 });
             });
@@ -792,7 +793,7 @@ impl eframe::App for App {
                 }
             });
         }
-        // The verify window: show the peer's code to compare; 확인 trusts it (the same /trust as typing), 닫기 leaves it.
+        // The verify window: show the peer's code to compare; 확인 trusts it (the same /join as typing), 닫기 leaves it.
         if let Some((name, code)) = self.verify.clone() {
             let (mut confirm, mut close) = (false, ctx.input(|input| input.key_pressed(egui::Key::Escape)));
             egui::Window::new(&name).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
@@ -806,7 +807,7 @@ impl eframe::App for App {
                 });
             });
             if confirm {
-                let _ = self.outgoing.send(format!("/trust {code}"));
+                let _ = self.outgoing.send(format!("/join {code}"));
             }
             if confirm || close {
                 self.verify = None;
@@ -907,6 +908,23 @@ fn install_panic_log() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bottom_line_shows_the_room_and_setup_code_and_only_a_problem() {
+        let host = talk_core::t("host.badge", &[]);
+        let room = "room ID: ABCD2345 · setup code: -";
+        assert_eq!(bottom_line(false, 2, true, room, ""), "상대: 2 · CLOUD SERVICE · room ID: ABCD2345 · setup code: -");
+        assert_eq!(bottom_line(true, 0, false, "", ""), format!("{host} 상대: 0 · BASE STATION"));
+        assert_eq!(bottom_line(false, 1, true, room, "relay: room joined (3 members)"), "상대: 1 · CLOUD SERVICE · room ID: ABCD2345 · setup code: -");
+        assert_eq!(bottom_line(false, 1, true, room, "relay: trust code missing or invalid (8 digits)"), "상대: 1 · CLOUD SERVICE · room ID: ABCD2345 · setup code: - · relay: trust code missing or invalid (8 digits)");
+    }
+
+    #[test]
+    fn only_failures_are_shown_from_the_relay_text() {
+        assert_eq!(relay_problem(""), None);
+        assert_eq!(relay_problem("relay: room joined (2 members)"), None);
+        assert_eq!(relay_problem("relay: settings incomplete"), Some("relay: settings incomplete"));
+    }
 
     #[test]
     fn a_failed_log_write_does_not_panic() {

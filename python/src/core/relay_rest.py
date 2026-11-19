@@ -8,6 +8,7 @@ Row writes are signed (format v3). The signed text carries the short id (8 chara
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import time
@@ -18,6 +19,9 @@ import urllib.request
 
 from core import ed25519
 
+# The project's public URL. A setup code gets the publishable key from it, so the app needs the URL before any code.
+# HERDR_TALK_RELAY_URL still wins when set (tests and other projects).
+DEFAULT_URL = "https://coekrspnpcjzcbydarco.supabase.co"
 URL_VARIABLE = "HERDR_TALK_RELAY_URL"
 KEY_VARIABLE = "HERDR_TALK_RELAY_KEY"
 PUT_TAG = "herdr-talk-put-v3"
@@ -27,6 +31,7 @@ FETCH_TAG = "herdr-talk-fetch-v1"
 MAX_DELIVERIES = 8
 MAX_CIPHERTEXT_HEX = 32768
 TIMEOUT_SECONDS = 5
+TRUST_WRONG = "trust 코드가 맞지 않습니다"  # join-room answers 403 when the trust code is not the room's
 
 _PK_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _NONCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -207,6 +212,10 @@ def read_join_room(status, body):
     """{room_code, owner_pk, members} from a join-room answer. Anything malformed raises ValueError."""
     if status == 410:
         raise ValueError("방 기한 만료")  # join-room: the room is past its 24 hours
+    if status == 403:
+        raise ValueError(TRUST_WRONG)
+    if status == 409:
+        raise ValueError("방 인원이 가득 찼습니다 (10명)")  # join-room: the room has 10 members
     if status != 200:
         raise ValueError(f"status {status}: {body}")
     try:
@@ -245,34 +254,122 @@ def _signed_room_body(seed, action, room_code, name, ts=None, nonce=None):
     return {"peer_pk": pk, "display_name": name, "ts": ts, "nonce": nonce, "sig": sig}
 
 
-def create_room_request(config, seed, name, ts=None, nonce=None):
-    """Ask the create-room function for a new room, signed with this PC's key. Raises ValueError for bad input."""
+def setup_url():
+    """The URL the setup code is redeemed at: HERDR_TALK_RELAY_URL when set, else DEFAULT_URL."""
+    return os.environ.get(URL_VARIABLE, "").strip() or DEFAULT_URL
+
+
+def normalize_setup_code(text):
+    """What the user typed as a setup code: spaces and dashes dropped, letters uppercased. None when the rest is not 8
+    characters of A-Z or 0-9 (the same rule as the redeem-setup-code function). Non-ASCII input is refused: some
+    letters uppercase to several characters."""
+    if not isinstance(text, str) or not text.isascii():
+        return None
+    code = "".join(ch for ch in text if not ch.isspace() and ch != "-").upper()
+    return code if re.fullmatch(r"[0-9A-Z]{8}", code) else None
+
+
+def read_setup_answer(status, body):
+    """(url, key) from a redeem-setup-code answer. Anything else raises ValueError with the reason."""
+    if status == 404:
+        raise ValueError("the setup code is wrong, used or expired")
+    if status == 429:
+        raise ValueError("too many wrong codes; try again later")
+    if status != 200:
+        raise ValueError(f"status {status}")
+    try:
+        value = json.loads(body)
+    except (ValueError, TypeError):
+        raise ValueError("answer is not JSON") from None
+    if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not isinstance(value.get("key"), str):
+        raise ValueError("answer has no url and key")
+    checked = config(value["url"], value["key"])  # https only, as for the saved settings
+    if checked is None:
+        raise ValueError("answer has no url and key")
+    return checked.url, checked.key
+
+
+def redeem_setup_code(code, url=None, timeout=TIMEOUT_SECONDS):
+    """The (url, key) of a one-time setup code, redeemed at `url` (default setup_url()). No apikey header: the code is the
+    only credential. Raises ValueError for a bad code or answer, OSError for a network error."""
+    normalized = normalize_setup_code(code)
+    if normalized is None:
+        raise ValueError("setup code must be 8 letters or digits")
+    base = (url or setup_url()).rstrip("/")
+    request = {"method": "POST", "url": f"{base}/functions/v1/redeem-setup-code",
+               "headers": {"Content-Type": "application/json"}, "body": json.dumps({"code": normalized})}
+    return read_setup_answer(*_send(request, timeout))
+
+
+def issue_setup_code_request(passphrase, max_uses=20, days=7, url=None):
+    """The request that asks the operator function for a new setup code. The passphrase is checked on the server."""
+    base = (url or setup_url()).rstrip("/")
+    body = json.dumps({"passphrase": passphrase, "max_uses": max_uses, "days": days}, ensure_ascii=False)
+    return {"method": "POST", "url": f"{base}/functions/v1/issue-setup-code", "headers": {"Content-Type": "application/json"}, "body": body}
+
+
+def read_issue_answer(status, body):
+    """The new code from an issue-setup-code answer. Anything else raises ValueError with the reason."""
+    if status == 200:
+        try:
+            value = json.loads(body)
+        except (ValueError, TypeError):
+            raise ValueError("answer is not JSON") from None
+        if not isinstance(value, dict) or not isinstance(value.get("code"), str):
+            raise ValueError("answer has no code")
+        return value["code"]
+    if status == 401:
+        raise ValueError("the operator passphrase is wrong")
+    if status == 429:
+        raise ValueError("too many wrong tries; try later")
+    if status == 503:
+        raise ValueError("the operator secrets are not set on the server")
+    raise ValueError(f"status {status}")
+
+
+def issue_setup_code(passphrase, max_uses=20, days=7, url=None):
+    """A new setup code from the server (the operator passphrase is checked there). Raises ValueError or OSError."""
+    return read_issue_answer(*_send(issue_setup_code_request(passphrase, max_uses, days, url)))
+
+
+def valid_trust(text):
+    """A trust code: exactly 8 ASCII digits (the owner sets it at create, each participant types it at join)."""
+    return isinstance(text, str) and len(text) == 8 and text.isascii() and text.isdigit()
+
+
+def create_room_request(config, seed, name, trust, ts=None, nonce=None):
+    """Ask the create-room function for a new room, signed with this PC's key. Raises ValueError for bad input.
+    The trust code is sent with the request, not signed: the function stores only its salted hash."""
+    if not valid_trust(trust):
+        raise ValueError("trust code must be 8 digits")
     headers = _common_headers(config)
     headers["Content-Type"] = "application/json"
-    body = _signed_room_body(seed, "create", "", name, ts, nonce)
+    body = {**_signed_room_body(seed, "create", "", name, ts, nonce), "trust": trust}
     return {"method": "POST", "url": f"{config.url}/functions/v1/create-room", "headers": headers,
             "body": json.dumps(body, ensure_ascii=False)}
 
 
-def join_room_request(config, seed, room_code, name, ts=None, nonce=None):
+def join_room_request(config, seed, room_code, name, trust, ts=None, nonce=None):
     """Ask the join-room function to add this PC to a room, signed with this PC's key. Raises ValueError for bad input."""
     if not valid_room_code(room_code):
         raise ValueError("room code must be 8 uppercase letters or digits")
+    if not valid_trust(trust):
+        raise ValueError("trust code must be 8 digits")
     headers = _common_headers(config)
     headers["Content-Type"] = "application/json"
-    body = {"room_code": room_code, **_signed_room_body(seed, "join", room_code, name, ts, nonce)}
+    body = {"room_code": room_code, **_signed_room_body(seed, "join", room_code, name, ts, nonce), "trust": trust}
     return {"method": "POST", "url": f"{config.url}/functions/v1/join-room", "headers": headers,
             "body": json.dumps(body, ensure_ascii=False)}
 
 
-def create_room(config, seed, name, timeout=TIMEOUT_SECONDS):
+def create_room(config, seed, name, trust, timeout=TIMEOUT_SECONDS):
     """The code of the new room this PC created. Network errors raise OSError, bad answers ValueError."""
-    return read_room_code(*_send(create_room_request(config, seed, name), timeout))
+    return read_room_code(*_send(create_room_request(config, seed, name, trust), timeout))
 
 
-def join_room(config, seed, room_code, name, timeout=TIMEOUT_SECONDS):
-    """Join a room by code; returns the room info from read_join_room."""
-    return read_join_room(*_send(join_room_request(config, seed, room_code, name), timeout))
+def join_room(config, seed, room_code, name, trust, timeout=TIMEOUT_SECONDS):
+    """Join a room by code and trust code; returns the room info from read_join_room."""
+    return read_join_room(*_send(join_room_request(config, seed, room_code, name, trust), timeout))
 
 
 # Room messages (Rust relay_rest.rs post_message_body, fetch_message_body, read_fetch_response, members_noise_keys).

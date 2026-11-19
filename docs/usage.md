@@ -65,7 +65,7 @@ Limits:
 | `/name <new>` | Change your name (up to 32 characters) |
 | `/lang <code>` | Pick a random new name from the list for a language |
 | `/peers` | List peers seen recently, with their address, port and state (verified, or the code to check) |
-| `/trust <code>` | Verify the peer whose code matches. Compare the code on both screens first. See [Configuration: Encryption](configuration.md#encryption) |
+| `/join <code>` | Verify the peer whose code matches. Compare the code on both screens first. See [Configuration: Encryption](configuration.md#encryption) |
 | `/help` | Show the commands and keys. |
 | `/quit` | Leave the chat |
 
@@ -168,13 +168,19 @@ Screens and controls:
 
 ## 11a. Connection mode (Local or Supabase)
 
-- **Local (LAN)**: the default. UDP broadcast discovers peers and each message goes to every visible peer; LAN chat supports multiple participants.
-- **Supabase**: a many-participant room relay. Enter the project URL, publishable key, display name, and an 8-character room ID. **Create room** asks the server for a random room ID; give that code to people joining the room.
-- Room IDs are 8-character `A-Z0-9` values. Input ignores case, spaces and dashes. **Retired:** entering a peer ID for one-to-one relay or room joining; legacy peer IDs are only for signed peer-row publishing.
+- **Local (LAN)**: the default. UDP broadcast discovers peers. A LAN chat holds **up to 10 people**, this PC included; an 11th PC is ignored. A peer must be accepted with `/join` within 20 seconds, or it is dropped for the rest of the chat.
+- **Supabase**: a room relay. One room holds **up to 10 people**, the owner included (the server answers `409` to an extra join). Setup: type the **setup code** (8 characters, `A-Z0-9`; spaces and dashes are ignored) and press **F2** in the TUI (the **Save setup code** button in the GUI). The app asks the server for the project URL and publishable key and saves them. They are not shown. Then type a display name, the room ID and the trust code (8 digits), and save on the last row.
+- **TUI settings rows, in order:** Setup code, Trust code (8 digits), Display name (a generated read-only code), Room id (8 characters). Enter moves to the next row and saves on the last one. Enter does not redeem a typed setup code: press F2 in the setup-code row first. F2 in any other row says `F2 saves in the setup-code row only`.
+- **Save rules** (talk-core `check_save`, used by the TUI): a typed but unredeemed setup code is refused. Supabase mode needs a display name, a room ID, a trust code, and a saved URL and key. The saved setup code is kept on every save.
+- **Create room** (Ctrl+N in the TUI): needs Supabase mode, a saved URL and key, a display name and a valid trust code. Only one room can be saved. The server returns a random room ID.
+- **Trust code:** 8 digits. The owner sets it when creating the room, and each participant types it to join. A wrong code gets `403`. In the TUI, a saved room that refuses the trust code is not joined: the settings screen opens before the chat with `trust 코드가 맞지 않습니다` on the message line. Ten wrong codes in a row lock the room for 1 hour. The LAN `/join` check is separate from this trust code.
+- **TUI chat status line:** `[host] peers: N · CLOUD SERVICE · room ID: XXXXXXXX · setup code: YYYYYYYY` (in Korean `[방장] 상대: N · ...`). The host badge appears only on the host. Only a relay error is added at the end. A success message is not.
+- **Operator (hidden, TUI):** on the settings screen, F9 opens an `operator passphrase` line that shows only its length. Enter asks the server for a new setup code (20 uses, 7 days) and shows it once. The server checks the passphrase against its secret `OPERATOR_PASSPHRASE`. The code's URL and key come from the server secrets `SUPABASE_URL` (set by Supabase) and `APP_PUBLISHABLE_KEY`. F9 is not named on the screen. GUI: unverified.
 - A room is usable for 24 hours from creation and cannot be extended. Joining an expired room returns `410`. Expiry cleanup is implemented but not deployed.
-- **Retired:** the old peer-ID-based one-to-one Supabase relay.
-- Trust codes are also 8 characters. The SAS commit design is decided, but implementation is pending.
+- **Retired:** the old peer-ID-based one-to-one Supabase relay, and entering a peer ID for room joining.
 - **Security warning:** room RLS is currently publicly open and room create/join requests have no signature verification. Both must be resolved before deployment.
+
+See [Supabase relay](supabase-relay.md) for the current model and unverified items.
 
 See [Supabase relay](supabase-relay.md) for the current model and unverified items.
 
