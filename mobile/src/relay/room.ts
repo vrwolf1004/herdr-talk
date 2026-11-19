@@ -8,7 +8,7 @@ import { bytesToHex, hexToBytes, utf8Decode, utf8Encode } from "./bytes.ts";
 import { TIMEOUT_MS } from "./client.ts";
 import { readMessage1, writeMessage1 } from "./noise.ts";
 import { bytesEqual, NonceCache, signingPublicKey } from "./protocol.ts";
-import { isRoomCode, isValidName, type RelaySettings } from "./settings.ts";
+import { isRoomCode, isTrustCode, isValidName, type RelaySettings } from "./settings.ts";
 
 export const ROOM_TAG = "herdr-talk-room-v1";
 export const POST_TAG = "herdr-talk-msg-v1";
@@ -21,20 +21,20 @@ const HEX32 = /^[0-9a-f]{32}$/;
 
 const sign = (seed: Uint8Array, lines: string[]) => bytesToHex(ed25519.sign(utf8Encode(lines.join("\n")), seed));
 
-/** Body of join-room: room_code, peer_pk, display_name, ts, nonce, sig. */
-export function joinRoomBody(seed: Uint8Array, roomCode: string, name: string, ts: number, nonce: string): string {
-  if (!isRoomCode(roomCode) || !isValidName(name) || !HEX32.test(nonce)) throw new Error("room code, name or nonce is not valid");
+/** Body of join-room: room_code, peer_pk, display_name, ts, nonce, trust, sig. The trust code is sent but not signed (as in talk-core). */
+export function joinRoomBody(seed: Uint8Array, roomCode: string, name: string, trust: string, ts: number, nonce: string): string {
+  if (!isRoomCode(roomCode) || !isValidName(name) || !isTrustCode(trust) || !HEX32.test(nonce)) throw new Error("room code, name, trust code or nonce is not valid");
   const pk = bytesToHex(signingPublicKey(seed));
   const sig = sign(seed, [ROOM_TAG, "join", roomCode, pk, name, String(ts), nonce]);
-  return JSON.stringify({ room_code: roomCode, peer_pk: pk, display_name: name, ts, nonce, sig });
+  return JSON.stringify({ room_code: roomCode, peer_pk: pk, display_name: name, ts, nonce, trust, sig });
 }
 
-/** Body of create-room: peer_pk, display_name, ts, nonce, sig (the signed room code is empty). */
-export function createRoomBody(seed: Uint8Array, name: string, ts: number, nonce: string): string {
-  if (!isValidName(name) || !HEX32.test(nonce)) throw new Error("name or nonce is not valid");
+/** Body of create-room: peer_pk, display_name, ts, nonce, trust, sig (the signed room code is empty). */
+export function createRoomBody(seed: Uint8Array, name: string, trust: string, ts: number, nonce: string): string {
+  if (!isValidName(name) || !isTrustCode(trust) || !HEX32.test(nonce)) throw new Error("name, trust code or nonce is not valid");
   const pk = bytesToHex(signingPublicKey(seed));
   const sig = sign(seed, [ROOM_TAG, "create", "", pk, name, String(ts), nonce]);
-  return JSON.stringify({ peer_pk: pk, display_name: name, ts, nonce, sig });
+  return JSON.stringify({ peer_pk: pk, display_name: name, ts, nonce, trust, sig });
 }
 
 /** The room code of a create-room answer (200 only). */
@@ -48,6 +48,8 @@ export function parseCreated(status: number, body: string): string {
 /** The member keys of a join-room answer (200 only). Throws with the reason otherwise. */
 export function parseJoin(status: number, body: string): { ownerPk: string; members: string[] } {
   if (status === 410) throw new Error("room expired (24 hours)");
+  if (status === 403) throw new Error("trust 코드가 맞지 않습니다");
+  if (status === 409) throw new Error("방 인원이 가득 찼습니다 (10명)");
   if (status !== 200) throw new Error(`join status ${status}`);
   const value = JSON.parse(body) as { owner_pk?: unknown; members?: unknown };
   if (typeof value.owner_pk !== "string" || !HEX64.test(value.owner_pk)) throw new Error("join answer has no owner_pk");
@@ -209,7 +211,7 @@ export async function createRoom(
   nonce: string,
   fetcher: Fetch = fetch as unknown as Fetch,
 ): Promise<string> {
-  const answer = await call(settings, "/functions/v1/create-room", "POST", createRoomBody(seed, settings.name, now, nonce), fetcher);
+  const answer = await call(settings, "/functions/v1/create-room", "POST", createRoomBody(seed, settings.name, settings.trust, now, nonce), fetcher);
   return parseCreated(answer.status, answer.text);
 }
 
@@ -221,7 +223,7 @@ export async function loadMembers(
   nonce: string,
   fetcher: Fetch = fetch as unknown as Fetch,
 ): Promise<Map<string, string>> {
-  const join = await call(settings, "/functions/v1/join-room", "POST", joinRoomBody(seed, settings.roomCode, settings.name, now, nonce), fetcher);
+  const join = await call(settings, "/functions/v1/join-room", "POST", joinRoomBody(seed, settings.roomCode, settings.name, settings.trust, now, nonce), fetcher);
   const own = bytesToHex(signingPublicKey(seed));
   const others = parseJoin(join.status, join.text).members.filter((pk) => pk !== own);
   if (others.length === 0) return new Map();

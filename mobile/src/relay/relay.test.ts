@@ -18,7 +18,8 @@ import {
   verifyPut,
 } from "./protocol.ts";
 import { computeVectors, INPUTS } from "./vectors.ts";
-import { codeMatches, emptySettings, isHttpsUrl, isRoomCode, keyLabel, missingFields, normalizeRoomCode } from "./settings.ts";
+import { codeMatches, emptySettings, isHttpsUrl, isRoomCode, isTrustCode, keyLabel, missingFields, normalizeRoomCode, normalizeSetupCode } from "./settings.ts";
+import { redeemSetupCode } from "./client.ts";
 import { NAMES_BY_LANGUAGE, namesFor } from "./names.ts";
 import { parseNames } from "../../scripts/gen-names.mjs";
 
@@ -137,14 +138,45 @@ test("base64 and UTF-8 helpers", () => {
   assert.equal(utf8Decode(utf8Encode("가a😀")), "가a😀");
 });
 
-test("settings: room ID is required, the URL must be https, the key is shown by length", () => {
-  assert.deepEqual(missingFields(emptySettings()), ["url", "key", "roomCode"]);
-  const full = { url: "https://x.supabase.co", key: "k", name: "Alice", roomCode: "ABCD2345" };
+test("settings: the setup code gives the URL and key, the trust code and room ID are required, the key is shown by length", () => {
+  assert.deepEqual(missingFields(emptySettings()), ["setupCode", "trust", "roomCode"]);
+  const full = { url: "https://x.supabase.co", key: "k", setupCode: "ABCD2345", name: "Alice", roomCode: "ABCD2345", trust: "12345678" };
   assert.deepEqual(missingFields(full), []);
-  assert.deepEqual(missingFields({ ...full, url: "http://x.example" }), ["url"]);
+  assert.deepEqual(missingFields({ ...full, url: "http://x.example" }), ["setupCode"], "a URL that is not https needs the setup code again");
   assert.deepEqual(missingFields({ ...full, roomCode: "abcd2345" }), ["roomCode"], "lowercase is not valid until it is normalized on save");
+  assert.deepEqual(missingFields({ ...full, trust: "1234" }), ["trust"]);
   assert.equal(isHttpsUrl("https://x.supabase.co/"), true);
   assert.equal(keyLabel("dummy-test-key"), "(14 chars)");
+});
+
+test("setup code: spaces and dashes are dropped, letters are uppercased, 8 letters or digits only; trust code is 8 digits", () => {
+  assert.equal(normalizeSetupCode("abcd-2345"), "ABCD2345");
+  assert.equal(normalizeSetupCode(" ab cd 23-45 "), "ABCD2345");
+  for (const bad of ["ABC", "ABCD23456", "ABCD234!", ""]) assert.equal(normalizeSetupCode(bad), null, bad);
+  assert.equal(isTrustCode("12345678"), true);
+  assert.equal(isTrustCode("1234567a"), false);
+  assert.equal(isTrustCode("1234567"), false);
+});
+
+/** A fake redeem answer: the status, and the body text. */
+const answer = (status: number, text = "") => async () => ({ status, text: async () => text });
+
+test("redeem-setup-code: 200 gives the URL and key; 404, 429, other statuses and bad answers are reasons", async () => {
+  const calls: { url: string; body: string }[] = [];
+  const ok = async (url: string, init: { body?: string }) => {
+    calls.push({ url, body: init.body ?? "" });
+    return { status: 200, text: async () => JSON.stringify({ url: "https://p.supabase.co", key: "k1" }) };
+  };
+  assert.deepEqual(await redeemSetupCode("abcd-2345", "https://x.supabase.co/", ok), { url: "https://p.supabase.co", key: "k1" });
+  assert.equal(calls[0].url, "https://x.supabase.co/functions/v1/redeem-setup-code");
+  assert.deepEqual(JSON.parse(calls[0].body), { code: "ABCD2345" }, "the code is sent normalized, with no apikey");
+  await assert.rejects(redeemSetupCode("abcd-2345", "https://x.supabase.co", answer(404)), /wrong, already used, or expired/);
+  await assert.rejects(redeemSetupCode("abcd-2345", "https://x.supabase.co", answer(429)), /Too many wrong codes/);
+  await assert.rejects(redeemSetupCode("abcd-2345", "https://x.supabase.co", answer(500)), /answered 500/);
+  await assert.rejects(redeemSetupCode("abcd-2345", "https://x.supabase.co", answer(200, "not json")), /not valid/);
+  await assert.rejects(redeemSetupCode("abcd-2345", "https://x.supabase.co", answer(200, "{}")), /not valid/);
+  await assert.rejects(redeemSetupCode("ABC", "https://x.supabase.co", answer(200)), /8 letters or digits/);
+  await assert.rejects(redeemSetupCode("ABCD2345", "http://x.example", answer(200)), /https/);
 });
 
 // ---- room ID (8 characters) ----

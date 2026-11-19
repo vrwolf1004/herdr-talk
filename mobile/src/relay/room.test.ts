@@ -19,8 +19,9 @@ const DELIVERIES = [
 ];
 
 test("join, post and fetch signatures equal the Python edition's", () => {
-  const join = JSON.parse(joinRoomBody(SEED, "ABCD2345", "Tester", 1700000000, NONCE));
+  const join = JSON.parse(joinRoomBody(SEED, "ABCD2345", "Tester", "12345678", 1700000000, NONCE));
   assert.equal(join.peer_pk, "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c");
+  assert.equal(join.trust, "12345678", "the trust code is sent, and the signature does not change");
   assert.equal(join.sig, "b789bab2a831bb6460c80a8acf5820df3cb8f2bb93dd3031aabbabecf178c7195aa608f26d1a22d33afe4b04243c9484d32365ee20a402f14bcffcf1cb7ec00a");
   const post = JSON.parse(postMessageBody(SEED, "ABCD2345", MESSAGE_ID, 1700000000, NONCE, DELIVERIES));
   assert.equal(post.sig, "b2fcd6781c9ca1ac85c89b9fe33e163bd08655aec59976e5ee5d2f2836ce60b0f0a0617acccea32854b281f8494615f988ff6c117b96cc32c88457a7c5e4cb05");
@@ -33,13 +34,16 @@ test("post refuses unordered recipients, too many recipients and bad shapes", ()
   assert.throws(() => postMessageBody(SEED, "ABCD2345", MESSAGE_ID, 1, NONCE, [DELIVERIES[1], DELIVERIES[0]]));
   assert.throws(() => postMessageBody(SEED, "ABCD2345", MESSAGE_ID, 1, NONCE, []));
   assert.throws(() => postMessageBody(SEED, "abcd2345", MESSAGE_ID, 1, NONCE, DELIVERIES));
-  assert.throws(() => joinRoomBody(SEED, "ABCD2345", "", 1, NONCE));
+  assert.throws(() => joinRoomBody(SEED, "ABCD2345", "", "12345678", 1, NONCE));
+  assert.throws(() => joinRoomBody(SEED, "ABCD2345", "Tester", "1234", 1, NONCE), "trust code must be 8 digits");
 });
 
 test("answers: join (410 is expiry), fetch rows are checked", () => {
   const pk = "aa".repeat(32);
   assert.deepEqual(parseJoin(200, JSON.stringify({ owner_pk: pk, members: [pk] })).members, [pk]);
   assert.throws(() => parseJoin(410, ""), /expired/);
+  assert.throws(() => parseJoin(403, ""), /trust 코드가 맞지 않습니다/);
+  assert.throws(() => parseJoin(409, ""), /방 인원이 가득 찼습니다 \(10명\)/);
   assert.throws(() => parseJoin(200, JSON.stringify({ owner_pk: pk, members: ["x"] })));
   assert.throws(() => parseFetch(500, ""));
   assert.throws(() => parseFetch(200, JSON.stringify({ messages: [{ message_id: "x" }] })));
@@ -90,7 +94,7 @@ test("same name from two keys gets the key's first 4 characters", () => {
 test("loadMembers joins, then reads the Noise keys of the other members only", async () => {
   const calls: string[] = [];
   const other = "ee".repeat(32);
-  const settings = { ...emptySettings(), url: "https://x.supabase.co/", key: "k", name: "Tester", roomCode: "ABCD2345" };
+  const settings = { ...emptySettings(), url: "https://x.supabase.co/", key: "k", name: "Tester", roomCode: "ABCD2345", trust: "12345678" };
   const ownPk = "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c";
   const fetcher = async (url: string) => {
     calls.push(url);
@@ -110,8 +114,8 @@ test("delete-peer body signs like the shared delete vector", () => {
 });
 
 test("create-room body signs like the Python edition and the answer must carry a valid code", () => {
-  const body = JSON.parse(createRoomBody(SEED, "Tester", 1700000000, NONCE));
-  assert.deepEqual(Object.keys(body), ["peer_pk", "display_name", "ts", "nonce", "sig"]);
+  const body = JSON.parse(createRoomBody(SEED, "Tester", "12345678", 1700000000, NONCE));
+  assert.deepEqual(Object.keys(body), ["peer_pk", "display_name", "ts", "nonce", "trust", "sig"]);
   assert.equal(body.sig, "9177c9d12026f452226a534dc0fdb60cfee8a0350b6c08e7093c8abe824819fbecb1ca6b0911091f8870e2af154a9efcdd765577d4dee1c960f9041d87871a08");
   assert.equal(parseCreated(200, JSON.stringify({ room_code: "ABCD2345" })), "ABCD2345");
   assert.throws(() => parseCreated(200, JSON.stringify({ room_code: "abc" })));

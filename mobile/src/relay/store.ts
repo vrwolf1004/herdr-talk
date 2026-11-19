@@ -49,8 +49,10 @@ export function defaultSettings(): RelaySettings {
   return {
     url: process.env.EXPO_PUBLIC_RELAY_URL ?? "",
     key: process.env.EXPO_PUBLIC_RELAY_KEY ?? "",
+    setupCode: "",
     name: "",
     roomCode: process.env.EXPO_PUBLIC_RELAY_ROOM_CODE ?? "",
+    trust: "",
   };
 }
 
