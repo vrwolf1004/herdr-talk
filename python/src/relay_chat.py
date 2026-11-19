@@ -229,7 +229,7 @@ def room_refuses(state):
     try:
         config = relay_rest.config(settings["url"], settings["key"])
         seed = relay_key.load_or_create(state)
-        relay_rest.join_room(config, seed, settings["room_code"], settings["name"], settings["trust"])
+        relay_rest.join_room(config, seed, settings["room_code"], settings["name"], settings["trust"], timeout=3)  # shortcut: 3 seconds fixed; a timeout is not a refusal
     except ValueError as error:
         return str(error) == relay_rest.TRUST_WRONG
     except OSError:

@@ -420,12 +420,34 @@ class JoinLimitTests(unittest.TestCase):
 
 
 class PeerCapTests(unittest.TestCase):
-    def test_ten_people_with_this_pc_then_the_eleventh_is_ignored(self):
+    """Only verified people count toward MAX_PEERS (this PC included); an unverified peer takes no place."""
+
+    def _announce(self, chat, key, index):
+        info = {"id": store.peer_id(key), "name": f"P{index}", "port": 9, "key": store.to_hex(key)}
+        return talk.remember_peer(chat, info, f"10.0.0.{index + 2}")
+
+    def _verified(self, chat, index):
+        key = bytes([index + 1]) * 32
+        chat.trusted.append({"name": f"T{index}", "key": key, "ip": f"10.0.0.{index + 2}"})
+        return key
+
+    def test_nine_verified_others_then_the_tenth_is_ignored(self):
         chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        keys = [self._verified(chat, index) for index in range(talk.MAX_PEERS)]
         for index in range(talk.MAX_PEERS - 1):
-            self.assertIsNotNone(talk.remember_peer(chat, {"id": f"p{index}", "name": f"P{index}", "port": 9}, f"10.0.0.{index + 2}"))
-        self.assertIsNone(talk.remember_peer(chat, {"id": "late", "name": "Late", "port": 9}, "10.0.0.99"), "the 11th person is ignored")
-        self.assertIsNotNone(talk.remember_peer(chat, {"id": "p0", "name": "P0", "port": 9}, "10.0.0.2"), "a known peer still passes")
+            self.assertIsNotNone(self._announce(chat, keys[index], index))
+        self.assertIsNone(self._announce(chat, keys[talk.MAX_PEERS - 1], talk.MAX_PEERS - 1), "the tenth other is ignored")
+        self.assertIsNotNone(self._announce(chat, keys[0], 0), "a known peer still passes")
+
+    def test_unverified_peers_do_not_take_a_place(self):
+        chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        keys = [self._verified(chat, index) for index in range(talk.MAX_PEERS - 2)]
+        for index in range(talk.MAX_PEERS - 2):
+            self.assertIsNotNone(self._announce(chat, keys[index], index))
+        for index in range(5):  # unverified: not in the trust list
+            self.assertIsNotNone(self._announce(chat, bytes([100 + index]) * 32, 50 + index), "unverified peers are not counted")
+        last = self._verified(chat, talk.MAX_PEERS - 2)
+        self.assertIsNotNone(self._announce(chat, last, talk.MAX_PEERS - 2), "the ninth verified other still fits")
 
 
 if __name__ == "__main__":

@@ -77,7 +77,7 @@ def udp_port():
     return parse_udp_port(os.environ.get(UDP_PORT_VARIABLE))
 ANNOUNCE_SECONDS = 2
 PEER_TIMEOUT_SECONDS = 10
-MAX_PEERS = 10  # people in a LAN chat, this PC included: a new peer past this many others is ignored
+MAX_PEERS = 10  # people in a LAN chat, this PC included; only verified ones count: a new peer is ignored once that many others are verified
 JOIN_LIMIT_SECONDS = 20  # a LAN peer must be joined (/join) this long after its first announce, or it is kicked for this chat
 AUTO_RENAME_GAP_SECONDS = 60  # 자동 이름 변경 사이의 최소 간격
 MAX_MESSAGE_BYTES = 64 * 1024
@@ -689,9 +689,11 @@ def remember_peer(chat, info, ip):
         return None
     if key is not None and not trusted:
         chat.waiting_since.setdefault(key, time.time())
-    # At most MAX_PEERS people including this PC: a new peer past that is ignored (a known peer's announcements always pass).
+    # At most MAX_PEERS people including this PC, counting only verified peers: a new peer past that is ignored (a known
+    # peer's announcements always pass). An unverified peer does not take a place.
     here = chat.fresh_peers()
-    if len(here) >= MAX_PEERS - 1 and not any(known.get("id") == peer_id for known in here.values()):
+    verified = sum(1 for known in here.values() if known.get("key") is not None and chat.trusts(known["key"]))
+    if verified >= MAX_PEERS - 1 and not any(known.get("id") == peer_id for known in here.values()):
         return None
     entry = {"id": peer_id, "name": name, "ip": ip, "port": port, "seen": time.time(), "key": key}
     with chat.peers_lock:

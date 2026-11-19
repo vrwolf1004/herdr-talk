@@ -239,6 +239,11 @@ class RoomGateTests(unittest.TestCase):
         with mock.patch.object(talk.relay_rest, "join_room", return_value={"members": []}):
             self.assertFalse(talk.relay_chat.room_refuses(self.dir))
 
+    def test_a_slow_relay_times_out_in_three_seconds_and_is_not_a_refusal(self):
+        with mock.patch.object(talk.relay_rest, "_send", side_effect=TimeoutError("slow")) as send:
+            self.assertFalse(talk.relay_chat.room_refuses(self.dir))
+        self.assertEqual(send.call_args.args[1], 3)
+
     def test_a_403_from_the_relay_refuses_and_a_network_failure_does_not(self):
         with mock.patch.object(talk.relay_rest, "_send", return_value=(403, "")):
             self.assertTrue(talk.relay_chat.room_refuses(self.dir))
