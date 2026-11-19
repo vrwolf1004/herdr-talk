@@ -132,7 +132,9 @@ impl Form {
         let saved = relay_settings::load_saved(state);
         let mine = talk_core::relay_chat::my_keys(state).ok();
         let short_id = talk_core::relay_key::short_id(state).unwrap_or_default();
-        let fields = [String::new(), saved.trust, saved.name, saved.room_code];
+        // The Unique ID row is read-only: this PC's short ID (a name saved by an older version is kept).
+        let name = if saved.name.is_empty() { talk_core::relay_key::short_id(state).unwrap_or_default() } else { saved.name };
+        let fields = [String::new(), saved.trust, name, saved.room_code];
         let message = if mine.is_none() { t("gui.relay.no_keys", &[]) } else { String::new() };
         // The join check makes a network call, so it runs in a thread; `show` shows the trust message when it says no.
         let opened = message.clone();
@@ -525,6 +527,9 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
     // The issue answer: the code is shown once in the bar, never written to a file or log.
     if let Some(answer) = form.issuing.as_ref().and_then(|receiver| receiver.try_recv().ok()) {
         form.issuing = None;
+        if let Ok(code) = &answer {
+            form.fields[CODE_FIELD] = code.clone(); // the new code goes into the setup code input
+        }
         form.message = issue_message(answer);
     }
     // The Save setup code answer: the URL, key and setup code are written at once (the middle save); nothing is shown.
@@ -561,7 +566,6 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                     if ui.add_sized([90.0, 30.0], egui::Button::new(egui::RichText::new(t("gui.relay.button.cancel", &[])).monospace())).clicked() {
                         action = Action::Discard;
                     }
-                    ui.colored_label(palette.muted, egui::RichText::new(t("gui.lang_hint", &[])).monospace());
                 });
             });
         });
@@ -632,8 +636,8 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                         .show(ui, |ui| {
                             ui.colored_label(palette.accent, egui::RichText::new(t("gui.relay.section2", &[])).monospace());
                             ui.add_space(14.0);
-                            // The rows in Python's order: trust code, display name (typed by the user, starts empty), room ID.
-                            for index in [TRUST_FIELD, NAME_FIELD, ROOM_FIELD] {
+                            // The rows in Python's order: trust code, room ID (the Unique ID is not drawn).
+                            for index in [TRUST_FIELD, ROOM_FIELD] {
                                 ui.colored_label(palette.text, egui::RichText::new(labels[index].as_str()).monospace());
                                 let edit = egui::TextEdit::singleline(&mut form.fields[index]);
                                 ui.add_enabled_ui(enabled, |ui| {
@@ -821,13 +825,12 @@ mod tests {
     }
 
     #[test]
-    fn the_display_name_starts_empty_and_a_typed_name_is_kept() {
+    fn the_unique_id_starts_as_this_pcs_short_id_and_is_what_is_saved() {
         let dir = folder("name");
         let form = Form::open(&dir);
-        assert!(form.fields[NAME_FIELD].is_empty(), "no generated name");
-        let mut typed = supabase_form(&dir);
-        typed.fields[NAME_FIELD] = "Bob".into();
-        assert_eq!(typed.settings().name, "Bob");
+        let id = talk_core::relay_key::short_id(&dir).unwrap();
+        assert_eq!(form.fields[NAME_FIELD], id, "the row shows this PC's short ID");
+        assert_eq!(form.settings().name, id);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

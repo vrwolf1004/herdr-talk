@@ -114,6 +114,7 @@ fn run(args: RunArgs) -> Result<(), String> {
     let me = chat.me.lock().unwrap().clone();
     chat.say(t("start.hello", &[("name", &me.name), ("port", &me.port.to_string())]));
     let state = talk_core::store::state_dir();
+    chat.set_lan_listening(false); // no LAN peer is remembered until the mode is known (a saved one, or the first-run choice)
     // A saved room that refuses this PC's trust code is not joined: the settings screen opens with the reason instead.
     let refused = talk_core::relay_chat::room_refuses(&state);
     // The relay is optional: a bad setting shows in the status row and never stops the chat.
@@ -123,12 +124,16 @@ fn run(args: RunArgs) -> Result<(), String> {
         }
     }
     let result = if talk_core::relay_settings::needs_first_run(&state) {
-        match screen::choose_mode(&chat) {
+        chat.set_lan_listening(false);
+        let chosen = screen::choose_mode(&chat);
+        chat.set_lan_listening(true);
+        match chosen {
             Ok(screen::Choice::Saved | screen::Choice::TimedOut) => screen::run(&chat, refused),
             Ok(screen::Choice::Quit) => Ok(()),
             Err(error) => Err(error),
         }
     } else {
+        chat.set_lan_listening(true);
         screen::run(&chat, refused)
     }
     .map_err(|error| error.to_string());
@@ -155,11 +160,15 @@ fn serve(args: RunArgs) -> Result<(), String> {
         None => udp_port()?,
     };
     let chat = start(args.name, args.tcp_port.unwrap_or(0), udp).map_err(|error| error.to_string())?;
+    chat.set_lan_listening(false); // no LAN peer is remembered until the mode is known
     let control = control::serve(chat.clone(), &talk_core::store::state_dir(), true).map_err(|error| error.to_string())?;
     chat.watch_host();
     // The relay runs here too, so a GUI (which talks to this serve) gets it. A bad setting only shows a line.
     if let Err(error) = talk_core::relay_chat::start(&chat, &talk_core::store::state_dir()) {
         chat.say(format!("relay: {error}"));
+    }
+    if talk_core::relay_settings::needs_first_run(&talk_core::store::state_dir()) {
+        chat.set_lan_listening(false); // the GUI's first-run choice is still to come: its relay_reload starts the listening
     }
     let signalled = chat.clone();
     ctrlc::set_handler(move || signalled.stop.set()).map_err(|error| error.to_string())?;

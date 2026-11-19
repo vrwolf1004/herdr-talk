@@ -180,6 +180,10 @@ pub struct Chat {
     wait_numbers: Mutex<Vec<(Vec<u8>, usize)>>,
     /// True in Supabase mode: messages go only through the relay, never over the LAN.
     supabase: AtomicBool,
+    /// The other people in the room (CLOUD SERVICE), for the CONNECTED NODES list.
+    room_names: Mutex<Vec<String>>,
+    /// False while the first-run screen is open: the mode is not chosen yet, so no LAN peer is remembered.
+    lan_listening: AtomicBool,
     /// One SAS nonce per peer, with its commitment for that peer: (nonce, commitment). Never shared with another peer.
     my_nonces: Mutex<HashMap<Vec<u8>, ([u8; 32], [u8; 32])>>,
     /// The commitment each peer gave us for us, pinned at first sight by its public key. A different one is refused.
@@ -233,6 +237,8 @@ impl Chat {
             relay_status: Mutex::new(String::new()),
             wait_numbers: Mutex::new(Vec::new()),
             supabase: AtomicBool::new(false),
+            room_names: Mutex::new(Vec::new()),
+            lan_listening: AtomicBool::new(true),
             my_nonces: Mutex::new(HashMap::new()),
             commits: Mutex::new(HashMap::new()),
             refused: Mutex::new(std::collections::HashSet::new()),
@@ -506,7 +512,17 @@ impl Chat {
     }
 
     /// Stop the running relay thread (it exits at its next check) and forget its inbox.
+    pub fn set_room_names(&self, names: Vec<String>) {
+        *self.room_names.lock().unwrap() = names;
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    pub fn room_names(&self) -> Vec<String> {
+        self.room_names.lock().unwrap().clone()
+    }
+
     pub fn stop_relay(&self) {
+        self.room_names.lock().unwrap().clear();
         if let Some((_, stop)) = self.relay_inbox.lock().unwrap().take() {
             stop.store(true, Ordering::Relaxed);
         }
@@ -537,7 +553,21 @@ impl Chat {
     /// The connection mode for this run: true in Supabase mode.
     pub fn set_supabase_mode(&self, on: bool) {
         self.supabase.store(on, Ordering::Relaxed);
+        if on {
+            // LAN peers heard while the settings were open (before the mode was known) are dropped.
+            self.peers.lock().unwrap().clear();
+            self.waiting_since.lock().unwrap().clear();
+            self.kicked.lock().unwrap().clear();
+        }
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    pub fn set_lan_listening(&self, on: bool) {
+        self.lan_listening.store(on, Ordering::Relaxed);
+    }
+
+    pub fn is_lan_listening(&self) -> bool {
+        self.lan_listening.load(Ordering::Relaxed)
     }
 
     pub fn is_supabase(&self) -> bool {
@@ -597,7 +627,8 @@ impl Chat {
     /// True for a kicked key: not joined within JOIN_LIMIT, and kicked for the rest of this chat. A joined key is never kicked.
     /// The first kick says so once in the chat.
     pub fn is_kicked(&self, key: &[u8], name: &str, ip: &str) -> bool {
-        if self.trusts(key) {
+        // CLOUD SERVICE has no LAN chat: nobody is kicked there.
+        if self.is_supabase() || self.trusts(key) {
             return false;
         }
         let mut kicked = self.kicked.lock().unwrap();

@@ -12,6 +12,11 @@ import relay_chat  # noqa: E402
 from core import relay_rest  # noqa: E402
 
 
+class FixedName:
+    def my_name(self):
+        return "Alice"
+
+
 class ShortIdTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="herdr-talk-short-")
@@ -49,7 +54,7 @@ class ShortIdTest(unittest.TestCase):
             seen.append(short)
             return next(statuses)
 
-        relay = relay_chat.Relay(hooks=None, state=self.dir, config=None, settings={"name": "Alice"}, session=relay_chat.Session(seed))
+        relay = relay_chat.Relay(hooks=FixedName(), state=self.dir, config=None, settings={"name": "Alice"}, session=relay_chat.Session(seed))
         with mock.patch.object(relay_rest, "put_status", side_effect=fake_put):
             self.assertTrue(relay._publish())
         self.assertEqual(len(seen), 2)
@@ -58,7 +63,7 @@ class ShortIdTest(unittest.TestCase):
     @mock.patch.object(relay_key, "noise_public_hex", return_value="ab" * 32)
     def test_publish_gives_up_after_five_taken_ids(self, _noise):
         seed = bytes(range(32))
-        relay = relay_chat.Relay(hooks=None, state=self.dir, config=None, settings={"name": "Alice"}, session=relay_chat.Session(seed))
+        relay = relay_chat.Relay(hooks=FixedName(), state=self.dir, config=None, settings={"name": "Alice"}, session=relay_chat.Session(seed))
         with mock.patch.object(relay_rest, "put_status", return_value=409) as put:
             self.assertFalse(relay._publish())
         self.assertEqual(put.call_count, 5)

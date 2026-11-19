@@ -51,6 +51,7 @@ class Relay:
         self.names = {}    # pk hex -> the 대화명 it was shown under (a clash gets the key's first 4 characters)
         self.since = None
         self.own_pk = None  # this PC's Ed25519 key hex, set when the relay starts
+        self.joined = False  # True while the last join worked: the status tag reads it
         self.started = 0    # seconds when this node's relay started (memory only): older room rows are not shown
         self.cache = room.NonceCache()
 
@@ -98,13 +99,18 @@ class Relay:
 
     def _load_members(self):
         """Read the room's member keys and their Noise keys (the peers table)."""
-        info = relay_rest.join_room(self.config, self.session.seed, self.settings["room_code"], self.settings["name"], self.settings["trust"])
+        info = relay_rest.join_room(self.config, self.session.seed, self.settings["room_code"], self.hooks.my_name(), self.settings["trust"])
         pks = [pk for pk in info["members"] if pk != self.own_pk]
-        noise_keys = {}
+        noise_keys, names = {}, {}
         if pks:
             status, body = relay_rest._send(relay_rest.members_noise_request(self.config, pks))
-            noise_keys = {pk: bytes.fromhex(noise) for pk, noise in relay_rest.read_members_noise(status, body)}
+            for pk, noise, name in relay_rest.read_members_noise(status, body):
+                noise_keys[pk] = bytes.fromhex(noise)
+                names[pk] = name or pk[:4]
         self.members = {pk: noise_keys[pk] for pk in pks if pk in noise_keys}
+        show = getattr(self.hooks, "members", None)
+        if show is not None:
+            show([names[pk] for pk in pks if pk in noise_keys])  # the people in the room, for the CONNECTED NODES list
         return info
 
     def _wait(self, seconds):
@@ -123,7 +129,7 @@ class Relay:
         """Write this PC's row. A 409 means another key owns the short id: make a new one and try again (up to 5)."""
         for _ in range(5):
             short = relay_key.load_or_create_short_id(self.state)
-            status = relay_rest.put_status(self.config, self.session.seed, relay_key.noise_public_hex(self.state), short, self.settings["name"])
+            status = relay_rest.put_status(self.config, self.session.seed, relay_key.noise_public_hex(self.state), short, self.hooks.my_name())
             if status is not None and relay_rest.put_succeeded(status):
                 return True
             if status != 409:
@@ -134,7 +140,7 @@ class Relay:
     def _run(self):
         self.started = int(time.time())  # rows older than this node's start are not shown
         # The row is written before the join (the room's member rows point at it): until it is, the join is not tried.
-        name = self.settings["name"]
+        name = self.hooks.my_name()  # the 대화명 (the automatic name) is what the room sees; the Unique ID is only a row key
         if name and not relay_rest.valid_name(name):
             # A bad name would never get its row, so the join would fail on the missing row: stop here with the reason.
             self.hooks.emit(Status("relay: name is not valid; not joined yet"))
@@ -155,11 +161,11 @@ class Relay:
                 next_members = now + MEMBERS_SECONDS
                 try:
                     info = self._load_members()
-                    joined = True
+                    joined = self.joined = True
                     retries = 1
                     self.hooks.emit(Status(""))  # a successful join says nothing on the status line; failures still do
                 except (OSError, ValueError) as error:
-                    joined = False
+                    joined = self.joined = False
                     self.hooks.emit(Status(f"relay: room join failed: {error}"))
                     if not retries:
                         next_members = float("inf")  # shortcut: a second failure stops the joins until the relay restarts

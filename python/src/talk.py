@@ -106,7 +106,7 @@ def control_answer(chat, request, allow_shutdown):
     if cmd == "peers":
         peers = [{"name": info["name"], "ip": info["ip"], "port": info["port"]} for info in chat.fresh_peers().values()]
         mode = relay_settings.SUPABASE if chat.supabase else relay_settings.LOCAL
-        return {"ok": True, "peers": peers, "me": {"name": chat.me["name"], "port": chat.me["port"]}, "mode": mode, "relay": chat.relay_status}
+        return {"ok": True, "peers": peers, "room": list(chat.room_names), "me": {"name": chat.me["name"], "port": chat.me["port"]}, "mode": mode, "relay": chat.relay_status}
     if cmd == "send":
         text = request.get("text")
         if not isinstance(text, str):
@@ -269,7 +269,8 @@ def read_char():
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):   # arrow and function keys send a second code; only F1 is used
             code = msvcrt.getwch()
-            return KEY_F1 if code == ";" else relay_form.KEY_F2 if code == "<" else relay_form.KEY_F3 if code == "=" else relay_form.KEY_F9 if code == "C" else ""
+            return (KEY_F1 if code == ";" else relay_form.KEY_F2 if code == "<" else relay_form.KEY_F3 if code == "=" else relay_form.KEY_F9 if code == "C"
+                    else relay_form.KEY_UP if code == "H" else relay_form.KEY_DOWN if code == "P" else "")
         return ch
     fd = sys.stdin.fileno()
     first = os.read(fd, 1)
@@ -277,8 +278,8 @@ def read_char():
         # An arrow or function key sends Esc plus more bytes at once: drop them, so only a lone Esc is Esc.
         import select
         if select.select([fd], [], [], 0.02)[0]:
-            os.read(fd, 16)
-            return ""
+            sequence = os.read(fd, 16)
+            return relay_form.KEY_UP if sequence[:2] in (b"[A", b"OA") else relay_form.KEY_DOWN if sequence[:2] in (b"[B", b"OB") else ""
         return ""
     need = 4 if first[0] >= 0xF0 else 3 if first[0] >= 0xE0 else 2 if first[0] >= 0xC0 else 1
     data = first + (os.read(fd, need - 1) if need > 1 else b"")
@@ -322,31 +323,33 @@ def wrap_line(line, cols):
     return rows
 
 
-HELP_LINES = [
-    t("help.title_send"),
-    t("help.send"),
-    "",
-    t("help.commands"),
-    t("help.name"),
-    t("help.lang"),
-    t("help.codes"),
-    t("help.peers"),
-    t("help.trust"),
-    t("help.phone"),
-    t("help.help"),
-    t("help.quit"),
-    "",
-    t("help.keys"),
-    t("help.enter"),
-    t("help.backspace"),
-    t("help.ctrl_l"),
-    t("help.ctrl_p"),
-    t("help.ctrl_c"),
-]
-HELP_WIDTH = max(char_width(line) for line in HELP_LINES)
-HELP_BORDER = "+" + "-" * (HELP_WIDTH + 2) + "+"
-# Pad by display width, so wide characters (Korean, Japanese) keep the right edge straight.
-HELP_BOX = [HELP_BORDER] + [f"| {line}{' ' * (HELP_WIDTH - char_width(line))} |" for line in HELP_LINES] + [HELP_BORDER]
+def help_box():
+    """The help box in the current language (built at each use, so F3 changes it at once)."""
+    lines = [
+        t("help.title_send"),
+        t("help.send"),
+        "",
+        t("help.commands"),
+        t("help.name"),
+        t("help.lang"),
+        t("help.codes"),
+        t("help.peers"),
+        t("help.trust"),
+        t("help.phone"),
+        t("help.help"),
+        t("help.quit"),
+        "",
+        t("help.keys"),
+        t("help.enter"),
+        t("help.backspace"),
+        t("help.ctrl_l"),
+        t("help.ctrl_p"),
+        t("help.ctrl_c"),
+    ]
+    width = max(char_width(line) for line in lines)
+    border = "+" + "-" * (width + 2) + "+"
+    # Pad by display width, so wide characters (Korean, Japanese) keep the right edge straight.
+    return [border] + [f"| {line}{' ' * (width - char_width(line))} |" for line in lines] + [border]
 
 
 def fit(text, cols):
@@ -382,6 +385,8 @@ def message_rows(text, mine, sender, stamp, cols):
     if sender is None:
         return [f"{MUTED}{row}" for row in wrap_line(text, width)]
     body = f"{BOLD}{ACCENT}" if mine else TEXT
+    if mine:
+        sender = f"{sender} {t('chat.you')}"  # "예준 (나) > ...", as the Rust edition
     head = f"[{stamp}] {sender} > "
     room = width - char_width(head)
     if room < 8:
@@ -394,7 +399,20 @@ def message_rows(text, mine, sender, stamp, cols):
 MAX_NODE_ROWS = 6  # people listed under the CONNECTED NODES title; more become one "…외 N명" row
 
 
-def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=""):
+ERROR_WORDS = ("failed", "could not", "no identity", "incomplete", "invalid", "not valid", "not joined")  # as the Rust edition, plus Python's wording
+
+
+def status_tag(chat):
+    """The tag at the end of the status row: [SYSTEM READY] without a relay, [CONNECTED] once the room is joined, [ERROR] when
+    the relay's status text names a failure, otherwise [CONNECTING...]."""
+    if not chat.supabase or chat.relay is None:
+        return relay_form.TAGS["ready"]
+    if any(word in chat.relay_status for word in ERROR_WORDS):
+        return relay_form.TAGS["error"]
+    return relay_form.TAGS["connected" if chat.relay.joined else "connecting"]
+
+
+def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode="", tag=None):
     """The whole chat screen as one string of ANSI codes, in the GUI's retro layout: the header and a divider,
     COMMUNICATION LOG with the messages, the CONNECTED NODES row, a divider, the keyboard guide, the input row, the status
     row, and the made-by footer alone on the bottom row (the status text is long, so it must not share that row).
@@ -420,7 +438,10 @@ def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=
     def put(row, content):
         out.append(relay_form.place_row(row, content))
 
-    put(1, f"{ACCENT}{fit(relay_form.header(cols, 'SYS.VER 1.0 · ' + (mode or 'SYSTEM READY')), cols - 1)}")
+    version = "SYS.VER 1.0"
+    head = relay_form.header(cols, version)
+    head = head[:-len(version)] + f"{MUTED}{version}" if head.endswith(version) else head  # the app name is green, the version grey
+    put(1, f"{ACCENT}{head}")
     put(2, f"{BORDER}{relay_form.divider(cols)}")
     put(3, f"{ACCENT}COMMUNICATION LOG")
     for index in range(area):
@@ -436,17 +457,19 @@ def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=
     top = 4 + area
     put(top, f"{ACCENT}CONNECTED NODES")
     for index, person in enumerate(people):
-        put(top + 1 + index, f"{ACCENT if index == 0 else TEXT}{fit(person, cols - 1)}")
+        put(top + 1 + index, f"{MUTED if index == 0 else TEXT}{fit(person, cols - 1)}")
     put(top + block, f"{BORDER}{relay_form.divider(cols)}")
     shown_typed = tail(typed, cols - 13)
     typed_shown = f"{ACCENT}{shown_typed}_" if typed else f"{MUTED}{t('chat.input_hint')}"
-    put(rows - 2, f"MESSAGE > {typed_shown}")
+    put(rows - 2, f"{ACCENT}MESSAGE > {typed_shown}")
     # The status row ends with the tag and the key hint for the help box (F1 or /help opens it); the status text is cut to fit.
     hint = t("status.help_hint")
-    ending = f"{relay_form.TAG}  {hint}"
+    tag = tag or relay_form.TAG
+    tag_color = ACCENT if tag in (relay_form.TAGS["ready"], relay_form.TAGS["connected"]) else relay_form.WARN
+    ending = f"{tag}  {hint}"
     left = fit(status, cols - 1 - char_width(ending) - 2)
     gap = " " * max(0, cols - 1 - char_width(left) - char_width(ending))
-    put(rows - 1, f"{ACCENT}{left}{gap}{relay_form.TAG}  {MUTED}{hint}")
+    put(rows - 1, f"{MUTED}{left}{gap}{tag_color}{tag}  {MUTED}{hint}")
     # The bottom row: made by Python on the right, nothing else.
     footer = fit(relay_form.FOOTER, cols - 1)
     put(rows, f"{' ' * (cols - 1 - char_width(footer))}{MUTED}{footer}")
@@ -611,7 +634,8 @@ def run_ansi(chat):
         if paused[0]:
             return
         size = shutil.get_terminal_size((80, 24))
-        status = t("status.line", name=chat.me["name"], peers=len(chat.fresh_peers()))
+        # "Peers" are the people in the room in CLOUD SERVICE, the peers found on the network in the LAN mode.
+        status = t("status.line", name=chat.me["name"], peers=len(chat.room_names) if chat.supabase else len(chat.fresh_peers()))
         status += " · " + t("mode.supabase" if chat.supabase else "mode.local")
         if chat.supabase and chat.state_dir:
             saved = relay_settings.load_saved(chat.state_dir)
@@ -623,7 +647,7 @@ def run_ansi(chat):
             status = f"{t('host.badge')} {status}"
         with chat.lines_lock:
             lines = list(chat.lines)
-        nodes = [f"{'HOST/YOU' if chat.is_host() else 'YOU'} {chat.me['name']}"]
+        nodes = [", ".join([f"{'HOST/YOU' if chat.is_host() else 'YOU'} {chat.me['name']}", *chat.room_names])]  # CLOUD SERVICE: the people in the room follow on the same row
         for info in chat.fresh_peers().values():
             link = chat.link_of(info)
             number = chat.numbers.get(info.get("key")) if link == "unverified" else None
@@ -631,8 +655,8 @@ def run_ansi(chat):
             state = t("nodes.verified") if link == "encrypted" else t("nodes.waiting")
             nodes.append(f"{prefix}{info['name']} ({info['ip']})  {state}")
         mode = "CLOUD SERVICE" if chat.supabase else "BASE STATION"
-        overlay = HELP_BOX if chat.help_open else chat.phone_overlay()
-        frame = screen_frame(lines, status, typed[0], size.columns, size.lines, overlay, nodes, mode)
+        overlay = help_box() if chat.help_open else chat.phone_overlay()
+        frame = screen_frame(lines, status, typed[0], size.columns, size.lines, overlay, nodes, mode, status_tag(chat))
         with screen_lock:
             _draw(frame)
 
@@ -763,6 +787,7 @@ def serve(args):
 
 def run(args):
     server, chat = start_node(args)
+    chat.lan_listening = False  # no LAN peer is remembered until the mode is known (a saved one, or the first-run choice)
     _tidy_sessions(chat)
     me = chat.me
     control = start_control(chat, state_dir())

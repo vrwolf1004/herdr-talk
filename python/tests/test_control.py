@@ -38,6 +38,7 @@ class ControlTest(unittest.TestCase):
         talk.STOP.clear()
         self.dir = tempfile.mkdtemp(prefix="herdr-talk-control-")
         self.chat = talk.Chat({"id": "me", "name": "Me", "port": 1234})
+        self.chat.lan_listening = True  # as after start_relay
         self.chat.on_event = self.chat.add_event
         self.control = talk.start_control(self.chat, self.dir, allow_shutdown=True)
         with open(self.control.file, encoding="utf-8") as f:
@@ -80,7 +81,11 @@ class ControlTest(unittest.TestCase):
         client = Client(self.info)
         answer = client.call({"cmd": "peers"})
         client.close()
-        self.assertEqual(answer, {"ok": True, "peers": [{"name": "Bob", "ip": "10.0.0.2", "port": 5000}], "me": {"name": "Me", "port": 1234}, "mode": "local", "relay": ""})
+        self.assertEqual(answer, {"ok": True, "peers": [{"name": "Bob", "ip": "10.0.0.2", "port": 5000}], "room": [], "me": {"name": "Me", "port": 1234}, "mode": "local", "relay": ""})
+        self.chat.room_names = ["서연"]  # the people in the room (CLOUD SERVICE), for the GUI's list
+        client = Client(self.info)
+        self.assertEqual(client.call({"cmd": "peers"})["room"], ["서연"])
+        client.close()
 
     def test_send_goes_to_the_peer(self):
         server = socket.socket()
@@ -135,6 +140,49 @@ class ControlTest(unittest.TestCase):
 
         talk._listen_loop(Sock(), self.chat)
         self.assertEqual(sorted(info["name"] for info in self.chat.peers.values()), ["RustA", "RustB"])
+
+    def test_cloud_service_ignores_lan_announcements(self):
+        packet = json.dumps({"app": talk.APP, "id": "shared", "name": "RustA", "port": 5001}).encode("utf-8")
+
+        class Sock:
+            sent = False
+
+            def recvfrom(self, _size):
+                if not Sock.sent:
+                    Sock.sent = True
+                    return packet, ("10.0.0.9", 1)
+                talk.STOP.set()
+                raise OSError("closed")
+
+        self.chat.supabase = True
+        talk._listen_loop(Sock(), self.chat)
+        self.assertEqual(self.chat.peers, {}, "no LAN peer is remembered, so none is asked to be verified or kicked")
+        self.assertEqual(self.chat.waiting_since, {})
+
+    def test_lan_announcements_are_ignored_while_the_first_run_screen_is_open(self):
+        packet = json.dumps({"app": talk.APP, "id": "shared", "name": "RustA", "port": 5001}).encode("utf-8")
+
+        class Sock:
+            sent = False
+
+            def recvfrom(self, _size):
+                if not Sock.sent:
+                    Sock.sent = True
+                    return packet, ("10.0.0.9", 1)
+                talk.STOP.set()
+                raise OSError("closed")
+
+        self.chat.lan_listening = False
+        talk._listen_loop(Sock(), self.chat)
+        self.assertEqual(self.chat.peers, {})
+
+    def test_a_lan_peer_heard_before_the_cloud_mode_is_dropped_and_never_kicked(self):
+        self.chat.peers["k"] = {"name": "Early", "ip": "10.0.0.9", "port": 1}
+        self.chat.waiting_since["k"] = 0  # first announced long ago, never joined
+        self.chat.supabase = True
+        self.assertFalse(self.chat.is_kicked("k", "Early", "10.0.0.9"), "no kick in CLOUD SERVICE")
+        self.chat.supabase = False
+        self.assertTrue(self.chat.is_kicked("k", "Early", "10.0.0.9"), "the LAN mode still kicks")
 
     def test_state_dir_order(self):
         saved = {key: os.environ.get(key) for key in ("HERDR_PLUGIN_STATE_DIR", "LOCALAPPDATA")}

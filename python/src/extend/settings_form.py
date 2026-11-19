@@ -22,6 +22,8 @@ FIELD_COUNT = 4
 CODE_FIELD = 0
 KEY_F2 = "\x00<"  # F2 on Windows: a 0 code, then <. Saves the setup code (middle save) on the setup-code row.
 KEY_F3 = "\x00="  # F3 on Windows: a 0 code, then =. Cycles the interface language (saved to config.json).
+KEY_UP = "\x00H"  # Up arrow (read_char maps the Windows code and the POSIX escape sequence to this)
+KEY_DOWN = "\x00P"  # Down arrow
 KEY_F9 = "\x00C"  # F9 on Windows: a 0 code, then C. Hidden: opens the operator passphrase prompt (issue a setup code).
 TRUST_FIELD = 1
 NAME_FIELD = 2
@@ -54,7 +56,8 @@ def place_row(row, text, style=""):
 
 
 FOOTER = "made by Python"
-TAG = "[SYSTEM READY]"
+TAGS = {"ready": "[SYSTEM READY]", "error": "[ERROR]", "connected": "[CONNECTED]", "connecting": "[CONNECTING...]"}  # as the Rust edition
+TAG = TAGS["ready"]
 FIELD_WIDTH = 24  # the width of a blank input line
 
 
@@ -133,7 +136,7 @@ class FirstRun:
             return "supabase"
         if ch == "\x1b" or ch in ("\x03", "\x04"):
             return "quit"
-        if ch in ("\t", " "):
+        if ch in ("\t", " ", KEY_UP, KEY_DOWN):
             self.selected = 1 - self.selected
         elif ch in ("\r", "\n"):
             return "supabase" if self.selected else "local"
@@ -191,7 +194,7 @@ class SettingsForm:
         self.url = saved["url"]  # saved values; a setup code replaces them on redeem
         self.key = saved["key"]
         self.setup_code = saved["setup_code"]
-        self.fields = ["", saved["trust"], saved["name"], saved["room_code"]]
+        self.fields = ["", saved["trust"], saved["name"] or self._id_code(state), saved["room_code"]]
         self.from_env = relay_settings.from_environment()
         self.focus = 0  # index into fields
         self.message = ""
@@ -203,6 +206,14 @@ class SettingsForm:
         self._redeem_code = None  # the code the running redeem is for
         self.redeemed_code = None  # the code whose url and key are in self.url and self.key (not saved yet)
         self.left = False  # True on the screen opened after leaving a room: another room may be entered or created
+
+    @staticmethod
+    def _id_code(state):
+        """The 구분코드 shown in the name row and sent as the name: this PC's short ID (8 letters or digits). Not typed by the user."""
+        try:
+            return relay_key.load_or_create_short_id(state)
+        except (relay_key.SigningKeyError, OSError, ValueError):
+            return ""
 
     @staticmethod
     def _own_keys(state):
@@ -281,8 +292,10 @@ class SettingsForm:
             return None
         if ch == "\x1b":
             return "cancel"
-        if ch == "\t":
-            self.focus = (self.focus + 1) % FIELD_COUNT
+        if ch in ("\t", KEY_DOWN):
+            self.focus = self._next_focus()
+        elif ch == KEY_UP:
+            self.focus = self._prev_focus()
         elif ch == KEY_F2:  # F2: the middle save, only on the setup-code row
             if self.focus == CODE_FIELD:
                 self._begin_redeem()
@@ -290,7 +303,7 @@ class SettingsForm:
                 self.message = t("settings.ctrl_s_only_code")
         elif ch in ("\r", "\n"):
             if self.focus < FIELD_COUNT - 1:
-                self.focus += 1
+                self.focus = self._next_focus()
             elif self.save():
                 return "saved"
         elif ch == KEY_F3:
@@ -302,6 +315,16 @@ class SettingsForm:
         elif ch.isprintable():
             self.fields[self.focus] += ch
         return None
+
+    def _next_focus(self):
+        """The next row down. The Unique ID row (the name) is not drawn, so focus never rests on it."""
+        index = (self.focus + 1) % FIELD_COUNT
+        return index + 1 if index == NAME_FIELD else index
+
+    def _prev_focus(self):
+        """The next row up (wraps), skipping the Unique ID row like _next_focus."""
+        index = (self.focus - 1) % FIELD_COUNT
+        return index - 1 if index == NAME_FIELD else index
 
     def _begin_redeem(self):
         """F2 on the setup-code row: redeem the typed code now, so the URL and key are saved at once (no room needed)."""
@@ -416,6 +439,8 @@ class SettingsForm:
                 pass
             else:
                 self._issue_result = None
+                if kind == "ok":
+                    self.fields[CODE_FIELD] = value  # the new code goes into the setup code input
                 self.message = (t("form.issued", value=value) if kind == "ok" else t("form.issue_failed", value=value))
                 return True
         if self._room_result is None:
@@ -454,6 +479,8 @@ class SettingsForm:
         labels = _labels()
         width = max(22, *(char_width(label) for label in labels))  # the ' : [' column: the widest label
         for index, label in enumerate(labels):
+            if index == NAME_FIELD:
+                continue  # the Unique ID is not shown
             value = self._shown(index)
             fill = "_" * max(0, FIELD_WIDTH - char_width(value))  # the blank input, as an underscore line
             selected = self.focus == index

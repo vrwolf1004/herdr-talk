@@ -456,17 +456,17 @@ def read_fetch_response(status, body):
 
 
 def members_noise_request(config, member_pks):
-    """GET the Noise keys of the members (peers table): pk=in.(...)&select=pk,noise_pk. Empty list: no request."""
+    """GET the Noise keys and names of the members (peers table): pk=in.(...)&select=pk,noise_pk,name. Empty list: no request."""
     if any(not valid_pk(pk) for pk in member_pks):
         raise ValueError("member key is not valid")
     headers = _common_headers(config)
     headers["Accept"] = "application/json"
-    return {"method": "GET", "url": f"{config.url}/rest/v1/peers?pk=in.({','.join(member_pks)})&select=pk,noise_pk",
+    return {"method": "GET", "url": f"{config.url}/rest/v1/peers?pk=in.({','.join(member_pks)})&select=pk,noise_pk,name",
             "headers": headers, "body": None}
 
 
 def read_members_noise(status, body):
-    """(pk, noise_pk) pairs from the peers answer. ValueError when the answer is not a list of valid rows."""
+    """(pk, noise_pk, name) triples from the peers answer; a name that is not valid is "". ValueError when the answer is not a list of valid rows."""
     if status != 200:
         raise ValueError(f"status {status}")
     try:
@@ -479,5 +479,6 @@ def read_members_noise(status, body):
     for row in rows:
         if not valid_pk(row.get("pk")) or not valid_pk(row.get("noise_pk")):
             raise ValueError("row key is not valid")
-        out.append((row["pk"], row["noise_pk"]))
+        name = row.get("name")
+        out.append((row["pk"], row["noise_pk"], name if valid_name(name) else ""))
     return out

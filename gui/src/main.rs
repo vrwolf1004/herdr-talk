@@ -60,6 +60,8 @@ struct Shared {
     status: String,
     lines: Vec<(String, bool)>,
     peers: Vec<String>,
+    /// The other people in the room (Supabase mode), by name.
+    room_names: Vec<String>,
     /// This chat's own name and port. None until the chat says it (an older herdr-talk never does).
     me: Option<(String, u16)>,
     /// The relay state as the chat reports it ("" when the relay is off).
@@ -314,9 +316,13 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
         }
     };
     chat.watch_host();
+    chat.set_lan_listening(false); // no LAN peer is remembered until the mode is known
     // The relay in this window: a bad setting shows in the status bar, the chat goes on.
     if let Err(error) = talk_core::relay_chat::start(&chat, &talk_core::store::state_dir()) {
         chat.set_relay_status(&format!("relay: {error}"));
+    }
+    if talk_core::relay_settings::needs_first_run(&talk_core::store::state_dir()) {
+        chat.set_lan_listening(false); // the first-run choice is still to come: saving the settings starts the listening
     }
     set_status(shared, &talk_core::t("gui.status.embedded_after", &[("reason", reason)]));
     loop {
@@ -339,6 +345,7 @@ fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<String>, starte
             Some((me.name.clone(), me.port))
         };
         state.peers = chat.fresh_peers().iter().map(|peer| format!("{} ({}:{})", peer.name, peer.ip, peer.port)).collect();
+        state.room_names = chat.room_names();
         state.pending = chat.fresh_peers().iter().filter_map(|peer| {
             let code = chat.sas_for(peer.key.as_deref()?)?;
             (chat.link_of(peer) == talk_core::chat::Link::Unverified).then(|| (peer.name.clone(), code))
@@ -377,6 +384,7 @@ fn session(link: &mut Link, shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<Str
         state.peers = peers["peers"].as_array().into_iter().flatten()
             .map(|peer| format!("{} ({}:{})", peer["name"].as_str().unwrap_or("?"), peer["ip"].as_str().unwrap_or("?"), peer["port"]))
             .collect();
+        state.room_names = peers["room"].as_array().into_iter().flatten().filter_map(|name| name.as_str().map(str::to_string)).collect();
         state.pending = peers["pending"].as_array().into_iter().flatten()
             .map(|peer| (peer["name"].as_str().unwrap_or("?").to_string(), peer["code"].as_str().unwrap_or("").to_string()))
             .collect();
@@ -714,10 +722,12 @@ impl eframe::App for App {
                 ui.colored_label(palette.muted, egui::RichText::new(format!("{}:{port}", self.local_ip)).monospace());
                 ui.separator();
             }
-            if state.peers.is_empty() {
+            // Supabase mode lists the people in the room by name; the LAN mode lists the peers found on the network.
+            let shown = if supabase { &state.room_names } else { &state.peers };
+            if shown.is_empty() {
                 ui.colored_label(palette.muted, egui::RichText::new("● PEER : WAITING").monospace());
             }
-            for peer in &state.peers {
+            for peer in shown {
                 ui.colored_label(palette.text, egui::RichText::new(format!("● PEER  {peer}")).monospace());
             }
             for (name, code) in &state.pending {
@@ -733,16 +743,18 @@ impl eframe::App for App {
             self.verify = verify_open;
         }
         // The bottom line as Python shows it: "[host] peers · mode · room ID · setup code", then only a relay failure (never a success text).
-        let line = bottom_line(hosting, state.peers.len(), supabase, &state.room, &state.relay);
+        let people = if supabase { state.room_names.len() } else { state.peers.len() }; // the room's people in Supabase mode
+        let line = bottom_line(hosting, people, supabase, &state.room, &state.relay);
         egui::TopBottomPanel::bottom("terminal_status")
             .exact_height(38.0)
             .frame(egui::Frame::new().fill(palette.background).stroke(egui::Stroke::new(1.0_f32, palette.border)).inner_margin(egui::Margin::symmetric(12, 8)))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    let color = if status_kind == Kind::Problem { palette.danger } else { palette.accent };
-                    ui.add_sized([ui.available_width() - 200.0, 18.0], egui::Label::new(egui::RichText::new(line).monospace().size(12.0).color(color)).truncate());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(palette.muted, egui::RichText::new(talk_core::t("chat.help_hint", &[])).monospace());
+                let color = if status_kind == Kind::Problem { palette.danger } else { palette.accent };
+                // The hint is placed first at the right edge; the status text then takes all the width that is left.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.colored_label(palette.muted, egui::RichText::new(talk_core::t("chat.help_hint", &[])).monospace());
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(line).monospace().size(12.0).color(color)).truncate());
                     });
                 });
             });
@@ -939,7 +951,7 @@ mod tests {
 
     #[test]
     fn f3_switches_the_language_only_when_it_is_pressed() {
-        // No config folder here, so the switch is for this run only and the notice says so; the language is put back at the end.
+        // No config folder here, so the switch is for this run only and nothing is said; the language is put back at the end.
         std::env::remove_var("HERDR_PLUGIN_CONFIG_DIR");
         let before = talk_core::i18n::language();
         let press = |key: egui::Key| {
@@ -952,7 +964,7 @@ mod tests {
         };
         assert_eq!(press(egui::Key::F8), None);
         assert_eq!(talk_core::i18n::language(), before);
-        assert_eq!(press(egui::Key::F3), Some(talk_core::t("tui.lang.not_saved", &[])));
+        assert_eq!(press(egui::Key::F3), Some(String::new()), "pressed, with nothing to say");
         assert_ne!(talk_core::i18n::language(), before);
         for _ in 0..8 {
             if talk_core::i18n::language() == before {

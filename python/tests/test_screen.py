@@ -38,7 +38,8 @@ class FrameTest(unittest.TestCase):
     def test_header_titles_and_mode_are_drawn(self):
         frame = talk.screen_frame([], "STATUS", "", 60, 16, nodes=["YOU Haruto", "PEER Liam"], mode="BASE STATION")
         self.assertIn("▣ HERDR-TALK", frame)
-        self.assertIn("SYS.VER 1.0 · BASE STATION", frame)
+        self.assertIn("SYS.VER 1.0", frame)
+        self.assertNotIn("BASE STATION", frame.split("[2;1H", 1)[0], "the header no longer names the mode")
         self.assertIn("COMMUNICATION LOG", frame)
         self.assertIn("CONNECTED NODES", frame)
         self.assertIn("YOU Haruto", frame)
@@ -51,7 +52,7 @@ class FrameTest(unittest.TestCase):
         self.assertIn(place(5, MUTED + "b"), frame)
         self.assertIn(place(8, f"{ACCENT}CONNECTED NODES"), frame)
         self.assertIn(place(9, BORDER + "─" * 29), frame)
-        self.assertIn(BACKGROUND + TEXT + "MESSAGE > ", frame)
+        self.assertIn(BACKGROUND + TEXT + ACCENT + "MESSAGE > ", frame)
         self.assertIn(place(12, " " * 15 + MUTED + "made by Python"), frame)
 
     def test_the_status_tag_is_at_the_right_end_of_the_status_row(self):
@@ -78,19 +79,43 @@ class FrameTest(unittest.TestCase):
         self.assertIn("line9", frame)
         self.assertNotIn("line5", frame)
 
+    def test_the_help_box_follows_the_language(self):
+        import i18n
+        saved = i18n.language()
+        try:
+            i18n.set_language("en")
+            english = talk.help_box()
+            i18n.set_language("ko")
+            self.assertNotEqual(talk.help_box(), english, "F3 changes the help box at once")
+        finally:
+            i18n.set_language(saved)
+
+    def test_the_status_tag_follows_the_relay(self):
+        class Relay:
+            joined = False
+
+        chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        self.assertEqual(talk.status_tag(chat), "[SYSTEM READY]", "no relay")
+        chat.supabase, chat.relay = True, Relay()
+        self.assertEqual(talk.status_tag(chat), "[CONNECTING...]", "not joined yet")
+        chat.relay.joined = True
+        self.assertEqual(talk.status_tag(chat), "[CONNECTED]")
+        chat.relay_status = "relay: room join failed: offline"
+        self.assertEqual(talk.status_tag(chat), "[ERROR]")
+
     def test_my_lines_are_bold_green(self):
-        frame = self.frame([("hi", True, "Haruto", "12:30:21"), ("yo", False, "Liam", "12:30:22")], rows=12)
-        self.assertIn(place(4, f"{MUTED}[12:30:21] {BOLD}{ACCENT}Haruto{RESET}{MUTED} > {BOLD}{ACCENT}hi"), frame)
+        frame = self.frame([("hi", True, "Haruto", "12:30:21"), ("yo", False, "Liam", "12:30:22")], cols=40, rows=12)
+        self.assertIn(place(4, f"{MUTED}[12:30:21] {BOLD}{ACCENT}Haruto {talk.t('chat.you')}{RESET}{MUTED} > {BOLD}{ACCENT}hi"), frame)
         self.assertIn(place(5, f"{MUTED}[12:30:22] {BOLD}{ACCENT}Liam{RESET}{MUTED} > {TEXT}yo"), frame)
 
     def test_input_row_shows_the_typed_text_at_the_end(self):
         frame = self.frame([], typed="hello")
-        self.assertIn(place(8, "MESSAGE > " + ACCENT + "hello_"), frame)  # rows=9 is raised to 10: the input is row 8
+        self.assertIn(place(8, ACCENT + "MESSAGE > " + ACCENT + "hello_"), frame)  # rows=9 is raised to 10: the input is row 8
         self.assertTrue(frame.endswith("\x1b[?25h"))
 
     def test_empty_input_shows_the_hint_in_muted_text(self):
         frame = self.frame([])
-        self.assertIn(place(8, "MESSAGE > " + MUTED + talk.t("chat.input_hint")), frame)
+        self.assertIn(place(8, ACCENT + "MESSAGE > " + MUTED + talk.t("chat.input_hint")), frame)
 
     def test_long_input_keeps_its_end_visible(self):
         frame = self.frame([], typed="a" * 40 + "END", cols=30)

@@ -216,7 +216,7 @@ class ChatPhoneTest(Base):
             shutil.rmtree(started[-1][2], ignore_errors=True) if started else None
 
     def test_help_mentions_the_command_and_the_key(self):
-        box = "\n".join(talk.HELP_BOX)
+        box = "\n".join(talk.help_box())
         self.assertIn("/phone", box)
         self.assertIn("Ctrl+P", box)
 

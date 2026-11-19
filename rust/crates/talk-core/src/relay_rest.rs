@@ -613,8 +613,9 @@ pub fn read_fetch_response(status: u16, body: &str) -> Result<Vec<Message>, Stri
         .collect()
 }
 
-/// The Noise keys of room members, by their Ed25519 keys (the peers table, anon may select). Pairs are (pk, noise_pk) hex.
-pub fn members_noise_keys(config: &Config, member_pks: &[String]) -> Result<Vec<(String, String)>, String> {
+/// The Noise keys and names of room members, by their Ed25519 keys (the peers table, anon may select). Triples are
+/// (pk, noise_pk hex, name); a name that is not valid is "".
+pub fn members_noise_keys(config: &Config, member_pks: &[String]) -> Result<Vec<(String, String, String)>, String> {
     if member_pks.is_empty() {
         return Ok(Vec::new());
     }
@@ -625,7 +626,7 @@ pub fn members_noise_keys(config: &Config, member_pks: &[String]) -> Result<Vec<
     headers.push(("Accept".to_string(), "application/json".to_string()));
     let request = Request {
         method: "GET",
-        url: format!("{}/rest/v1/peers?pk=in.({})&select=pk,noise_pk", config.url, member_pks.join(",")),
+        url: format!("{}/rest/v1/peers?pk=in.({})&select=pk,noise_pk,name", config.url, member_pks.join(",")),
         headers,
         body: None,
     };
@@ -639,7 +640,8 @@ pub fn members_noise_keys(config: &Config, member_pks: &[String]) -> Result<Vec<
         .map(|row| {
             let pk = row["pk"].as_str().filter(|text| valid_pk(text)).ok_or("row key is not valid")?;
             let noise = row["noise_pk"].as_str().filter(|text| valid_pk(text)).ok_or("row noise key is not valid")?;
-            Ok((pk.to_string(), noise.to_string()))
+            let name = row["name"].as_str().filter(|text| valid_name(text)).unwrap_or("");
+            Ok((pk.to_string(), noise.to_string(), name.to_string()))
         })
         .collect()
 }

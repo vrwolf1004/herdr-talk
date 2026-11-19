@@ -309,7 +309,9 @@ fn input_row(input: &str, width: usize) -> (Row, usize) {
 fn nodes_block(chat: &Chat, name: &str, rows: usize) -> Vec<Row> {
     let you = if chat.is_host() { "HOST/YOU" } else { "YOU" };
     let waiting = chat.unverified_peers();
-    let mut lines: Vec<String> = vec![format!("{you} {name}")];
+    // CLOUD SERVICE: the people in the room follow on the same row ("HOST/YOU 도윤, 서연, 예준"); none in the LAN mode.
+    let together: Vec<String> = std::iter::once(format!("{you} {name}")).chain(chat.room_names()).collect();
+    let mut lines: Vec<String> = vec![together.join(", ")];
     for peer in chat.fresh_peers() {
         let number = waiting.iter().find(|(waiting_peer, _, _)| waiting_peer.id == peer.id).map(|(_, _, number)| format!("[{number}] ")).unwrap_or_default();
         let state = match chat.link_of(&peer) {
@@ -353,7 +355,8 @@ fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows:
         }
     }
 
-    let peers = chat.fresh_peers().len().to_string();
+    // "Peers" are the people in the room in Supabase mode, the peers found on the network in the LAN mode.
+    let peers = if chat.is_supabase() { chat.room_names().len() } else { chat.fresh_peers().len() }.to_string();
     let badge = if chat.is_host() { format!("{} ", t("host.badge", &[])) } else { String::new() };
     let mode = if chat.is_supabase() { t("mode.supabase", &[]) } else { t("mode.local", &[]) };
     let relay = chat.relay_status();
@@ -370,7 +373,9 @@ fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows:
     let (tag, tone) = status_tag(&relay);
     let hint = t("chat.help_hint", &[]);
     let left = fit(&info, width.saturating_sub(char_width(&tag) + char_width(&hint) + 4));
-    frame.push(vec![(format!("{left}  "), Tone::Dim), (tag, tone), (format!("  {hint}"), Tone::Dim)]);
+    // The tag and the hint end at the right edge: the gap takes what the left part leaves (two columns at least).
+    let gap = width.saturating_sub(char_width(&left) + char_width(&tag) + char_width(&hint) + 2).max(2);
+    frame.push(vec![(format!("{left}{}", " ".repeat(gap)), Tone::Dim), (tag, tone), (format!("  {hint}"), Tone::Dim)]);
     frame.push(footer(width));
     (frame, cursor)
 }
@@ -396,7 +401,6 @@ fn on_key(key: KeyEvent, chat: &Chat, input: &mut String) -> bool {
         KeyCode::Char('l') if ctrl => chat.clear_lines(),
         KeyCode::Char('n') if ctrl => *input = "/name ".to_string(),
         KeyCode::Char('p') if ctrl => chat.toggle_phone(),
-        // Ctrl+H: on Windows it arrives as Backspace with the Control modifier, so both codes are checked.
         KeyCode::F(1) => HELP_OPEN.with(|open| open.set(true)),
         // F3 switches the language; a save failure is said in the chat (the switch still happens).
         KeyCode::F(3) => {
@@ -405,7 +409,6 @@ fn on_key(key: KeyEvent, chat: &Chat, input: &mut String) -> bool {
                 chat.say(notice);
             }
         }
-        KeyCode::Char('h') | KeyCode::Backspace if ctrl => HELP_OPEN.with(|open| open.set(true)),
         KeyCode::Char(ch) if !ctrl => input.push(ch),
         KeyCode::Backspace => {
             input.pop();
@@ -686,6 +689,19 @@ mod tests {
         let rows: Vec<String> = nodes_block(&chat, "Ann", 30).iter().map(text_of).collect();
         assert!(rows.iter().any(|row| row.starts_with("[1] rust-supa (10.0.0.7)")), "the list shows the same number as /join: {rows:?}");
     }
+
+    #[test]
+    fn the_nodes_block_lists_the_people_in_the_room_after_you() {
+        let chat = chat();
+        chat.set_room_names(vec!["서연".to_string(), "예준".to_string()]);
+        let rows: Vec<String> = nodes_block(&chat, "Ann", 30).iter().map(text_of).collect();
+        assert_eq!(rows[1], "YOU Ann, 서연, 예준", "one row: you, then the people in the room");
+        assert_eq!(rows.len(), 2);
+        chat.stop_relay();
+        let rows: Vec<String> = nodes_block(&chat, "Ann", 30).iter().map(text_of).collect();
+        assert_eq!(rows[1], "YOU Ann", "the names are dropped when the relay stops");
+    }
+
 
     #[test]
     fn the_nodes_block_lists_one_node_per_row_and_caps_the_rest() {

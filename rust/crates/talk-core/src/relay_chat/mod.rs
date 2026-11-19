@@ -57,6 +57,7 @@ pub fn start_with(chat: &Arc<Chat>, state: &Path, settings: Settings) -> Result<
     chat.stop_relay();
     // The mode decides the path: in Local mode the LAN carries messages and no relay runs.
     chat.set_supabase_mode(settings.mode == Mode::Supabase);
+    chat.set_lan_listening(true); // the mode is known now: LAN peers are heard (and ignored in Supabase mode)
     if settings.mode != Mode::Supabase {
         chat.set_relay_status("");
         return Ok(false);

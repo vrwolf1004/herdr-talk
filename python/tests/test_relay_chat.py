@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -16,9 +17,17 @@ SEED = bytes(range(32))
 
 
 class Hooks:
-    def __init__(self):
+    def __init__(self, name="Alice"):
         self.said = []
         self.status = ""
+        self.name = name
+        self.shown_members = None
+
+    def my_name(self):
+        return self.name
+
+    def members(self, names):
+        self.shown_members = list(names)
 
     def emit(self, event):
         if isinstance(event, Status):
@@ -72,6 +81,17 @@ class RoomThreadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "방 기한 만료"):
                 relay._load_members()
 
+    def test_the_names_of_the_people_in_the_room_are_shown_and_a_bad_name_falls_back_to_the_key(self):
+        hooks = Hooks()
+        relay = rc.Relay(hooks, None, self.config, settings(), self.session)
+        first, second = "02" * 32, "03" * 32
+        info = {"room_code": ROOM, "owner_pk": "01" * 32, "members": ["01" * 32, first, second]}
+        answer = json.dumps([{"pk": first, "noise_pk": "ab" * 32, "name": "서연"}, {"pk": second, "noise_pk": "cd" * 32, "name": "a​b"}])
+        with mock.patch.object(relay_rest, "join_room", return_value=info), mock.patch.object(relay_rest, "_send", return_value=(200, answer)) as send:
+            relay._load_members()
+        self.assertEqual(hooks.shown_members, ["서연", second[:4]])
+        self.assertIn("select=pk,noise_pk,name", send.call_args.args[0]["url"], "the names are asked for with the keys")
+
     def test_a_failed_row_write_stops_the_join_and_says_so(self):
         hooks = Hooks()
         relay = rc.Relay(hooks, None, self.config, settings(), self.session)
@@ -84,8 +104,8 @@ class RoomThreadTests(unittest.TestCase):
         self.assertEqual(hooks.status, "relay: could not publish this PC's row; not joined yet")
 
     def test_a_bad_name_is_not_published_or_joined_and_the_reason_is_shown(self):
-        hooks = Hooks()
-        relay = rc.Relay(hooks, None, self.config, settings(name="a​b"), self.session)
+        hooks = Hooks(name="a​b")
+        relay = rc.Relay(hooks, None, self.config, settings(), self.session)
         with mock.patch.object(relay, "_publish") as publish, mock.patch.object(relay_rest, "join_room") as join:
             relay._run()
         publish.assert_not_called()

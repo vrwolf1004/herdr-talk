@@ -146,14 +146,14 @@ class SettingsFormTests(unittest.TestCase):
         form.open_supabase()
         text = _plain(form.render(100, 30))
         self.assertIn("▶ Setup code", text)
-        self.assertIn("Display name", text)
+        self.assertNotIn("Unique ID", text)
         self.assertIn("Room id (8 characters)", text)
         self.assertIn("Trust code (8 digits)", text)
         self.assertNotIn("Project URL", text)
         self.assertNotIn("Publishable key", text)
-        for _ in range(4):
+        for _ in range(3):
             form.on_key("\t")
-        self.assertEqual(form.focus, 0, "Tab wraps after the four rows")
+        self.assertEqual(form.focus, 0, "Tab wraps after the three drawn rows")
 
     def test_local_save_without_a_code_needs_no_keys(self):
         form = self._form()
@@ -175,7 +175,7 @@ class SettingsFormTests(unittest.TestCase):
         form.open_supabase()
         form.url, form.key = self.URL, self.KEY  # saved keys, as after an earlier setup code
         self.assertIsNone(self._fill(form, name="", room="", trust=""))
-        self.assertIn("Not saved. Missing: Trust code (8 digits), Display name, Room id (8 characters)", form.message)
+        self.assertIn("Not saved. Missing: Trust code (8 digits), Room id (8 characters)", form.message)
         self.assertFalse(os.path.exists(os.path.join(self.dir, relay_settings.FILE)))
 
     def test_enter_on_the_code_row_saves_the_url_and_key_at_once_then_the_final_enter_saves_the_rest(self):
@@ -190,17 +190,15 @@ class SettingsFormTests(unittest.TestCase):
         self.assertEqual((saved["mode"], saved["url"], saved["key"]), ("supabase", self.URL, self.KEY))
         self.assertEqual(saved["name"], "", "the name is not saved yet")
         self.assertIn("saved", form.message)
-        form.on_key("\r")  # Enter moves down to the display name row
+        form.on_key("\r")  # Enter moves down to the trust row
         self._type(form, "12345678")
-        form.on_key("\r")
-        self._type(form, "Alice")
-        form.on_key("\r")
+        form.on_key("\r")  # the Unique ID row is not drawn: Enter goes on to the room row
         self._type(form, "ABCD1234")
         self.assertEqual(form.on_key("\r"), "saved")
         self.assertEqual(self.redeem.call_count, 1, "the final Enter does not redeem again")
         saved = relay_settings.load_saved(self.dir)
         self.assertEqual((saved["url"], saved["key"]), (self.URL, self.KEY))
-        self.assertEqual((saved["name"], saved["room_code"], saved["trust"]), ("Alice", "ABCD1234", "12345678"))
+        self.assertEqual((saved["name"], saved["room_code"], saved["trust"]), ("ABCD2345", "ABCD1234", "12345678"))
         self.assertEqual(form.fields[relay_form.CODE_FIELD], "", "the typed code is cleared after the save")
 
     def test_enter_on_the_code_row_only_moves_down_and_ctrl_s_elsewhere_is_refused(self):
@@ -385,14 +383,35 @@ class SettingsFormTests(unittest.TestCase):
         form = self._form()
         self._type(form, "abc")
         form.on_key("\x7f")
-        self.assertEqual(form.fields, ["ab", "", "", ""])
-        for _ in range(4):
+        self.assertEqual(form.fields, ["ab", "", "ABCD2345", ""], "the Unique ID row is filled with this PC's ID")
+        for _ in range(3):  # setup code, trust code, room: the Unique ID row is skipped
             form.on_key("\t")
         self.assertEqual(form.focus, 0)
         form.on_key("\t")
         self._type(form, "xy")
         form.on_key("\x7f")
-        self.assertEqual(form.fields, ["ab", "x", "", ""])
+        self.assertEqual(form.fields, ["ab", "x", "ABCD2345", ""])
+
+    def test_up_and_down_arrows_move_between_the_drawn_rows_and_wrap(self):
+        form = self._form()
+        order = []
+        for _ in range(4):
+            form.on_key(relay_form.KEY_DOWN)
+            order.append(form.focus)
+        self.assertEqual(order, [1, 3, 0, 1], "Down skips the Unique ID row and wraps")
+        order = []
+        for _ in range(3):
+            form.on_key(relay_form.KEY_UP)
+            order.append(form.focus)
+        self.assertEqual(order, [0, 3, 1], "Up skips it too and wraps")
+
+    def test_the_arrows_move_the_first_run_choice(self):
+        choice = relay_form.FirstRun()
+        first = choice.selected
+        choice.on_key(relay_form.KEY_DOWN)
+        self.assertNotEqual(choice.selected, first)
+        choice.on_key(relay_form.KEY_UP)
+        self.assertEqual(choice.selected, first)
 
     def test_the_key_is_shown_as_a_length_never_as_a_value(self):
         self._save_supabase()
@@ -409,7 +428,7 @@ class SettingsFormTests(unittest.TestCase):
         text = _plain(form.render(100, 30))
         self.assertNotIn("MODE", text)
         self.assertIn("▶ Setup code", text)
-        self.assertIn("Alice", text)
+        self.assertNotIn("Alice", text, "the saved name (the Unique ID) is not drawn")
 
     def test_a_frame_overwrites_rows_in_place_without_clearing_the_screen(self):
         frame = self._form().render(100, 30)

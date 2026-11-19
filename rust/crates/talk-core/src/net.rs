@@ -152,6 +152,11 @@ fn remember_peer(chat: &Chat, data: &[u8], ip: String) {
 }
 
 fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
+    // CLOUD SERVICE has no LAN chat, and the first-run screen has not chosen yet: no LAN peer is remembered, asked to be
+    // verified (/join) or kicked.
+    if chat.is_supabase() || !chat.is_lan_listening() {
+        return;
+    }
     let Ok(info) = serde_json::from_slice::<Value>(data) else { return };
     let id = info.get("id").and_then(Value::as_str).unwrap_or("");
     let port = info.get("port").and_then(Value::as_u64).and_then(|port| u16::try_from(port).ok()).unwrap_or(0);
@@ -783,6 +788,18 @@ mod tests {
         assert!(chat.peers.lock().unwrap().is_empty());
         remember_peer(&chat, packet.as_bytes(), "127.0.0.1".into());
         assert_eq!(chat.peers.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cloud_service_ignores_lan_announcements() {
+        let chat = Chat::new(Me { id: "me".into(), name: "Me".into(), port: 1, key: vec![7; 32], secret: vec![] });
+        chat.set_supabase_mode(true);
+        let packet = json!({"app": APP, "id": "other", "name": "Other", "port": 9}).to_string();
+        remember_peer(&chat, packet.as_bytes(), "10.0.0.9".into());
+        assert!(chat.peers.lock().unwrap().is_empty(), "no LAN peer is remembered in CLOUD SERVICE");
+        chat.set_supabase_mode(false);
+        remember_peer(&chat, packet.as_bytes(), "10.0.0.9".into());
+        assert_eq!(chat.peers.lock().unwrap().len(), 1, "the LAN mode still remembers it");
     }
 
     #[test]

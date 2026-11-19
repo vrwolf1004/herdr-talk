@@ -265,6 +265,7 @@ class ChatStatusRowTest(unittest.TestCase):
         chat = mock.MagicMock()
         chat.me = {"name": "Alice"}
         chat.supabase = True
+        chat.room_names = ["Bob", "Cy"]  # in CLOUD SERVICE the count is the people in the room
         chat.state_dir = self.dir
         chat.is_host.return_value = False
         chat.fresh_peers.return_value = {"a": {"name": "Bob", "ip": "10.0.0.2", "key": "k1"},

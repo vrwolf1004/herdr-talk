@@ -50,6 +50,8 @@ const NOISE_MAX: usize = 65535;
 struct Member {
     pk: String,
     noise: Vec<u8>,
+    /// The name the member's row carries (its 대화명); "" when it is not a valid name.
+    name: String,
 }
 
 /// Run the room relay: join the room, then send what the user types and show what the members send.
@@ -87,14 +89,16 @@ fn listen(chat: &Chat, state: &Path, config: &Config, settings: &Settings, seed:
         if joining && Instant::now() >= next_members {
             next_members = Instant::now() + MEMBERS_EVERY;
             if !published {
-                match publish_row(state, config, seed, identity, &settings.name) {
+                match publish_row(state, config, seed, identity, &name_key(&chat.me.lock().unwrap().name)) {
                     Ok(()) => published = true,
                     Err(error) => chat.set_relay_status(&format!("relay: {error}")),
                 }
             }
             if published {
-                match load_members(config, seed, &settings.room_code, &settings.name, &settings.trust) {
+                match load_members(config, seed, &settings.room_code, &name_key(&chat.me.lock().unwrap().name), &settings.trust) {
                     Ok(list) => {
+                        // The people in the room, for the CONNECTED NODES list (this PC is not listed twice).
+                        chat.set_room_names(list.iter().filter(|member| member.pk != me).map(|member| if member.name.is_empty() { member.pk.chars().take(4).collect() } else { member.name.clone() }).collect());
                         chat.set_relay_status(&format!("relay: room joined ({} members)", list.len()));
                         members = list;
                         joined = true;
@@ -150,7 +154,7 @@ fn load_members(config: &Config, seed: &[u8; 32], room_code: &str, name: &str, t
     let info = relay_rest::read_join_room_response(status, &body)?;
     relay_rest::members_noise_keys(config, &info.members)?
         .into_iter()
-        .map(|(pk, noise)| Ok(Member { pk, noise: store::from_hex(&noise).ok_or("noise key is not hex")? }))
+        .map(|(pk, noise, name)| Ok(Member { pk, noise: store::from_hex(&noise).ok_or("noise key is not hex")?, name }))
         .collect()
 }
 
@@ -392,7 +396,7 @@ mod tests {
         let bob = Chat::new(Me { id: "b".into(), name: "Bob".into(), port: 1, key: bob_public.clone(), secret: bob_secret.clone() });
         let identity = Identity { public: bob_public.clone(), secret: bob_secret.clone() };
         let (_, alice_pk) = ed_key(4);
-        let members = vec![Member { pk: alice_pk.clone(), noise: alice_public.clone() }];
+        let members = vec![Member { pk: alice_pk.clone(), noise: alice_public.clone(), name: String::new() }];
         let ts = unix_now(); // the replay window is measured from now
         let payload = json!({"v": 1, "ts": ts, "nonce": NONCE, "name": "Alice", "text": "hello room"}).to_string();
         let ciphertext = store::to_hex(&seal(&alice_secret, &bob_public, payload.as_bytes()).unwrap());
@@ -407,7 +411,7 @@ mod tests {
         let (_, stranger) = ed_key(5);
         let stranger_row = Message { sender_pk: stranger, ..row.clone() };
         show_message(&bob, &identity, &members, &mut names, &mut NonceCache::default(), &stranger_row);
-        let other_key_members = vec![Member { pk: alice_pk.clone(), noise: noise_keys().0 }];
+        let other_key_members = vec![Member { pk: alice_pk.clone(), noise: noise_keys().0, name: String::new() }];
         show_message(&bob, &identity, &other_key_members, &mut names, &mut NonceCache::default(), &row);
         assert_eq!(bob.lines().len(), 1, "nothing else is shown");
     }
@@ -437,7 +441,7 @@ mod tests {
         let bob = Chat::new(Me { id: "b".into(), name: "Bob".into(), port: 1, key: bob_public.clone(), secret: bob_secret.clone() });
         let identity = Identity { public: bob_public.clone(), secret: bob_secret.clone() };
         let (_, alice_pk) = ed_key(4);
-        let members = vec![Member { pk: alice_pk.clone(), noise: alice_public.clone() }];
+        let members = vec![Member { pk: alice_pk.clone(), noise: alice_public.clone(), name: String::new() }];
         let ts = unix_now();
         // The screen shows the name Alice wrote.
         let payload = json!({"v": 1, "ts": ts, "nonce": NONCE, "name": "Alice", "text": "hi"}).to_string();

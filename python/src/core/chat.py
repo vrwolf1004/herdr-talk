@@ -141,6 +141,8 @@ class Chat:
         self.next_number = 1
         self.received_lock = threading.Lock()
         self.peers = {}
+        self.room_names = []  # the other people in the room (CLOUD SERVICE), for the CONNECTED NODES list
+        self.lan_listening = True  # run() turns it off until start_relay has set the mode: before that no LAN peer is remembered
         self.peers_lock = threading.Lock()
         self.lines = []
         self.lines_lock = threading.Lock()  # 네트워크 스레드와 화면이 같은 목록을 쓴다
@@ -183,8 +185,8 @@ class Chat:
 
     def is_kicked(self, key, name, ip):
         """True for a kicked key: not joined within JOIN_LIMIT_SECONDS (kicked for the rest of this chat). A joined key is never
-        kicked. The first kick says so once in the chat."""
-        if self.trusts(key):
+        kicked. The first kick says so once in the chat. CLOUD SERVICE has no LAN chat: nobody is kicked there."""
+        if self.supabase or self.trusts(key):
             return False
         if key in self.kicked:
             return True
@@ -375,6 +377,12 @@ class Chat:
         self.stop_relay()
         settings = relay_settings.effective(self.state_dir) if self.state_dir else relay_settings.empty()
         self.supabase = settings["mode"] == relay_settings.SUPABASE
+        if self.supabase:  # LAN peers heard while the settings were open (before the mode was known) are dropped
+            with self.peers_lock:
+                self.peers.clear()
+            self.waiting_since.clear()
+            self.kicked.clear()
+        self.lan_listening = True
         secret, key = self.me.get("secret"), self.me.get("key")
         self.relay_status = ""
         if not self.supabase or secret is None or key is None:
@@ -385,6 +393,7 @@ class Chat:
         return self.relay_status
 
     def stop_relay(self):
+        self.room_names = []
         relay, self.relay = self.relay, None
         if relay is not None:
             relay.stop()
@@ -520,6 +529,9 @@ class RelayHooks:
     def my_name(self):
         return self.chat.me["name"]
 
+    def members(self, names):
+        self.chat.room_names = list(names)
+
 
 def listen_for_peers(udp_port, chat):
     """Remember every other instance that announces itself."""
@@ -548,6 +560,8 @@ def _listen_loop(sock, chat):
         # Only a well-formed announcement is kept: an int port in range and a string id.
         # Anything else could put odd values on screen (via /peers) or crash this thread.
         if not isinstance(info, dict) or info.get("app") != APP:
+            continue
+        if chat.supabase or not chat.lan_listening:  # CLOUD SERVICE has no LAN chat, and before the first-run choice the mode is unknown
             continue
         peer_id = info.get("id")
         port = info.get("port")

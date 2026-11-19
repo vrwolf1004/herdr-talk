@@ -97,7 +97,8 @@ fn save_to_folder(folder: Option<&str>, language: &str) -> Result<bool, String> 
     write_lang(Path::new(folder), language).map(|()| true)
 }
 
-/// What the screens show after F3: nothing when saved, the not-saved line when there is no config folder, else the save error.
+/// What the screens show after F3: nothing when saved or when there is no config folder (the switch lasts this run, quietly,
+/// as in the Python edition), else the save error.
 pub fn switch_language_notice() -> String {
     notice(switch_language())
 }
@@ -105,7 +106,7 @@ pub fn switch_language_notice() -> String {
 fn notice(result: Result<bool, String>) -> String {
     match result {
         Ok(true) => String::new(),
-        Ok(false) => t("tui.lang.not_saved", &[]),
+        Ok(false) => String::new(),
         Err(error) => error,
     }
 }
@@ -216,7 +217,7 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
         assert_eq!(save_to_folder(None, "ko"), Ok(false), "no folder: the switch lasts this run");
         assert_eq!(save_to_folder(Some(""), "ko"), Ok(false), "an empty folder is no folder");
-        assert_eq!(notice(Ok(false)), t("tui.lang.not_saved", &[]));
+        assert!(notice(Ok(false)).is_empty(), "no folder: nothing is shown");
         assert_eq!(save_to_folder(base.to_str(), "ko"), Ok(true));
         assert!(notice(Ok(true)).is_empty(), "a saved switch shows nothing");
         assert!(base.join("config.json").exists());

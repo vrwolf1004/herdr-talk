@@ -174,7 +174,7 @@ fn answer(chat: &Arc<Chat>, request: &Value, allow_shutdown: bool) -> Value {
                 let code = chat.sas_for(peer.key.as_deref()?)?;
                 (chat.link_of(peer) == talk_core::chat::Link::Unverified).then(|| json!({"name": peer.name, "code": code}))
             }).collect();
-            json!({"ok": true, "peers": peers, "pending": pending, "me": {"name": me.name, "port": me.port}, "relay": chat.relay_status(), "mode": chat.mode_name()})
+            json!({"ok": true, "peers": peers, "pending": pending, "me": {"name": me.name, "port": me.port}, "room": chat.room_names(), "relay": chat.relay_status(), "mode": chat.mode_name()})
         }
         Some("send") => match request.get("text").and_then(Value::as_str) {
             // Same path as typing in the terminal: commands and plain messages both work.

@@ -87,10 +87,11 @@ class LanguageTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"msvcrt": fake}), mock.patch.object(talk.os, "name", "nt"):
             self.assertEqual(talk.read_char(), settings_form.KEY_F3)
 
-    def test_the_status_row_hint_names_f3_in_every_language(self):
+    def test_the_status_row_hint_names_only_f1_in_every_language(self):
         for language in ORDER:
             text = i18n._load(language).get("status.help_hint", "")
-            self.assertIn("F3", text, language)
+            self.assertTrue(text.startswith("F1"), language)
+            self.assertNotIn("F3", text, language)  # F3 still switches the language; the settings screens name it
 
 
 class ScreenTextTests(unittest.TestCase):
@@ -180,7 +181,7 @@ class FieldAlignmentTests(unittest.TestCase):
                 plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", row)
                 if " : [" in plain:
                     columns.append(settings_form.char_width(plain.split(" : [", 1)[0]))
-            self.assertEqual(len(columns), 4, language)
+            self.assertEqual(len(columns), 3, language)  # the Unique ID row is not drawn
             self.assertEqual(len(set(columns)), 1, (language, columns))
 
 

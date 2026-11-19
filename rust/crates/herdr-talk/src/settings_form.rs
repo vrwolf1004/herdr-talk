@@ -29,6 +29,17 @@ const ROOM_FIELD: usize = 3;
 /// The fields, numbered 1 to 4. The mode has no row: the first-run choice sets it, and focus never rests on a row that is not drawn.
 const FIELDS: usize = 4;
 
+/// The Unique ID row (the name) is not drawn: focus moving onto it goes on to the next row (down) or the one before (up).
+fn skip_name(focus: usize, down: bool) -> usize {
+    if focus != NAME_FIELD + 1 {
+        focus
+    } else if down {
+        focus + 1
+    } else {
+        focus - 1
+    }
+}
+
 pub struct Form {
     mode: Mode,
     fields: [String; 4],
@@ -64,7 +75,9 @@ impl Form {
         let saved = relay_settings::load_saved(state);
         let mine = relay_chat::my_keys(state).ok();
         let message = if mine.is_none() { t("tui.settings.no_keys", &[]) } else { String::new() };
-        let fields = [String::new(), saved.trust, saved.name, saved.room_code];
+        // The Unique ID row is read-only: this PC's short ID (a name saved by an older version is kept).
+        let name = if saved.name.is_empty() { relay_key::short_id(state).unwrap_or_default() } else { saved.name };
+        let fields = [String::new(), saved.trust, name, saved.room_code];
         Form {
             mode: saved.mode,
             fields,
@@ -127,14 +140,17 @@ impl Form {
             Ok(()) => {
                 self.saved = true;
                 let started = relay_chat::start(chat, &self.state);
+                let joined = settings.mode == Mode::Supabase && started.is_ok(); // the chat needs no "relay started" line
                 let text = match (settings.mode, started) {
                     (Mode::Local, _) => t("settings.save_ok_local", &[]),
                     (Mode::Supabase, Ok(_)) => t("settings.save_ok_supabase", &[]),
                     (Mode::Supabase, Err(error)) => format!("relay: {error}"),
                 };
                 self.message = text.clone();
-                // The chat screen shows the result line.
-                chat.say(text);
+                // The chat screen shows the result line, except the plain success of a relay start.
+                if !joined {
+                    chat.say(text);
+                }
             }
         }
     }
@@ -175,6 +191,7 @@ impl Form {
     fn open_passphrase(&mut self) {
         if self.passphrase.is_none() {
             self.passphrase = Some(String::new());
+            self.message = t("tui.settings.operator_hint", &[]);
         }
     }
 
@@ -207,7 +224,10 @@ impl Form {
         };
         self.issuing = None;
         self.message = match answer {
-            Ok(code) => t("tui.settings.new_code", &[("code", &code)]),
+            Ok(code) => {
+                self.fields[SETUP_FIELD] = code.clone(); // the new code goes into the setup code input
+                t("tui.settings.new_code", &[("code", &code)])
+            }
             Err(error) => t("tui.settings.issue_failed", &[("error", &error)]),
         };
         true
@@ -374,7 +394,10 @@ fn read_room_code(status: u16, text: &str) -> Result<String, String> {
 /// One key for the form.
 pub fn on_key(form: &mut Form, key: KeyEvent, chat: &Arc<Chat>) -> Action {
     match key.code {
-        KeyCode::Esc if form.passphrase.is_some() => form.passphrase = None,
+        KeyCode::Esc if form.passphrase.is_some() => {
+            form.passphrase = None;
+            form.message.clear();
+        }
         KeyCode::Esc => return Action::Leave,
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => form.create_room(),
         KeyCode::F(9) => form.open_passphrase(),
@@ -392,9 +415,9 @@ pub fn on_key(form: &mut Form, key: KeyEvent, chat: &Arc<Chat>) -> Action {
         KeyCode::F(2) => form.save_setup_code(),
         KeyCode::F(3) => form.switch_language(),
         // Focus cycles over the drawn fields only (1 to FIELDS).
-        KeyCode::Tab | KeyCode::Down => form.focus = form.focus % FIELDS + 1,
-        KeyCode::Up => form.focus = (form.focus + FIELDS - 2) % FIELDS + 1,
-        KeyCode::Enter if form.focus < FIELDS => form.focus += 1,
+        KeyCode::Tab | KeyCode::Down => form.focus = skip_name(form.focus % FIELDS + 1, true),
+        KeyCode::Up => form.focus = skip_name((form.focus + FIELDS - 2) % FIELDS + 1, false),
+        KeyCode::Enter if form.focus < FIELDS => form.focus = skip_name(form.focus + 1, true),
         KeyCode::Enter => form.save(chat),
         KeyCode::Backspace => {
             form.fields[form.focus - 1].pop();
@@ -439,7 +462,6 @@ fn lines(form: &Form) -> Vec<(String, Tone)> {
         field(SETUP_FIELD),
         (t("tui.settings.hint.setup", &[]), Tone::Dim),
         field(TRUST_FIELD),
-        field(NAME_FIELD),
         field(ROOM_FIELD),
         (t("tui.settings.hint.room", &[]), Tone::Dim),
     ];
@@ -535,7 +557,9 @@ mod tests {
                 form.focus
             })
             .collect();
-        assert_eq!(visited, vec![2, 3, 4, 1, 2], "Tab wraps from the last field to the first, never to 0");
+        assert_eq!(visited, vec![2, 4, 1, 2, 4], "Tab skips the Unique ID row and wraps from the last field to the first, never to 0");
+        press(&mut form, &chat, KeyCode::Up);
+        assert_eq!(form.focus, 2, "Up skips the Unique ID row too");
         press(&mut form, &chat, KeyCode::Up);
         assert_eq!(form.focus, 1);
         press(&mut form, &chat, KeyCode::Up);
@@ -543,17 +567,16 @@ mod tests {
     }
 
     #[test]
-    fn the_display_name_starts_empty_and_can_be_typed() {
+    fn the_unique_id_is_this_pcs_short_id_and_cannot_be_typed() {
         let dir = folder("name-typed");
         let form = Form::open(&dir);
-        assert!(form.fields[NAME_FIELD].is_empty(), "no generated name");
+        let id = relay_key::short_id(&dir).unwrap();
+        assert_eq!(form.fields[NAME_FIELD], id, "the row shows this PC's short ID");
         let (chat, mut form) = (chat(), form);
         form.focus = NAME_FIELD + 1;
         press(&mut form, &chat, KeyCode::Char('A'));
-        press(&mut form, &chat, KeyCode::Char('l'));
         press(&mut form, &chat, KeyCode::Backspace);
-        press(&mut form, &chat, KeyCode::Char('i'));
-        assert_eq!(form.fields[NAME_FIELD], "Ai", "typing and backspace reach the name");
+        assert_eq!(form.fields[NAME_FIELD], id, "typing and backspace change nothing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -698,7 +721,7 @@ mod tests {
         assert!(!texts.iter().any(|text| text.contains("Publishable key") || text.contains("Ctrl+N: create room (Supabase")), "no key row or old note");
         let rows: Vec<&String> = texts.iter().filter(|text| text.contains(" : [")).collect();
         let labels: Vec<&str> = rows.iter().map(|text| text.split(" : [").next().unwrap().trim_start_matches(['▶', ' '])).map(str::trim_end).collect();
-        assert_eq!(labels, [t("tui.settings.label.setup", &[]), t("tui.settings.label.trust", &[]), t("tui.settings.label.name", &[]), t("tui.settings.label.room", &[])]);
+        assert_eq!(labels, [t("tui.settings.label.setup", &[]), t("tui.settings.label.trust", &[]), t("tui.settings.label.room", &[])], "the Unique ID row is not drawn");
         assert!(texts.iter().any(|text| text == &t("tui.settings.hint.setup", &[])));
         assert!(texts.iter().any(|text| text == &t("tui.settings.hint.room", &[])));
     }
@@ -779,10 +802,10 @@ mod tests {
         assert!(form.message.is_empty(), "{}", form.message);
         let saved = std::fs::read_to_string(dir.join("config.json")).unwrap();
         assert!(saved.contains(&format!("\"lang\": \"{after}\"")) || saved.contains(&format!("\"lang\":\"{after}\"")), "{saved}");
-        // Without a config folder the switch still happens, and the reason is shown on the message line.
+        // Without a config folder the switch still happens, and nothing is said.
         std::env::remove_var("HERDR_PLUGIN_CONFIG_DIR");
         press(&mut form, &chat, KeyCode::F(3));
-        assert_eq!(form.message, t("tui.lang.not_saved", &[]));
+        assert!(form.message.is_empty(), "{}", form.message);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
