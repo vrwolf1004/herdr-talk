@@ -8,7 +8,7 @@
 // Secrets: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided to the function by Supabase. Set nothing here.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { checkBeforeNonce, messageFor, statusFor, type RoomBody } from "./checks.ts";
+import { checkBeforeNonce, messageFor, ROOM_MEMBER_LIMIT, sameHex, statusFor, trustHash, type RoomBody, TRUST_FAILS_LIMIT, TRUST_LOCK_SECONDS } from "./checks.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -54,7 +54,7 @@ Deno.serve(async (req) => {
     if (verdict !== "ok") {
       return jsonResponse(statusFor(verdict), { error: messageFor(verdict) });
     }
-    const { room_code, peer_pk, ts, nonce } = body as RoomBody & { room_code: string };
+    const { room_code, peer_pk, ts, nonce, trust } = body as RoomBody & { room_code: string };
 
     // 재전송 방지: 이 nonce 를 기록한다. 이미 있으면 (23505) 재전송이다.
     const { error: nonceError } = await supabase.from("put_nonces").insert({ nonce, ts });
@@ -85,6 +85,30 @@ Deno.serve(async (req) => {
       return jsonResponse(410, { error: "방 기한이 지났습니다" });
     }
 
+    // trust 코드 확인: 운영자가 정한 코드가 맞아야 참가한다. 10번 연속 틀리면 1시간 동안 방을 잠근다.
+    if (room.trust_locked_until && Date.parse(room.trust_locked_until) > Date.now()) {
+      await releaseNonce();
+      return jsonResponse(429, { error: "잠시 후 다시 시도하세요" });
+    }
+    if (!room.trust_salt || !room.trust_hash) {
+      // 0009 전에 만든 방은 trust 코드가 없어서 들어갈 수 없다
+      await releaseNonce();
+      return jsonResponse(403, { error: "trust 코드가 맞지 않습니다" });
+    }
+    if (!sameHex(await trustHash(trust, room.trust_salt), room.trust_hash)) {
+      const fails = (room.trust_fails ?? 0) + 1;
+      const locked = fails >= TRUST_FAILS_LIMIT;
+      await supabase.from("rooms").update({
+        trust_fails: locked ? 0 : fails,
+        trust_locked_until: locked ? new Date(Date.now() + TRUST_LOCK_SECONDS * 1000).toISOString() : null,
+      }).eq("code", room_code);
+      await releaseNonce();
+      return jsonResponse(403, { error: "trust 코드가 맞지 않습니다" });
+    }
+    if (room.trust_fails) {
+      await supabase.from("rooms").update({ trust_fails: 0 }).eq("code", room_code);
+    }
+
     // 이미 멤버인지 확인
     const { data: existing } = await supabase
       .from("room_members")
@@ -94,6 +118,21 @@ Deno.serve(async (req) => {
       .single();
 
     if (!existing) {
+      // 인원 제한: 새 멤버는 ROOM_MEMBER_LIMIT 명을 넘지 못한다.
+      // shortcut: two joins at the same moment can both pass this count; upgrade to a database check if that matters.
+      const { count: memberCount, error: countError } = await supabase
+        .from("room_members")
+        .select("peer_pk", { count: "exact", head: true })
+        .eq("room_code", room_code);
+      if (countError) {
+        await releaseNonce();
+        return jsonResponse(500, { error: countError.message });
+      }
+      if ((memberCount ?? 0) >= ROOM_MEMBER_LIMIT) {
+        await releaseNonce();
+        return jsonResponse(409, { error: "방 인원이 가득 찼습니다 (10명)" });
+      }
+
       // 새 멤버 추가
       const { error: insertError } = await supabase
         .from("room_members")

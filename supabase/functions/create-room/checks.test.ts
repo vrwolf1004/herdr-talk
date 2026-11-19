@@ -2,7 +2,7 @@
 // (python/src/relay_rest.py room_message) with the seed bytes 0..31; the Rust side uses the same values.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkBeforeNonce, checkFormat, roomMessage, signatureOk, validName, withinWindow, WINDOW_SECONDS } from "./checks.ts";
+import { checkBeforeNonce, checkFormat, newSalt, roomMessage, sameHex, signatureOk, trustHash, validName, withinWindow, WINDOW_SECONDS } from "./checks.ts";
 
 const PK = "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8";
 const NONCE = "00112233445566778899aabbccddeeff";
@@ -10,8 +10,8 @@ const TS = 1700000000;
 const CREATE_SIG = "f26ec1d02def0df18204cf6507e74e121432cf29ff999b89f30b3137f6084fd2e10b3b6a5d1982a13a531547bbb23370fe821a91a27af0b616b3a05c9b718b0c";
 const JOIN_SIG = "4128444185a03e137deca1e066f73d7bf2121162a1f620c01b75f0e217511189388e4da58a7774bb5b18f0e2263a77ff65136eeab8b6a765ac53ca8a15f33c08";
 
-const create = { peer_pk: PK, display_name: "Alice", ts: TS, nonce: NONCE, sig: CREATE_SIG };
-const join = { peer_pk: PK, room_code: "ABCD1234", display_name: "Bob", ts: TS, nonce: NONCE, sig: JOIN_SIG };
+const create = { peer_pk: PK, display_name: "Alice", ts: TS, nonce: NONCE, sig: CREATE_SIG, trust: "12345678" };
+const join = { peer_pk: PK, room_code: "ABCD1234", display_name: "Bob", ts: TS, nonce: NONCE, sig: JOIN_SIG, trust: "12345678" };
 
 test("the signed bytes are the fixed string (create has an empty room line)", () => {
   const text = new TextDecoder().decode(roomMessage("create", "", PK, "Alice", TS, NONCE));
@@ -63,4 +63,28 @@ test("checks run in order: format, then time, then signature", async () => {
   assert.equal(await checkBeforeNonce({ ...create, display_name: "Mallory" }, "create", TS), "signature");
   assert.equal(await checkBeforeNonce(create, "create", TS), "ok");
   assert.equal(await checkBeforeNonce(join, "join", TS), "ok");
+});
+
+test("the trust code is 8 digits: format rejects anything else, and it is not in the signed bytes", async () => {
+  assert.equal(checkFormat({ ...join, trust: "1234567" }, "join"), false, "7 digits");
+  assert.equal(checkFormat({ ...join, trust: "1234567a" }, "join"), false, "a letter");
+  assert.equal(checkFormat({ ...join, trust: undefined }, "join"), false, "missing");
+  assert.equal(checkFormat({ ...create, trust: "00000000" }, "create"), true, "zeros are fine");
+  assert.equal(await signatureOk({ ...join, trust: "87654321" }, "join"), true, "a different trust does not change the signature");
+});
+
+test("the stored trust hash is deterministic per salt and differs for another code or salt", async () => {
+  const salt = "00112233445566778899aabbccddeeff";
+  const a = await trustHash("12345678", salt);
+  assert.equal(a, await trustHash("12345678", salt));
+  assert.notEqual(a, await trustHash("12345679", salt));
+  assert.notEqual(a, await trustHash("12345678", "ffeeddccbbaa99887766554433221100"));
+  assert.match(a, /^[0-9a-f]{64}$/);
+  assert.match(newSalt(), /^[0-9a-f]{32}$/);
+});
+
+test("sameHex: equal strings only", () => {
+  assert.equal(sameHex("ab", "ab"), true);
+  assert.equal(sameHex("ab", "ac"), false);
+  assert.equal(sameHex("ab", "abc"), false);
 });
