@@ -42,7 +42,7 @@ Without a Rust toolchain or for people who avoid downloaded executables, use the
 herdr plugin install vrwolf1004/herdr-talk/python
 ```
 
-The Python edition encrypts the same way as the Rust edition (pure Python, no packages), so the two talk to each other after you compare codes and `/trust`. Only an older Python edition without keys needs `"plaintext": true` on the Rust side. See [docs/encryption-protocol.md](docs/encryption-protocol.md).
+The Python edition encrypts the same way as the Rust edition (pure Python, no packages), so the two talk to each other after you compare codes and `/join`. Only an older Python edition without keys needs `"plaintext": true` on the Rust side. See [docs/encryption-protocol.md](docs/encryption-protocol.md).
 
 ### Windows GUI (standalone)
 
@@ -80,6 +80,7 @@ The action must be run from a herdr pane. See the [usage guide](docs/usage.md) f
 - [Usage (English)](docs/usage.md)
 - [사용법 (한국어)](docs/usage.ko.md)
 - [Configuration](docs/configuration.md)
+- [Operator setup (Supabase, setup codes)](docs/operator-setup.md)
 - [Phone (Expo Go), Korean](docs/mobile.md)
 - [Encryption protocol](docs/encryption-protocol.md)
 - [Troubleshooting](docs/troubleshooting.md)

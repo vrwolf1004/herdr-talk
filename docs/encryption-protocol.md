@@ -14,9 +14,9 @@ The trust code uses a commit and reveal exchange; the former 128-bit SHA-256 fin
 
 1. Each node creates a 32-byte random nonce `n` and announces `C = SHA-256("herdr-talk-commit-v1" || pk || n)` with its LAN discovery announcement.
 2. After a Noise connection is established, both nodes exchange a reveal containing `(pk, n)`. The receiver verifies that the revealed public key is the expected key and that `SHA-256("herdr-talk-commit-v1" || pk || n) == C`; a mismatch closes the exchange.
-3. Only after both reveals verify does the UI show a code. It sorts the two `(pk, n)` pairs by public key, computes `SHA-256("herdr-talk-sas-v1" || pk1 || n1 || pk2 || n2)`, reads the first eight bytes as a big-endian `u64`, takes it modulo `36^8`, and encodes the result in `0-9A-Z` as one 8-character value such as `CDHQTQ8I`.
+3. Only after both reveals verify does the UI show a code. It sorts the two `(pk, n)` pairs by public key, computes `SHA-256("herdr-talk-sas-v1" || pk1 || n1 || pk2 || n2)`, reads the first eight bytes as a big-endian `u64`, takes it modulo `10^8`, and writes the result as 8 decimal digits such as `40917358`.
 
-When a user enters `/trust`, spaces and dashes are ignored and the value is normalized to uppercase. A peer without a commitment is an old version and cannot be verified; there is no fallback to the old fingerprint. Existing `trusted.json` entries are not reverified by this exchange.
+When a user enters `/join`, spaces and dashes are ignored and the value is normalized to uppercase. A peer without a commitment is an old version and cannot be verified; there is no fallback to the old fingerprint. Existing `trusted.json` entries are not reverified by this exchange.
 
 Supabase relay does not yet carry commitments. Commit/reveal delivery with room messages is a later step.
 

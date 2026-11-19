@@ -8,13 +8,14 @@ herdr-talk 의 화면은 두 종류로 나눈다. 같은 색 팔레트를 쓰되
 
 - 선택 화면: `BASE STATION` 이 메인 (`[PRIMARY] BASE STATION`, `CONNECT`), Supabase 는 보조 텍스트 링크 (`ALTERNATIVE CONNECTION` 아래 밑줄 링크).
 - 설정 화면 (Supabase 전용): 제목 `SUPABASE SETTINGS` 가운데 정렬, 콘텐츠 최대 680px 가운데 열, 가운데 스크롤 영역, 하단 고정 버튼 (`CANCEL`, `SAVE SETTINGS`, 오른쪽 정렬).
-  - 섹션: `SECTION 01 SUPABASE CONNECTION` (URL, publishable 키), `SECTION 02 ROOM SETTINGS` (표시 이름 = 읽기 전용 고유 코드, 방 ID 8자리, `CREATE ROOM`), `SECTION 03 DEVICE IDENTITY` (DEVICE ID 와 COPY 버튼, 공개키는 작은 흐린 글씨).
+  - 행 순서 (Python 과 같음): 설정 코드 (`Save setup code` 버튼: 상환해 URL과 키를 바로 저장, 화면에는 안 보임), Trust code (8 digits), Display name (읽기 전용 고유 코드), Room id (8 characters, `CREATE ROOM`). 설정 코드 칸 아래에 `Type the setup code, then F2: the URL and key are saved (not shown)` 안내를 둔다.
+  - 저장 버튼 `SAVE SETTINGS` 은 상환하지 않은 설정 코드가 있으면 거부한다. 표시 이름, 방 ID, trust 코드가 필요하다.
   - BASE STATION / CLOUD SERVICE 선택, 안내 문구는 설정 화면에 두지 않는다.
-- 채팅 화면: `BASE STATION : CONNECTED`, `COMMUNICATION LOG`, `CONNECTED NODES`, `SEND` 버튼.
+- 채팅 화면: `BASE STATION : CONNECTED`, `COMMUNICATION LOG`, `CONNECTED NODES`, `SEND` 버튼. 미확인: 이 GUI 채팅 줄이 TUI 상태 줄과 같은 형식인지는 확인하지 않았다.
 - 하단 상태 줄: 왼쪽 시스템 상태 (또는 릴레이 상태 문구), 오른쪽 `BASE STATION`.
 - 푸터: 없음 (GUI 는 창 하단 상태 줄 사용).
 
-## 2. TUI (터미널, `rust/crates/herdr-talk`, `python/src/talk.py`, `python/src/relay_form.py`)
+## 2. TUI (터미널, `rust/crates/herdr-talk`, `python/src/talk.py`, `python/src/extend/settings_form.py`)
 
 클래식 터미널 (DOS/BBS). GUI 처럼 보이는 카드, 버튼, 둥근 패널, 큰 박스, 네온 글로우, 마우스 중심 UI 는 쓰지 않는다.
 
@@ -33,6 +34,8 @@ KEYBOARD GUIDE
 ```
 
 - 메뉴: 버튼 대신 텍스트 메뉴. 선택 항목은 `▶ 01. BASE STATION`, 설명은 다음 줄. 선택 항목만 주 녹색.
+- 설정 화면 (TUI): 행 순서는 설정 코드, Trust code (8 digits), Display name, Room id (8 characters). 영문 라벨을 그대로 쓴다. 키는 화면에 보이지 않고 길이만 `(saved, key N chars)` 로 보인다. 푸터는 `Tab: next · Enter: next / save · Ctrl+N: create room · Esc: CANCEL`.
+- 채팅 상태 줄 (TUI): `[host] peers: N · <방식> · room ID: X · setup code: Y` (한국어 `[방장] 상대: N ·`). 릴레이 오류만 끝에 붙고 성공 문구는 붙지 않는다. 운영자 암호 입력 줄(F9)은 화면 안내에 적지 않는다.
 - 입력: 박스 반복 없이 `DISPLAY NAME : [USER NAME________]` 형태. 포커스는 커서나 강조색.
 - 채팅: `[12:30:21] USER_A > Hello.` 형식, 하단 `MESSAGE > _`.
 - 상태 태그: `[SYSTEM READY]`, `[CONNECTING...]`, `[CONNECTED]`, `[DISCONNECTED]`, `[ERROR]`. 정상 녹색, 대기 노란색, 오류 빨간색.
@@ -64,7 +67,7 @@ KEYBOARD GUIDE
 
 - 지문 코드와 방 ID, 상대 ID 는 8자리 한 덩어리로 표시한다 (예: `CDHQTQ8I`). 대시는 쓰지 않는다.
 - 입력은 대시와 공백을 무시하고 대문자로 바꿔서 처리한다.
-- 상대 표시는 세 줄: 상태 줄, `  코드: CDHQTQ8I`, `  상대 화면의 코드와 같은지 비교한 뒤 /trust 를 입력하세요`.
+- 상대 표시는 세 줄: 상태 줄, `  코드: CDHQTQ8I`, `  상대 화면의 코드와 같은지 비교한 뒤 /join 를 입력하세요`.
 - 공개키는 화면에 작은 흐린 글씨로만 보인다 (복사 버튼 없음).
 
 ## 6. 원칙
