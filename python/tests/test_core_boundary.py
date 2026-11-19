@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src"
-SCREEN_AND_APP = ("i18n", "relay_form", "talk", "phone", "herdr_api", "dock_layout")
+SCREEN_AND_APP = ("i18n", "extend.settings_form", "talk", "phone", "herdr_api", "dock_layout")
 
 
 class CoreBoundaryTest(unittest.TestCase):

@@ -28,7 +28,7 @@ class Hooks:
 
 
 def settings(**changes):
-    values = {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key", "name": "Alice", "room_code": ROOM}
+    values = {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key", "name": "Alice", "room_code": ROOM, "trust": "12345678"}
     values.update(changes)
     return values
 
@@ -63,28 +63,14 @@ class RoomThreadTests(unittest.TestCase):
         self.config = relay_rest.Config("https://x.supabase.co", "dummy-test-key")
         self.session = rc.Session(SEED)
 
-    def test_the_room_join_status_names_the_room_and_its_size(self):
-        hooks = Hooks()
-        relay = rc.Relay(hooks, None, self.config, settings(), self.session)
+    def test_the_join_reads_the_members_and_an_expired_room_raises_its_reason(self):
+        relay = rc.Relay(Hooks(), None, self.config, settings(), self.session)
         info = {"room_code": ROOM, "owner_pk": "01" * 32, "members": ["01" * 32, "02" * 32]}
-        with mock.patch.object(relay_rest, "join_room", return_value=info):
-            self.assertEqual(relay._join_room(), "relay: 방 참가 (멤버 2명)")
-        with mock.patch.object(relay_rest, "join_room", side_effect=OSError("offline")):
-            self.assertEqual(relay._join_room(), "relay: room join failed: offline")
-
-    def test_the_join_status_counts_the_members_in_the_answer(self):
-        relay = rc.Relay(Hooks(), None, self.config, settings(), self.session)
-        empty = {"room_code": ROOM, "owner_pk": "01" * 32, "members": []}
-        with mock.patch.object(relay_rest, "join_room", return_value=empty):
-            self.assertEqual(relay._join_room(), "relay: 방 참가 (멤버 0명)")
-        # No members list in the answer: read_join_room refuses it, and the existing failure text is shown.
-        with mock.patch.object(relay_rest, "_send", return_value=(200, '{"room_code":"ABCD1234","owner_pk":"%s"}' % ("01" * 32))):
-            self.assertEqual(relay._join_room(), "relay: room join failed: answer has no valid members list")
-
-    def test_an_expired_room_says_so(self):
-        relay = rc.Relay(Hooks(), None, self.config, settings(), self.session)
+        with mock.patch.object(relay_rest, "join_room", return_value=info),                 mock.patch.object(relay_rest, "_send", return_value=(200, '[]')):
+            self.assertEqual(relay._load_members(), info)
         with mock.patch.object(relay_rest, "_send", return_value=(410, '{"error":"x"}')):
-            self.assertEqual(relay._join_room(), "relay: room join failed: 방 기한 만료")
+            with self.assertRaisesRegex(ValueError, "방 기한 만료"):
+                relay._load_members()
 
     def test_a_failed_row_write_stops_the_join_and_says_so(self):
         hooks = Hooks()

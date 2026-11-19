@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import os
 import shutil
 import socket
@@ -208,15 +209,89 @@ class AnnounceTest(unittest.TestCase):
 
 
 class StatusLineTest(unittest.TestCase):
-    def test_every_status_line_shows_only_name_and_peers(self):
-        """The key hints are on the chat guide row (chat.guide), so the status line has no key names."""
+    def test_every_status_line_shows_only_peers(self):
+        """The key hints are on the chat guide row (chat.guide), and the node name is not on the status line."""
         locales = Path(talk.__file__).resolve().parent / "locales"
         for path in sorted(locales.glob("*.json")):
             line = json.loads(path.read_text(encoding="utf-8")).get("status.line", "")
-            self.assertIn("{name}", line, path.name)
             self.assertIn("{peers}", line, path.name)
+            self.assertNotIn("{name}", line, path.name)
             for key in ("Ctrl+", "/help"):
                 self.assertNotIn(key, line, path.name)
+
+
+class RoomGateTests(unittest.TestCase):
+    """A wrong trust code keeps the chat from opening; a network failure does not (the chat starts and shows it)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="herdr-talk-gate-")
+        talk.relay_settings.save(self.dir, {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key",
+                                            "name": "Alice", "room_code": "ABCD1234", "trust": "12345678", "setup_code": ""})
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_a_wrong_trust_refuses_and_a_network_failure_does_not(self):
+        with mock.patch.object(talk.relay_rest, "join_room", side_effect=ValueError(talk.relay_rest.TRUST_WRONG)):
+            self.assertTrue(talk.relay_chat.room_refuses(self.dir))
+        with mock.patch.object(talk.relay_rest, "join_room", side_effect=OSError("offline")):
+            self.assertFalse(talk.relay_chat.room_refuses(self.dir))
+        with mock.patch.object(talk.relay_rest, "join_room", return_value={"members": []}):
+            self.assertFalse(talk.relay_chat.room_refuses(self.dir))
+
+    def test_a_403_from_the_relay_refuses_and_a_network_failure_does_not(self):
+        with mock.patch.object(talk.relay_rest, "_send", return_value=(403, "")):
+            self.assertTrue(talk.relay_chat.room_refuses(self.dir))
+        with mock.patch.object(talk.relay_rest, "_send", side_effect=OSError("offline")):
+            self.assertFalse(talk.relay_chat.room_refuses(self.dir))
+
+class ChatStatusRowTest(unittest.TestCase):
+    """The chat status row: peers, mode, room ID and setup code; a relay error is added at the end, success adds nothing."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="herdr-talk-status-")
+        talk.relay_settings.save(self.dir, {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key",
+                                            "name": "Alice", "room_code": "ABCD1234", "trust": "12345678", "setup_code": "ABCD2345"})
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _row(self, relay_status):
+        chat = mock.MagicMock()
+        chat.me = {"name": "Alice"}
+        chat.supabase = True
+        chat.state_dir = self.dir
+        chat.is_host.return_value = False
+        chat.fresh_peers.return_value = {"a": {"name": "Bob", "ip": "10.0.0.2", "key": "k1"},
+                                         "b": {"name": "Cy", "ip": "10.0.0.3", "key": "k2"}}
+        chat.link_of.return_value = "encrypted"
+        chat.numbers = {}
+        chat.lines = []
+        chat.lines_lock = threading.Lock()
+        chat.help_open = False
+        chat.phone_overlay.return_value = ""
+        chat.relay_status = relay_status
+        frames = []
+        with mock.patch.object(talk, "_enter_screen", return_value=lambda: None), mock.patch.object(talk, "_draw", side_effect=frames.append), \
+                mock.patch.object(talk, "leave_when_idle"), mock.patch.object(talk, "read_char", side_effect=KeyboardInterrupt), \
+                mock.patch.object(talk.shutil, "get_terminal_size", return_value=os.terminal_size((200, 30))):
+            with self.assertRaises(KeyboardInterrupt):
+                talk.run_ansi(chat)
+        return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frames[0])
+
+    def test_status_row_has_peers_mode_room_and_setup_code(self):
+        from i18n import t
+        text = self._row("")
+        expected = f"{t('status.line', peers=2)} · {t('mode.supabase')} · room ID: ABCD1234 · setup code: ABCD2345"
+        self.assertIn(expected, text)
+        self.assertNotIn("방 참가", text)
+        self.assertNotIn("joined", text)
+
+    def test_only_a_relay_error_is_added_to_the_status_row(self):
+        from i18n import t
+        text = self._row("relay: room join failed: offline")
+        self.assertIn(f"setup code: ABCD2345 · relay: room join failed: offline", text)
+        self.assertIn(t("status.line", peers=2), text)
 
 
 class HerdrCliTimeoutTest(unittest.TestCase):

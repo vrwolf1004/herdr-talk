@@ -58,15 +58,14 @@ def commit(public_key, nonce):
 
 def sas_code(own_key, own_nonce, peer_key, peer_nonce):
     """The short code both users compare: SHA-256 over the tag and the two (key, nonce) pairs sorted by key. Its first 8
-    bytes, read as a big-endian integer, mod 36**8, in CODE_ALPHABET, 8 characters. Same rule as
-    Rust talk-core store::sas_code."""
+    bytes, read as a big-endian integer, mod 10**8, as 8 digits. Same rule as Rust talk-core store::sas_code."""
     first, second = sorted([(own_key, own_nonce), (peer_key, peer_nonce)], key=lambda pair: pair[0])
     digest = hashlib.sha256(SAS_TAG + first[0] + first[1] + second[0] + second[1]).digest()
-    value = int.from_bytes(digest[:8], "big") % 36 ** 8
+    value = int.from_bytes(digest[:8], "big") % 10 ** 8
     chars = []
     for _ in range(8):
-        chars.append(CODE_ALPHABET[value % 36])
-        value //= 36
+        chars.append(str(value % 10))
+        value //= 10
     return "".join(reversed(chars))
 
 

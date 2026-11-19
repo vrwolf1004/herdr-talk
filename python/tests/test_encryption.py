@@ -96,11 +96,11 @@ class StoreTest(Base):
     def test_sas_and_commit_match_the_rust_vectors(self):
         # The same values as rust/crates/talk-core store.rs (sas_and_commit_match_the_python_reference).
         self.assertEqual(store.commit(bytes([1]) * 32, bytes([2]) * 32).hex(), "8d02d5ba2bcdc8c3392ffda99d1a66c4eede8c57cc4443c7d0fc00d5f39d7b59")
-        self.assertEqual(store.sas_code(bytes([1]) * 32, bytes([2]) * 32, bytes([3]) * 32, bytes([4]) * 32), "HWCFKZ1W")
-        self.assertEqual(store.sas_code(bytes([3]) * 32, bytes([4]) * 32, bytes([1]) * 32, bytes([2]) * 32), "HWCFKZ1W")
+        self.assertEqual(store.sas_code(bytes([1]) * 32, bytes([2]) * 32, bytes([3]) * 32, bytes([4]) * 32), "56324468")
+        self.assertEqual(store.sas_code(bytes([3]) * 32, bytes([4]) * 32, bytes([1]) * 32, bytes([2]) * 32), "56324468")
         mobile = json.load(open(os.path.join(os.path.dirname(__file__), "..", "..", "mobile", "test-vectors", "relay.json")))["outputs"]
         code = store.sas_code(bytes.fromhex(mobile["initiatorPublic"]), bytes([0x11]) * 32, bytes.fromhex(mobile["responderPublic"]), bytes([0x22]) * 32)
-        self.assertEqual(code, "I81XP7D6")
+        self.assertEqual(code, "55024010")
 
     def test_ids_and_codes(self):
         key = bytes(range(32))
@@ -176,6 +176,7 @@ class AnnouncementTest(Base):
         announce(mine, old_info, "10.0.0.8")
         self.assertEqual(len([line for line in self.lines if line == talk.t("peer.old_version", name="Old", ip="10.0.0.8")]), 1, self.lines)
         self.lines.clear()
+        mine.peers.clear()  # LAN is 1:1: the new peer is only admitted when the old one is gone
         new = make_chat("New")
         first = {"id": new.me["id"], "name": "New", "port": 6, "key": new.me["key"], "commits": {"00" * 32: "11" * 32}}
         announce(mine, first, "10.0.0.9")
@@ -351,9 +352,9 @@ class ExchangeTest(Base):
         self.pair(a_trusts_b=False, b_trusts_a=False)
         self.b.state_dir = self.dir
         code = wait_code(self.b, self.a.me["key"])
-        self.b.handle("/trust 0000-0000")
+        self.b.handle("/join 0000-0000")
         self.assertIn(talk.t("trust.none", code="00000000"), self.lines)
-        self.b.handle(f"/trust {code.upper()}")
+        self.b.handle(f"/join {code.upper()}")
         self.assertIn(talk.t("trust.done", name="A", ip="127.0.0.1"), self.lines)
         self.assertEqual(store.read_trusted(self.dir)[0]["key"], self.a.me["key"])
         self.assertEqual(self.b.link_of(self.peer(self.b)), "encrypted")
@@ -378,12 +379,12 @@ class ExchangeTest(Base):
         self.b.state_dir = self.dir
         wait_code(self.b, self.a.me["key"])
         self.assertTrue(any(line.startswith("[1] A ") for line in self.lines), self.lines)
-        self.b.handle("/trust 2")
+        self.b.handle("/join 2")
         self.assertIn(talk.t("trust.no_number", n="2"), self.lines)
-        self.b.handle("/trust 1")
+        self.b.handle("/join 1")
         self.assertIn(talk.t("trust.done", name="A", ip="127.0.0.1"), self.lines)
         self.assertEqual(self.b.link_of(self.peer(self.b)), "encrypted")
-        self.b.handle("/trust 1")  # a trusted peer leaves the waiting list, so its number is gone
+        self.b.handle("/join 1")  # a trusted peer leaves the waiting list, so its number is gone
         self.assertIn(talk.t("trust.no_number", n="1"), self.lines)
 
     def test_trust_refuses_two_different_keys_with_one_code(self):
@@ -397,11 +398,34 @@ class ExchangeTest(Base):
                 me.peers[key.hex()] = {"id": store.peer_id(key), "name": "X", "ip": "10.0.0.9", "port": 1, "seen": time.time(), "key": key}
                 me.reveals[key] = bytes(32)
                 me.my_nonce_for(key)
-            me.handle("/trust abcd1234")
+            me.handle("/join abcd1234")
         finally:
             store.sas_code = original
         self.assertIn(talk.t("trust.ambiguous", code="ABCD1234"), self.lines)
         self.assertEqual(me.trusted, [])
+
+
+class JoinLimitTests(unittest.TestCase):
+    def test_a_peer_not_joined_in_time_is_kicked_and_a_joined_one_is_not(self):
+        chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        key, joined = bytes([9]) * 32, bytes([8]) * 32
+        for pk in (key, joined):
+            chat.peers[pk.hex()] = {"id": store.peer_id(pk), "name": "X", "ip": "10.0.0.2", "port": 1, "seen": time.time(), "key": pk}
+        chat.waiting_since[key] = time.time() - talk.JOIN_LIMIT_SECONDS
+        chat.waiting_since[joined] = time.time() - talk.JOIN_LIMIT_SECONDS
+        chat.trusted.append({"name": "Y", "key": joined, "ip": "10.0.0.2"})
+        self.assertEqual([info["key"] for info in chat.fresh_peers().values()], [joined], "the kicked peer is not listed")
+        self.assertIn(key, chat.kicked)
+        self.assertNotIn(joined, chat.kicked)
+
+
+class PeerCapTests(unittest.TestCase):
+    def test_ten_people_with_this_pc_then_the_eleventh_is_ignored(self):
+        chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        for index in range(talk.MAX_PEERS - 1):
+            self.assertIsNotNone(talk.remember_peer(chat, {"id": f"p{index}", "name": f"P{index}", "port": 9}, f"10.0.0.{index + 2}"))
+        self.assertIsNone(talk.remember_peer(chat, {"id": "late", "name": "Late", "port": 9}, "10.0.0.99"), "the 11th person is ignored")
+        self.assertIsNotNone(talk.remember_peer(chat, {"id": "p0", "name": "P0", "port": 9}, "10.0.0.2"), "a known peer still passes")
 
 
 if __name__ == "__main__":

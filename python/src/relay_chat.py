@@ -98,7 +98,7 @@ class Relay:
 
     def _load_members(self):
         """Read the room's member keys and their Noise keys (the peers table)."""
-        info = relay_rest.join_room(self.config, self.session.seed, self.settings["room_code"], self.settings["name"])
+        info = relay_rest.join_room(self.config, self.session.seed, self.settings["room_code"], self.settings["name"], self.settings["trust"])
         pks = [pk for pk in info["members"] if pk != self.own_pk]
         noise_keys = {}
         if pks:
@@ -118,16 +118,6 @@ class Relay:
                     break
                 self._send_text(text)
             time.sleep(SLICE_SECONDS)
-
-    def _join_room(self):
-        """Join the room once (join-room). Returns the status text."""
-        settings = self.settings
-        try:
-            info = relay_rest.join_room(self.config, self.session.seed, settings["room_code"], settings["name"])
-        except (OSError, ValueError) as error:
-            return f"relay: room join failed: {error}"
-        # The member count comes from the join answer (read_join_room checks the list). A malformed answer is a failure above.
-        return f"relay: 방 참가 (멤버 {len(info['members'])}명)"
 
     def _publish(self):
         """Write this PC's row. A 409 means another key owns the short id: make a new one and try again (up to 5)."""
@@ -167,7 +157,7 @@ class Relay:
                     info = self._load_members()
                     joined = True
                     retries = 1
-                    self.hooks.emit(Status(f"relay: 방 참가 (멤버 {len(info['members'])}명)"))
+                    self.hooks.emit(Status(""))  # a successful join says nothing on the status line; failures still do
                 except (OSError, ValueError) as error:
                     joined = False
                     self.hooks.emit(Status(f"relay: room join failed: {error}"))
@@ -198,6 +188,8 @@ def start(hooks, state, settings):
         return None, "relay: settings incomplete"
     if not relay_rest.valid_room_code(settings.get("room_code")):
         return None, "relay: room code missing or invalid (8 uppercase letters or digits)"
+    if not relay_rest.valid_trust(settings.get("trust")):
+        return None, "relay: trust code missing or invalid (8 digits)"
     try:
         session = make_session(state)
     except (relay_key.SigningKeyError, OSError) as error:
@@ -225,3 +217,21 @@ def leave(state, timeout=relay_rest.TIMEOUT_SECONDS):
     seed = relay_key.load_or_create(state)
     short = relay_key.load_or_create_short_id(state)
     return relay_rest.delete_peer(config, seed, short, timeout)
+
+
+def room_refuses(state):
+    """True when the saved room refuses this trust code (join-room answers 403): the chat must not open the room then. Any
+    other failure (offline, no keys yet) is not a refusal: the chat starts as before and shows it. Same rule as talk-core
+    relay_chat::room_refuses."""
+    settings = relay_settings.effective(state)
+    if settings["mode"] != relay_settings.SUPABASE or not settings["room_code"]:
+        return False
+    try:
+        config = relay_rest.config(settings["url"], settings["key"])
+        seed = relay_key.load_or_create(state)
+        relay_rest.join_room(config, seed, settings["room_code"], settings["name"], settings["trust"])
+    except ValueError as error:
+        return str(error) == relay_rest.TRUST_WRONG
+    except OSError:
+        return False
+    return False

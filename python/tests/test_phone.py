@@ -180,6 +180,7 @@ class ChatPhoneTest(Base):
         announce = {"id": "other-node", "name": "Host", "port": 5000}
         talk.remember_peer(mine, announce, "203.0.113.7")   # another PC: its token is not ours
         self.assertFalse(mine.phone_visible())
+        mine.peers.clear()  # LAN is 1:1: the local host is admitted only when the other PC is gone
         talk.remember_peer(mine, {**announce, "id": "other-node2", "port": 5000}, "127.0.0.1")
         self.assertTrue(mine.phone_visible())
         host.release_host()
