@@ -169,7 +169,7 @@ fn answer(chat: &Arc<Chat>, request: &Value, allow_shutdown: bool) -> Value {
                 .collect();
             // This chat's own name and port, so a GUI can list it above the others.
             let me = chat.me.lock().unwrap().clone();
-            // Peers waiting for a /trust: their name and the code the GUI shows for the comparison.
+            // Peers waiting for a /join: their name and the code the GUI shows for the comparison.
             let pending: Vec<Value> = chat.fresh_peers().iter().filter_map(|peer| {
                 let code = chat.sas_for(peer.key.as_deref()?)?;
                 (chat.link_of(peer) == talk_core::chat::Link::Unverified).then(|| json!({"name": peer.name, "code": code}))

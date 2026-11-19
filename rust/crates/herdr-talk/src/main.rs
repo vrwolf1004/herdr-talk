@@ -113,19 +113,23 @@ fn run(args: RunArgs) -> Result<(), String> {
     chat.watch_host(); // the first node on this PC owns the phone address; another takes over when it ends
     let me = chat.me.lock().unwrap().clone();
     chat.say(t("start.hello", &[("name", &me.name), ("port", &me.port.to_string())]));
-    // The relay is optional: a bad setting shows in the status row and never stops the chat.
-    if let Err(error) = talk_core::relay_chat::start(&chat, &talk_core::store::state_dir()) {
-        chat.say(format!("relay: {error}"));
-    }
     let state = talk_core::store::state_dir();
+    // A saved room that refuses this PC's trust code is not joined: the settings screen opens with the reason instead.
+    let refused = talk_core::relay_chat::room_refuses(&state);
+    // The relay is optional: a bad setting shows in the status row and never stops the chat.
+    if !refused {
+        if let Err(error) = talk_core::relay_chat::start(&chat, &state) {
+            chat.say(format!("relay: {error}"));
+        }
+    }
     let result = if talk_core::relay_settings::needs_first_run(&state) {
         match screen::choose_mode(&chat) {
-            Ok(screen::Choice::Saved | screen::Choice::TimedOut) => screen::run(&chat),
+            Ok(screen::Choice::Saved | screen::Choice::TimedOut) => screen::run(&chat, refused),
             Ok(screen::Choice::Quit) => Ok(()),
             Err(error) => Err(error),
         }
     } else {
-        screen::run(&chat)
+        screen::run(&chat, refused)
     }
     .map_err(|error| error.to_string());
     chat.stop_relay();
