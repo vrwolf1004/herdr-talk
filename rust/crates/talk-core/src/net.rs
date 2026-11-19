@@ -3,7 +3,7 @@
 //! - plain (only with "plaintext": true): one JSON object, as the Python 0.5.x versions sent it.
 //!   Never used for a peer that has a key.
 
-use crate::chat::{default_name, Chat, Line, Me, Peer, MAX_TEXT_CHARS};
+use crate::chat::{default_name, Chat, Line, Me, Peer, MAX_PEERS, MAX_TEXT_CHARS};
 use crate::i18n::t;
 use crate::store::{self, Identity};
 use crate::text::{clean_text, peer_name, plain_sender, sender_name, squeeze_spaces};
@@ -193,6 +193,18 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
     // A key the user trusts: an announcement may not rename its entry or move it to another address.
     let trusted = key.as_deref().is_some_and(|key| chat.trusts(key));
     let name = key.as_deref().and_then(|key| chat.trusted_name(key)).unwrap_or_else(|| peer_name(info.get("name").and_then(Value::as_str)));
+    // A key kicked for not joining in time stays out for this chat. Otherwise its join clock starts with this announce.
+    if let Some(key) = key.as_deref() {
+        if chat.is_kicked(key, &name, &ip) {
+            return;
+        }
+        chat.note_waiting(key);
+    }
+    // A room holds MAX_PEERS with this PC: a new peer is ignored while MAX_PEERS - 1 others are here. Known peers always pass.
+    let here = chat.fresh_peers();
+    if here.len() >= MAX_PEERS - 1 && !here.iter().any(|known| known.id == id) {
+        return;
+    }
     let peer = Peer { id: id.to_string(), name: name.clone(), ip: ip.clone(), port, seen: Instant::now(), key: key.clone() };
     let mut peers = chat.peers.lock().unwrap();
     if trusted {
@@ -790,8 +802,25 @@ mod tests {
         assert_eq!(chat.me.lock().unwrap().name, "Bob");
         remember_peer(&chat, packet(&large).as_bytes(), "10.0.0.5".into()); // larger id: that node renames, not me
         assert_eq!(chat.me.lock().unwrap().name, "Bob");
+        // The smaller id is one more peer in the room (not ignored while the larger one is here). Alone, it renames me.
+        let chat = Chat::new(Me { id: store::peer_id(&me_key), name: "Bob".into(), port: 1, key: me_key.to_vec(), secret: vec![] });
         remember_peer(&chat, packet(&small).as_bytes(), "10.0.0.6".into());
         assert_eq!(chat.me.lock().unwrap().name, "Bob2");
+    }
+
+    #[test]
+    fn a_room_takes_max_peers_with_this_pc_and_refuses_the_next() {
+        let chat = chat();
+        let packet = |n: usize| json!({"app": APP, "id": format!("peer{n}"), "name": format!("P{n}"), "port": 9}).to_string();
+        // This PC is one of MAX_PEERS: MAX_PEERS - 1 others fit.
+        for n in 0..MAX_PEERS - 1 {
+            remember_peer(&chat, packet(n).as_bytes(), format!("10.0.2.{n}"));
+        }
+        assert_eq!(chat.fresh_peers().len(), MAX_PEERS - 1);
+        remember_peer(&chat, packet(99).as_bytes(), "10.0.2.99".into());
+        assert_eq!(chat.fresh_peers().len(), MAX_PEERS - 1, "the next new peer is ignored");
+        remember_peer(&chat, packet(3).as_bytes(), "10.0.2.3".into());
+        assert_eq!(chat.fresh_peers().len(), MAX_PEERS - 1, "a known peer still passes");
     }
 
     #[test]

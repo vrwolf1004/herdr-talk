@@ -5,10 +5,16 @@
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 
+use crate::chat::MAX_PEERS;
+use crate::i18n::t;
+use serde_json::{json, Value};
+use std::time::Duration;
+
 /// The tag of the room requests (create and join), in front of the signed bytes.
 pub const ROOM_TAG: &str = "herdr-talk-room-v1";
-use serde_json::Value;
-use std::time::Duration;
+
+/// The default relay project. HERDR_TALK_RELAY_URL overrides it (see relay_settings::setup_url).
+pub const DEFAULT_URL: &str = "https://coekrspnpcjzcbydarco.supabase.co";
 
 pub const URL_VARIABLE: &str = "HERDR_TALK_RELAY_URL";
 pub const KEY_VARIABLE: &str = "HERDR_TALK_RELAY_KEY";
@@ -97,6 +103,11 @@ fn to_hex(bytes: &[u8]) -> String {
 /// made uppercase before this check (the callers do it).
 pub fn valid_short_id(text: &str) -> bool {
     text.len() == 8 && text.bytes().all(|byte| byte.is_ascii_digit() || byte.is_ascii_uppercase())
+}
+
+/// 8 digits: the trust code that the room owner and each participant share.
+pub fn valid_trust(text: &str) -> bool {
+    text.len() == 8 && text.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// 8 uppercase characters, letters and digits: the room code shared by all peers in a room.
@@ -236,9 +247,13 @@ pub fn room_message(action: RoomAction, room_code: &str, peer_pk: &str, display_
 
 /// The JSON body of a room request, signed with the peer's Ed25519 key (the seed from relay_key): peer_pk, display_name,
 /// ts, nonce and sig, plus room_code for a join. Refuses bad input before any signature is made.
-pub fn signed_room_body(seed: &[u8; 32], action: RoomAction, room_code: &str, display_name: &str, ts: u64, nonce: &str) -> Result<String, String> {
+pub fn signed_room_body(seed: &[u8; 32], action: RoomAction, room_code: &str, display_name: &str, trust: &str, ts: u64, nonce: &str) -> Result<String, String> {
     if action == RoomAction::Join && !valid_room_code(room_code) {
         return Err("room_code must be 8 uppercase letters or digits".to_string());
+    }
+    // The trust code is sent with the request but not signed: the function keeps only its salted hash.
+    if !valid_trust(trust) {
+        return Err("trust code must be 8 digits".to_string());
     }
     if !valid_name(display_name) {
         return Err("display_name must be 1 to 32 characters without control characters".to_string());
@@ -257,6 +272,7 @@ pub fn signed_room_body(seed: &[u8; 32], action: RoomAction, room_code: &str, di
     body.insert("display_name".to_string(), Value::String(display_name.to_string()));
     body.insert("ts".to_string(), Value::from(ts));
     body.insert("nonce".to_string(), Value::String(nonce.to_string()));
+    body.insert("trust".to_string(), Value::String(trust.to_string()));
     body.insert("sig".to_string(), Value::String(sig));
     Ok(Value::Object(body).to_string())
 }
@@ -274,13 +290,13 @@ pub fn unix_now() -> u64 {
 }
 
 /// Request to join a room by code, signed with this PC's key (ts and a fresh nonce are made here).
-pub fn join_room_request(config: &Config, seed: &[u8; 32], room_code: &str, display_name: &str) -> Result<Request, String> {
-    signed_join_request(config, seed, room_code, display_name, unix_now(), &random_nonce()?)
+pub fn join_room_request(config: &Config, seed: &[u8; 32], room_code: &str, display_name: &str, trust: &str) -> Result<Request, String> {
+    signed_join_request(config, seed, room_code, display_name, trust, unix_now(), &random_nonce()?)
 }
 
 /// The join request with ts and nonce given (tests use this; join_room_request makes them).
-pub(crate) fn signed_join_request(config: &Config, seed: &[u8; 32], room_code: &str, display_name: &str, ts: u64, nonce: &str) -> Result<Request, String> {
-    let body = signed_room_body(seed, RoomAction::Join, room_code, display_name, ts, nonce)?;
+pub(crate) fn signed_join_request(config: &Config, seed: &[u8; 32], room_code: &str, display_name: &str, trust: &str, ts: u64, nonce: &str) -> Result<Request, String> {
+    let body = signed_room_body(seed, RoomAction::Join, room_code, display_name, trust, ts, nonce)?;
     let mut headers = common_headers(config);
     headers.push(("Content-Type".to_string(), "application/json".to_string()));
     Ok(Request { method: "POST", url: format!("{}/functions/v1/join-room", config.url), headers, body: Some(body) })
@@ -298,6 +314,12 @@ pub struct RoomInfo {
 pub fn read_join_room_response(status: u16, body: &str) -> Result<RoomInfo, String> {
     if status == 410 {
         return Err("방 기한이 지났습니다".to_string()); // join-room: the room is past its 24 hours
+    }
+    if status == 403 {
+        return Err(t("room.trust_wrong", &[]));
+    }
+    if status == 409 {
+        return Err(t("room.full", &[("max", &MAX_PEERS.to_string())]));
     }
     if status != 200 {
         return Err(format!("status {status}: {body}"));
@@ -379,6 +401,80 @@ pub fn http_post(request: &Request) -> Result<(u16, String), String> {
     let status = response.status().as_u16();
     let response_body = response.body_mut().read_to_string().map_err(|e| format!("Failed to read response: {e}"))?;
     Ok((status, response_body))
+}
+
+/// A setup code as typed: spaces and '-' dropped, letters upper case. Exactly 8 of A-Z or 0-9, else None.
+pub fn normalize_setup_code(text: &str) -> Option<String> {
+    let code: String = text.chars().filter(|ch| !ch.is_whitespace() && *ch != '-').collect::<String>().to_ascii_uppercase();
+    (code.len() == 8 && code.chars().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())).then_some(code)
+}
+
+/// Exchanges a setup code for (url, key) at the relay. Not sent over plain HTTP (except loopback, for tests).
+pub fn redeem_setup_code(code: &str, url: &str) -> Result<(String, String), String> {
+    let code = normalize_setup_code(code).ok_or_else(|| t("setup.invalid", &[]))?;
+    let url = url.trim_end_matches('/');
+    if !url.starts_with("https://") && !is_loopback(url) {
+        return Err(t("setup.not_https", &[]));
+    }
+    let request = Request {
+        method: "POST",
+        url: format!("{url}/functions/v1/redeem-setup-code"),
+        headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+        body: Some(json!({"code": code}).to_string()),
+    };
+    let (status, body) = http_post(&request)?;
+    read_setup_answer(status, &body)
+}
+
+/// The redeem answer: (url, key) on 200; 404 wrong, used or expired; 429 too many; any other status is an error.
+pub fn read_setup_answer(status: u16, body: &str) -> Result<(String, String), String> {
+    match status {
+        200 => {
+            let value: Value = serde_json::from_str(body).map_err(|_| t("setup.bad_answer", &[]))?;
+            match (value["url"].as_str().filter(|text| !text.is_empty()), value["key"].as_str().filter(|text| !text.is_empty())) {
+                (Some(url), Some(key)) => Ok((url.to_string(), key.to_string())),
+                _ => Err(t("setup.bad_answer", &[])),
+            }
+        }
+        404 => Err(t("setup.wrong", &[])),
+        429 => Err(t("setup.too_many", &[])),
+        other => Err(t("setup.status", &[("status", &other.to_string())])),
+    }
+}
+
+/// The request that asks the operator function for a new setup code (20 uses, 7 days). The passphrase is checked on the server.
+pub fn issue_setup_code_request(url: &str, passphrase: &str) -> Request {
+    let url = url.trim_end_matches('/');
+    Request {
+        method: "POST",
+        url: format!("{url}/functions/v1/issue-setup-code"),
+        headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+        body: Some(json!({"passphrase": passphrase, "max_uses": 20, "days": 7}).to_string()),
+    }
+}
+
+/// The new code from an issue-setup-code answer: 200 gives it; 401, 429 and 503 say why; any other status is an error.
+pub fn read_issue_answer(status: u16, body: &str) -> Result<String, String> {
+    match status {
+        200 => {
+            let value: Value = serde_json::from_str(body).map_err(|_| "answer is not JSON".to_string())?;
+            value["code"].as_str().filter(|code| !code.is_empty()).map(str::to_string).ok_or_else(|| "answer has no code".to_string())
+        }
+        401 => Err("the operator passphrase is wrong".to_string()),
+        429 => Err("too many wrong tries; try later".to_string()),
+        503 => Err("the operator secrets are not set on the server".to_string()),
+        other => Err(format!("status {other}")),
+    }
+}
+
+/// Asks the relay for a new setup code. Not sent over plain HTTP (except loopback, for tests). The passphrase is never logged.
+pub fn issue_setup_code(url: &str, passphrase: &str) -> Result<String, String> {
+    let request = issue_setup_code_request(url, passphrase);
+    if !request.url.starts_with("https://") && !is_loopback(&request.url) {
+        return Err(t("setup.not_https", &[]));
+    }
+    let (status, body) = http_post(&request)?;
+    read_issue_answer(status, &body)
 }
 
 // ---- room messages: post-message and fetch-messages (supabase/functions/*/checks.ts) ----
@@ -664,11 +760,11 @@ pub(crate) mod tests {
     fn room_signatures_match_the_shared_vectors() {
         let seed = vector_seed();
         let nonce = "00112233445566778899aabbccddeeff";
-        let create: Value = serde_json::from_str(&signed_room_body(&seed, RoomAction::Create, "", "Alice", 1_700_000_000, nonce).unwrap()).unwrap();
+        let create: Value = serde_json::from_str(&signed_room_body(&seed, RoomAction::Create, "", "Alice", "12345678", 1_700_000_000, nonce).unwrap()).unwrap();
         assert_eq!(create["peer_pk"], "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8");
         assert_eq!(create["sig"], "f26ec1d02def0df18204cf6507e74e121432cf29ff999b89f30b3137f6084fd2e10b3b6a5d1982a13a531547bbb23370fe821a91a27af0b616b3a05c9b718b0c");
         assert!(create.get("room_code").is_none(), "create has no room code");
-        let join: Value = serde_json::from_str(&signed_room_body(&seed, RoomAction::Join, "ABCD1234", "Bob", 1_700_000_000, nonce).unwrap()).unwrap();
+        let join: Value = serde_json::from_str(&signed_room_body(&seed, RoomAction::Join, "ABCD1234", "Bob", "12345678", 1_700_000_000, nonce).unwrap()).unwrap();
         assert_eq!(join["room_code"], "ABCD1234");
         assert_eq!(join["sig"], "4128444185a03e137deca1e066f73d7bf2121162a1f620c01b75f0e217511189388e4da58a7774bb5b18f0e2263a77ff65136eeab8b6a765ac53ca8a15f33c08");
     }
@@ -682,17 +778,19 @@ pub(crate) mod tests {
     #[test]
     fn a_join_request_is_signed_and_refuses_bad_input() {
         let seed = vector_seed();
-        let request = signed_join_request(&dummy(), &seed, "ABCD1234", "Bob", 1_700_000_000, "00112233445566778899aabbccddeeff").unwrap();
+        let request = signed_join_request(&dummy(), &seed, "ABCD1234", "Bob", "12345678", 1_700_000_000, "00112233445566778899aabbccddeeff").unwrap();
         assert_eq!(request.url, "http://127.0.0.1:9/functions/v1/join-room");
         let body: Value = serde_json::from_str(request.body.as_deref().unwrap()).unwrap();
         assert_eq!(body["sig"], "4128444185a03e137deca1e066f73d7bf2121162a1f620c01b75f0e217511189388e4da58a7774bb5b18f0e2263a77ff65136eeab8b6a765ac53ca8a15f33c08");
-        assert!(signed_join_request(&dummy(), &seed, "abcd1234", "Bob", 1, "00112233445566778899aabbccddeeff").is_err());
-        assert!(signed_join_request(&dummy(), &seed, "ABCD1234", "Bob", 1, "short").is_err());
-        assert!(join_room_request(&dummy(), &seed, "ABCD1234", "Bob").is_ok());
+        assert!(signed_join_request(&dummy(), &seed, "abcd1234", "Bob", "12345678", 1, "00112233445566778899aabbccddeeff").is_err());
+        assert!(signed_join_request(&dummy(), &seed, "ABCD1234", "Bob", "12345678", 1, "short").is_err());
+        assert!(join_room_request(&dummy(), &seed, "ABCD1234", "Bob", "12345678").is_ok());
     }
 
     #[test]
     fn an_expired_room_says_so() {
+        assert_eq!(read_join_room_response(409, "").unwrap_err(), t("room.full", &[("max", "10")]));
+        assert_eq!(read_join_room_response(403, "").unwrap_err(), t("room.trust_wrong", &[]));
         let error = read_join_room_response(410, r#"{"error":"방 기한이 지났습니다"}"#).unwrap_err();
         assert_eq!(error, "방 기한이 지났습니다");
     }
@@ -775,4 +873,75 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn setup_code_drops_spaces_and_dashes_and_needs_eight_characters() {
+        assert_eq!(normalize_setup_code("abcd-2345"), Some("ABCD2345".to_string()));
+        assert_eq!(normalize_setup_code(" ab cd 23-45 "), Some("ABCD2345".to_string()));
+        for bad in ["ABCD234", "ABCD23456", "ABCD234!", "ABCD234가", ""] {
+            assert_eq!(normalize_setup_code(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn setup_answer_is_read_by_status() {
+        assert_eq!(read_setup_answer(200, r#"{"url":"https://p.supabase.co","key":"k1"}"#), Ok(("https://p.supabase.co".to_string(), "k1".to_string())));
+        for bad in [r#"{"url":"https://p.supabase.co"}"#, r#"{"url":"","key":"k1"}"#, "not json"] {
+            assert_eq!(read_setup_answer(200, bad), Err(t("setup.bad_answer", &[])), "{bad}");
+        }
+        assert_eq!(read_setup_answer(404, ""), Err(t("setup.wrong", &[])));
+        assert_eq!(read_setup_answer(429, ""), Err(t("setup.too_many", &[])));
+        assert!(read_setup_answer(500, "").unwrap_err().contains("500"));
+    }
+
+    #[test]
+    fn a_bad_setup_code_or_plain_http_is_refused_before_a_request() {
+        assert!(redeem_setup_code("ABCD", DEFAULT_URL).is_err());
+        assert_eq!(redeem_setup_code("ABCD2345", "http://example.com"), Err(t("setup.not_https", &[])));
+    }
+
+    #[test]
+    fn redeem_posts_the_code_as_json_without_an_apikey() {
+        let body = r#"{"url":"https://p.supabase.co","key":"k1"}"#;
+        let response: &'static str = Box::leak(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_boxed_str());
+        let (config, received) = serve_once(response);
+        assert_eq!(redeem_setup_code("abcd-2345", config.url()), Ok(("https://p.supabase.co".to_string(), "k1".to_string())));
+        let sent = received.recv().unwrap();
+        assert!(sent.starts_with("POST /functions/v1/redeem-setup-code "), "{sent}");
+        assert!(sent.ends_with(r#"{"code":"ABCD2345"}"#), "{sent}");
+        assert!(!sent.to_ascii_lowercase().contains("apikey"), "{sent}");
+    }
+
+    #[test]
+    fn issue_answer_gives_the_code_or_the_reason() {
+        assert_eq!(read_issue_answer(200, r#"{"code":"ABCD2345"}"#), Ok("ABCD2345".to_string()));
+        assert!(read_issue_answer(200, "not json").is_err());
+        assert!(read_issue_answer(200, r#"{"code":""}"#).is_err());
+        assert_eq!(read_issue_answer(401, ""), Err("the operator passphrase is wrong".to_string()));
+        assert_eq!(read_issue_answer(429, ""), Err("too many wrong tries; try later".to_string()));
+        assert_eq!(read_issue_answer(503, ""), Err("the operator secrets are not set on the server".to_string()));
+        assert!(read_issue_answer(500, "").unwrap_err().contains("500"));
+    }
+
+    #[test]
+    fn issue_request_carries_the_passphrase_uses_and_days() {
+        let request = issue_setup_code_request("https://p.supabase.co/", "pw");
+        assert_eq!(request.url, "https://p.supabase.co/functions/v1/issue-setup-code");
+        let body: Value = serde_json::from_str(request.body.as_deref().unwrap()).unwrap();
+        assert_eq!((body["passphrase"].as_str(), body["max_uses"].as_u64(), body["days"].as_u64()), (Some("pw"), Some(20), Some(7)));
+    }
+
+    #[test]
+    fn issue_posts_the_passphrase_and_reads_the_code() {
+        let body = r#"{"code":"ABCD2345"}"#;
+        let response: &'static str = Box::leak(format!("HTTP/1.1 200 OK
+Content-Length: {}
+Connection: close
+
+{body}", body.len()).into_boxed_str());
+        let (config, received) = serve_once(response);
+        assert_eq!(issue_setup_code(config.url(), "pw"), Ok("ABCD2345".to_string()));
+        let sent = received.recv().unwrap();
+        assert!(sent.starts_with("POST /functions/v1/issue-setup-code "), "{sent}");
+        assert!(sent.contains(r#""passphrase":"pw""#), "{sent}");
+    }
 }

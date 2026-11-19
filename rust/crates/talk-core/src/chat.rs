@@ -15,7 +15,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub const PEER_TIMEOUT: Duration = Duration::from_secs(10);
+/// A LAN peer must be joined (/join) within this time of its first announce, or it is kicked for this chat.
+pub const JOIN_LIMIT: Duration = Duration::from_secs(20);
 pub const MAX_TEXT_CHARS: usize = 2000;
+/// Peers in one room (LAN or relay), this PC included: a new peer is ignored when MAX_PEERS - 1 others are here.
+pub const MAX_PEERS: usize = 10;
 pub const SEND_WORKERS: usize = 8; // upper limit of peers sent to at the same time
 pub const MAX_LINES: usize = 2000;
 /// Messages one sender address may deliver within MESSAGE_WINDOW. The rest are dropped.
@@ -186,6 +190,10 @@ pub struct Chat {
     revealing: Mutex<std::collections::HashSet<Vec<u8>>>,
     /// Reveals asked for by the announce parser (key, address, port); the listener starts their workers.
     reveal_requests: Mutex<Vec<(Vec<u8>, String, u16)>>,
+    /// When each key was first announced and not joined yet (/join). Starts the JOIN_LIMIT clock.
+    waiting_since: Mutex<HashMap<Vec<u8>, Instant>>,
+    /// Keys kicked for not joining in time. Their announcements are ignored for the rest of this chat.
+    kicked: Mutex<std::collections::HashSet<Vec<u8>>>,
 }
 
 
@@ -229,6 +237,8 @@ impl Chat {
             reveals: Mutex::new(HashMap::new()),
             revealing: Mutex::new(std::collections::HashSet::new()),
             reveal_requests: Mutex::new(Vec::new()),
+            waiting_since: Mutex::new(HashMap::new()),
+            kicked: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -510,6 +520,18 @@ impl Chat {
         self.relay_status.lock().unwrap().clone()
     }
 
+    /// The room part of the chat status line: "room ID: X · setup code: Y" (Supabase mode with a saved room). None otherwise.
+    pub fn room_status(&self) -> Option<String> {
+        if !self.is_supabase() {
+            return None;
+        }
+        let saved = crate::relay_settings::load_saved(self.state_dir.as_deref()?);
+        (!saved.room_code.is_empty()).then(|| {
+            let setup = if saved.setup_code.is_empty() { "-" } else { saved.setup_code.as_str() };
+            format!("room ID: {} · setup code: {setup}", saved.room_code)
+        })
+    }
+
     /// The connection mode for this run: true in Supabase mode.
     pub fn set_supabase_mode(&self, on: bool) {
         self.supabase.store(on, Ordering::Relaxed);
@@ -561,8 +583,37 @@ impl Chat {
     }
 
     pub fn fresh_peers(&self) -> Vec<Peer> {
-        let peers = self.peers.lock().unwrap();
-        peers.iter().filter(|peer| peer.seen.elapsed() < PEER_TIMEOUT).cloned().collect()
+        let fresh: Vec<Peer> = self.peers.lock().unwrap().iter().filter(|peer| peer.seen.elapsed() < PEER_TIMEOUT).cloned().collect();
+        fresh.into_iter().filter(|peer| !peer.key.as_deref().is_some_and(|key| self.is_kicked(key, &peer.name, &peer.ip))).collect()
+    }
+
+    /// Start the JOIN_LIMIT clock for a key that is not joined yet. Only its first announce sets it.
+    pub fn note_waiting(&self, key: &[u8]) {
+        self.waiting_since.lock().unwrap().entry(key.to_vec()).or_insert_with(Instant::now);
+    }
+
+    /// True for a kicked key: not joined within JOIN_LIMIT, and kicked for the rest of this chat. A joined key is never kicked.
+    /// The first kick says so once in the chat.
+    pub fn is_kicked(&self, key: &[u8], name: &str, ip: &str) -> bool {
+        if self.trusts(key) {
+            return false;
+        }
+        let mut kicked = self.kicked.lock().unwrap();
+        if kicked.contains(key) {
+            return true;
+        }
+        let late = self.waiting_since.lock().unwrap().get(key).is_some_and(|since| since.elapsed() >= JOIN_LIMIT);
+        if late {
+            kicked.insert(key.to_vec());
+            drop(kicked);
+            self.say(t("peer.kicked", &[("name", name), ("ip", ip)]));
+        }
+        late
+    }
+
+    /// True for a key that was kicked (its announcements are ignored).
+    pub fn was_kicked(&self, key: &[u8]) -> bool {
+        self.kicked.lock().unwrap().contains(key)
     }
 
     /// Handle one line typed by the user. Return false to leave the chat.
@@ -644,8 +695,8 @@ impl Chat {
             }
             return true;
         }
-        if text == "/trust" || text.starts_with("/trust ") {
-            let arg = text[6..].trim();
+        if text == "/join" || text.starts_with("/join ") {
+            let arg = text[5..].trim();
             // A number picks a waiting peer from the list ([1], [2] ...); a code is compared as before.
             if !arg.is_empty() && arg.len() <= 2 && arg.bytes().all(|byte| byte.is_ascii_digit()) {
                 let picked = arg.parse::<usize>().ok().and_then(|number| self.unverified_peers().into_iter().find(|(_, _, waiting)| *waiting == number));
@@ -799,6 +850,23 @@ pub fn numbered_name(name: &str, taken: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_room_status_shows_the_room_and_setup_code_in_supabase_mode() {
+        let dir = std::env::temp_dir().join(format!("herdr-talk-room-status-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut chat = chat(&[]);
+        chat.state_dir = Some(dir.clone());
+        assert_eq!(chat.room_status(), None, "Local mode shows nothing");
+        chat.set_supabase_mode(true);
+        assert_eq!(chat.room_status(), None, "no saved room yet");
+        let saved = crate::relay_settings::Settings { mode: crate::relay_settings::Mode::Supabase, url: "https://example.supabase.co".into(), key: "k".into(), name: "Alice".into(), room_code: "ABCD2345".into(), trust: "12345678".into(), setup_code: "WXYZ6789".into() };
+        crate::relay_settings::save(&dir, &saved).unwrap();
+        assert_eq!(chat.room_status().as_deref(), Some("room ID: ABCD2345 · setup code: WXYZ6789"));
+        crate::relay_settings::save(&dir, &crate::relay_settings::Settings { setup_code: String::new(), ..saved }).unwrap();
+        assert_eq!(chat.room_status().as_deref(), Some("room ID: ABCD2345 · setup code: -"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn chat(names: &[&str]) -> Chat {
         let chat = Chat::new(Me { id: "me".into(), name: "Me".into(), port: 1, key: vec![0; 32], secret: vec![1; 32] });
@@ -1120,10 +1188,10 @@ mod tests {
         let chat = chat(&[]);
         let key = [7u8; 32];
         chat.peers.lock().unwrap().push(keyed_peer("Bob", &key));
-        chat.handle("/trust 0000");
+        chat.handle("/join 0000");
         assert_eq!(texts(&chat).last().unwrap(), &t("trust.none", &[("code", "0000")]));
         let code = reveal_peer(&chat, &key);
-        chat.handle(&format!("/trust {}", code.to_lowercase()));
+        chat.handle(&format!("/join {}", code.to_lowercase()));
         assert!(chat.trusts(&key));
         assert_eq!(chat.link_of(&chat.fresh_peers()[0]), Link::Encrypted);
         assert!(texts(&chat).contains(&t("trust.done", &[("name", "Bob"), ("ip", "10.0.0.2")])));
@@ -1137,15 +1205,15 @@ mod tests {
         chat.peers.lock().unwrap().push(keyed_peer("Cy", &cy));
         reveal_peer(&chat, &bob);
         reveal_peer(&chat, &cy);
-        chat.handle("/trust 0");
+        chat.handle("/join 0");
         assert_eq!(texts(&chat).last().unwrap(), &t("trust.no_number", &[("n", "0")]));
-        chat.handle("/trust 2");
+        chat.handle("/join 2");
         assert!(chat.trusts(&cy), "2 is Cy");
         assert!(!chat.trusts(&bob));
         assert!(texts(&chat).contains(&t("trust.done", &[("name", "Cy"), ("ip", "10.0.0.2")])), "the confirmation names the peer");
-        chat.handle("/trust 2");
+        chat.handle("/join 2");
         assert_eq!(texts(&chat).last().unwrap(), &t("trust.no_number", &[("n", "2")]), "a verified peer is not waiting any more");
-        chat.handle("/trust 1");
+        chat.handle("/join 1");
         assert!(chat.trusts(&bob));
     }
 
@@ -1165,19 +1233,42 @@ mod tests {
         assert_eq!(chat.waiting_number(&keys[1]), 3);
         let numbers: Vec<usize> = chat.unverified_peers().iter().map(|(_, _, number)| *number).collect();
         assert_eq!(numbers, vec![1, 2, 3], "three waiting peers, numbers 1 to 3");
-        chat.handle("/trust 2");
+        chat.handle("/join 2");
         assert!(chat.trusts(&keys[0]), "2 stays with its peer");
         let left: Vec<usize> = chat.unverified_peers().iter().map(|(_, _, number)| *number).collect();
         assert_eq!(left, vec![1, 3], "the others keep their numbers after one is verified");
-        chat.handle("/trust 3");
+        chat.handle("/join 3");
         assert!(chat.trusts(&keys[1]), "3 is still the same peer");
     }
 
     #[test]
     fn trust_without_a_code_shows_usage() {
         let chat = chat(&[]);
-        chat.handle("/trust");
+        chat.handle("/join");
         assert_eq!(texts(&chat)[1], t("usage.trust", &[]));
+    }
+
+    #[test]
+    fn a_peer_not_joined_within_the_limit_is_kicked_for_the_chat() {
+        let chat = chat(&[]);
+        let key = [9u8; 32];
+        chat.peers.lock().unwrap().push(keyed_peer("Dan", &key));
+        chat.note_waiting(&key);
+        chat.waiting_since.lock().unwrap().insert(key.to_vec(), Instant::now() - JOIN_LIMIT);
+        assert!(chat.fresh_peers().is_empty(), "a kicked peer is not listed");
+        assert!(chat.was_kicked(&key));
+        assert!(texts(&chat).contains(&t("peer.kicked", &[("name", "Dan"), ("ip", "10.0.0.2")])));
+    }
+
+    #[test]
+    fn a_joined_peer_is_never_kicked() {
+        let chat = chat(&[]);
+        let key = [9u8; 32];
+        chat.peers.lock().unwrap().push(keyed_peer("Dan", &key));
+        chat.waiting_since.lock().unwrap().insert(key.to_vec(), Instant::now() - JOIN_LIMIT);
+        chat.trusted.lock().unwrap().push(Trusted { name: "Dan".into(), key: key.to_vec(), ip: "10.0.0.2".into() });
+        assert_eq!(chat.fresh_peers().len(), 1);
+        assert!(!chat.was_kicked(&key));
     }
 
     #[test]

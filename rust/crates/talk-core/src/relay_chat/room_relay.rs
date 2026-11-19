@@ -93,7 +93,7 @@ fn listen(chat: &Chat, state: &Path, config: &Config, settings: &Settings, seed:
                 }
             }
             if published {
-                match load_members(config, seed, &settings.room_code, &settings.name) {
+                match load_members(config, seed, &settings.room_code, &settings.name, &settings.trust) {
                     Ok(list) => {
                         chat.set_relay_status(&format!("relay: room joined ({} members)", list.len()));
                         members = list;
@@ -144,8 +144,8 @@ fn publish_message(outcome: PutOutcome) -> Result<(), String> {
 }
 
 /// Join the room (idempotent) and return its members with their Noise keys.
-fn load_members(config: &Config, seed: &[u8; 32], room_code: &str, name: &str) -> Result<Vec<Member>, String> {
-    let request = relay_rest::join_room_request(config, seed, room_code, name)?;
+fn load_members(config: &Config, seed: &[u8; 32], room_code: &str, name: &str, trust: &str) -> Result<Vec<Member>, String> {
+    let request = relay_rest::join_room_request(config, seed, room_code, name, trust)?;
     let (status, body) = relay_rest::http_post(&request)?;
     let info = relay_rest::read_join_room_response(status, &body)?;
     relay_rest::members_noise_keys(config, &info.members)?
@@ -287,7 +287,6 @@ fn unix_now() -> u64 {
 mod tests {
     use super::*;
     use crate::chat::Me;
-    use crate::store::Trusted;
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     const NONCE: &str = "00112233445566778899aabbccddeeff";
