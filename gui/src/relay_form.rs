@@ -1,5 +1,5 @@
 //! The connection-mode screens of the window. Two kinds: the first-run choice (`choose`), shown before the chat
-//! when relay.json has no `mode`, and the settings window (`Form`, Ctrl+R and the top-bar button) with the mode row and the four Supabase fields.
+//! when relay.json has no `mode`, and the settings window (`Form`, Ctrl+R and the top-bar button) with the mode row, the setup-code row and the room rows.
 //! The rules (validation, saving, BOM, mode, texts) live in talk-core; this file only draws and keeps the typed text.
 
 use crate::Palette;
@@ -7,22 +7,52 @@ use eframe::egui;
 use std::path::{Path, PathBuf};
 use talk_core::choice_timer::ChoiceTimer;
 use talk_core::relay_rest::{self, random_nonce, signed_room_body, unix_now, PutOutcome, Request, RoomAction};
-use talk_core::relay_settings::{self, Mode, Settings};
+use talk_core::relay_settings::{self, Missing, Mode, SaveRefusal, Settings};
 use talk_core::t;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Instant;
 
-/// The four field labels, in field order.
-/// shortcut: the room ID label is written here because locales have no key for it; move it to talk-core/locales when those are allowed to change.
+/// The four field labels in field order, as Python shows them: setup code, trust code, display name, room ID.
+/// shortcut: the labels are written here in English like Python's, not in talk-core/locales; move them there when those are allowed to change.
 fn labels() -> [String; 4] {
-    [
-        t("gui.relay.label.url", &[]),
-        t("gui.relay.label.key", &[]),
-        t("gui.relay.label.name", &[]),
-        "방 ID (8자리)".to_string(),
-    ]
+    ["Setup code", "Trust code (8 digits)", "Display name", "Room ID (8 characters)"].map(str::to_string)
 }
-const KEY_FIELD: usize = 1;
+/// The trust check's answer: the refusal shows only while the message is still the one from opening the window,
+/// so a late answer never replaces a newer message.
+fn apply_trust(message: &mut String, opened: &str, refused: bool) {
+    if refused && message == opened {
+        *message = t("room.trust_wrong", &[]);
+    }
+}
+
+/// The bar's text for an issue answer: the new code (shown once, never stored), or the reason it failed.
+fn issue_message(answer: Result<String, String>) -> String {
+    match answer {
+        Ok(code) => format!("new setup code: {code} (20 uses, 7 days; write it down now)"),
+        Err(error) => format!("issue failed: {error}"),
+    }
+}
+
+/// Whether F9 was pressed this frame (opens the operator passphrase row).
+fn operator_key(ctx: &egui::Context) -> bool {
+    ctx.input(|input| input.key_pressed(egui::Key::F9))
+}
+
+/// The Supabase URL for the setup-code calls: the environment URL wins over the default, as everywhere else.
+fn setup_url() -> String {
+    std::env::var(relay_rest::URL_VARIABLE)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| relay_rest::DEFAULT_URL.to_string())
+}
+
+/// The field indexes, in the order of `labels`.
+const CODE_FIELD: usize = 0;
+/// The trust code (8 digits): the owner's code at create, the code each participant types to join.
+const TRUST_FIELD: usize = 1;
+const NAME_FIELD: usize = 2;
+const ROOM_FIELD: usize = 3;
 
 /// The first-run pick.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,6 +72,13 @@ pub enum Action {
 
 pub struct Form {
     mode: Mode,
+    /// The saved URL and key: never typed here, a setup code replaces them.
+    url: String,
+    key: String,
+    /// The saved setup code (the one redeemed last, or the one already saved); kept on every save.
+    setup_code: String,
+    /// The room trust check started by `open`: true when the saved room refuses the trust code.
+    trust_check: Option<(Receiver<bool>, String)>,
     fields: [String; 4],
     pub message: String,
     from_env: (bool, bool),
@@ -51,6 +88,22 @@ pub struct Form {
     state: PathBuf,
     /// A create-room request in flight: its answer (the room code, or the reason it failed).
     creating: Option<Receiver<Result<String, String>>>,
+    /// A setup-code redeem in flight: its answer (url and key, or the reason it failed).
+    redeeming: Option<Receiver<Result<(String, String, String), String>>>,
+    /// The operator passphrase row, opened with F9. The passphrase is taken out when the request starts and never saved.
+    operator: bool,
+    passphrase: String,
+    /// An issue-setup-code request in flight: its answer (the new code, or the reason it failed).
+    issuing: Option<Receiver<Result<String, String>>>,
+}
+
+/// What Save does next, decided from the form alone (no network, no file).
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// Nothing is written; the message says what is missing or wrong.
+    Refuse(String),
+    /// Write relay.json now from the form.
+    Write,
 }
 
 /// The answer of create-room: the room code on 200, otherwise the status and body.
@@ -75,16 +128,27 @@ impl Form {
         let saved = relay_settings::load_saved(state);
         let mine = talk_core::relay_chat::my_keys(state).ok();
         let short_id = talk_core::relay_key::short_id(state).unwrap_or_default();
-        let mut fields = [saved.url, saved.key, saved.name, saved.room_code];
+        let mut fields = [String::new(), saved.trust, saved.name, saved.room_code];
         let mut message = if mine.is_none() { t("gui.relay.no_keys", &[]) } else { String::new() };
-        if fields[2].trim().is_empty() {
+        if fields[NAME_FIELD].trim().is_empty() {
             match random_nonce() {
-                Ok(nonce) => fields[2] = nonce.chars().take(8).collect::<String>().to_ascii_uppercase(),
+                Ok(nonce) => fields[NAME_FIELD] = nonce.chars().take(8).collect::<String>().to_ascii_uppercase(),
                 Err(error) => message = format!("DISPLAY ID를 만들 수 없습니다: {error}"),
             }
         }
+        // The join check makes a network call, so it runs in a thread; `show` shows the trust message when it says no.
+        let opened = message.clone();
+        let (sender, trust_check) = mpsc::channel();
+        let state_dir = state.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = sender.send(talk_core::relay_chat::room_refuses(&state_dir));
+        });
         Form {
             mode: saved.mode,
+            url: saved.url,
+            setup_code: saved.setup_code,
+            trust_check: Some((trust_check, opened)),
+            key: saved.key,
             fields,
             message,
             from_env: relay_settings::from_environment(),
@@ -92,6 +156,10 @@ impl Form {
             short_id,
             state: state.to_path_buf(),
             creating: None,
+            redeeming: None,
+            operator: false,
+            passphrase: String::new(),
+            issuing: None,
         }
     }
 
@@ -103,11 +171,16 @@ impl Form {
             self.message = t("settings.one_room_only", &[]);
             return;
         }
-        let url = self.fields[0].trim().to_string();
-        let key = self.fields[1].trim().to_string();
-        let name = self.fields[2].trim().to_string();
+        let url = self.url.trim().to_string();
+        let key = self.key.trim().to_string();
+        let name = self.fields[NAME_FIELD].trim().to_string();
+        let trust = self.fields[TRUST_FIELD].trim().to_string();
+        if !relay_rest::valid_trust(&trust) {
+            self.message = "방 만들기: trust 코드는 숫자 8자리여야 합니다".to_string();
+            return;
+        }
         if url.is_empty() || key.is_empty() || name.is_empty() {
-            self.message = "방 만들기: 프로젝트 URL, 키, 표시 이름을 먼저 입력하세요".to_string();
+            self.message = "방 만들기: 설정 코드를 먼저 입력하고 저장하세요 (표시 이름도 필요합니다)".to_string();
             return;
         }
         let config = match relay_rest::config(Some(&url), Some(&key)) {
@@ -149,7 +222,7 @@ impl Form {
                 return;
             }
         };
-        let body = match signed_room_body(&seed, RoomAction::Create, "", &name, unix_now(), &nonce) {
+        let body = match signed_room_body(&seed, RoomAction::Create, "", &name, &trust, unix_now(), &nonce) {
             Ok(body) => body,
             Err(error) => {
                 self.message = format!("방 만들기: 서명 요청을 만들 수 없습니다: {error}");
@@ -179,6 +252,45 @@ impl Form {
         self.message = "방 만드는 중...".to_string();
     }
 
+    /// Redeem the setup code in a thread so the window keeps drawing; `show` applies the answer.
+    fn start_redeem(&mut self, ctx: &egui::Context, code: String) {
+        let url = setup_url();
+        let (sender, receiver) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(relay_rest::redeem_setup_code(&code, &url).map(|(url, key)| (url, key, code)));
+            ctx.request_repaint();
+        });
+        self.redeeming = Some(receiver);
+        self.message = "설정 코드 확인 중...".to_string();
+    }
+
+    /// The operator button or Enter: issue a setup code in a thread. The passphrase is taken out of the form first.
+    fn start_issue(&mut self, ctx: &egui::Context) {
+        let passphrase = std::mem::take(&mut self.passphrase);
+        if passphrase.is_empty() {
+            self.message = "운영자 암호를 입력하세요".to_string();
+            return;
+        }
+        let url = setup_url();
+        let (sender, receiver) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(relay_rest::issue_setup_code(&url, &passphrase));
+            ctx.request_repaint();
+        });
+        self.issuing = Some(receiver);
+        self.message = "설정 코드 발급 중...".to_string();
+    }
+
+    /// The Save setup code button (Python's F2): redeem the typed code now and store its URL and key.
+    fn save_setup_code(&mut self, ctx: &egui::Context) {
+        match relay_rest::normalize_setup_code(self.fields[CODE_FIELD].trim()) {
+            Some(code) => self.start_redeem(ctx, code),
+            None => self.message = "설정 코드는 영문과 숫자 8자리여야 합니다".to_string(),
+        }
+    }
+
     /// The settings window opened for Supabase (the first-run pick).
     pub fn open_supabase(state: &Path) -> Form {
         let mut form = Form::open(state);
@@ -189,24 +301,59 @@ impl Form {
     fn settings(&self) -> Settings {
         Settings {
             mode: self.mode,
-            url: self.fields[0].trim().to_string(),
-            key: self.fields[1].trim().to_string(),
-            name: self.fields[2].trim().to_string(),
-            room_code: self.fields[3].trim().to_ascii_uppercase(),
+            url: self.url.trim().to_string(),
+            key: self.key.trim().to_string(),
+            setup_code: self.setup_code.clone(),
+            name: self.fields[NAME_FIELD].trim().to_string(),
+            room_code: self.fields[ROOM_FIELD].trim().to_ascii_uppercase(),
+            trust: self.fields[TRUST_FIELD].trim().to_string(),
         }
     }
 
-    /// Save. True when the file was written. Supabase names every missing field and writes nothing.
-    pub fn save(&mut self) -> bool {
-        let settings = self.settings();
-        if settings.mode == Mode::Supabase {
-            let labels = labels();
-            let missing: Vec<&str> = (0..labels.len()).filter(|&index| self.fields[index].trim().is_empty()).map(|index| labels[index].as_str()).collect();
-            if !missing.is_empty() {
-                self.message = t("settings.save_refused_missing", &[("fields", &missing.join(", "))]);
-                return false;
+    /// The final save's rules, from talk-core's check_save (the same as Python's). Local writes at once.
+    fn next_step(&self) -> Step {
+        if self.mode == Mode::Local {
+            return Step::Write;
+        }
+        let labels = labels();
+        match relay_settings::check_save(&self.settings(), &self.fields[CODE_FIELD]) {
+            Ok(()) => Step::Write,
+            Err(SaveRefusal::UnredeemedCode) => Step::Refuse("Save setup code first: Save does not redeem a typed setup code".to_string()),
+            Err(SaveRefusal::MissingFields(missing)) => {
+                let names: Vec<&str> = missing
+                    .iter()
+                    .map(|field| match field {
+                        Missing::Name => labels[NAME_FIELD].as_str(),
+                        Missing::Room => labels[ROOM_FIELD].as_str(),
+                        Missing::Trust => labels[TRUST_FIELD].as_str(),
+                    })
+                    .collect();
+                Step::Refuse(t("settings.save_refused_missing", &[("fields", &names.join(", "))]))
+            }
+            Err(SaveRefusal::NoConnection) => Step::Refuse(format!("{}: type it and press Save setup code first", labels[CODE_FIELD])),
+        }
+    }
+
+    /// The final Save button: refuse, or write now. Returns the window action.
+    fn save(&mut self) -> Action {
+        match self.next_step() {
+            Step::Refuse(message) => {
+                self.message = message;
+                Action::Stay
+            }
+            Step::Write => {
+                if self.save_now() {
+                    Action::Saved
+                } else {
+                    Action::Stay
+                }
             }
         }
+    }
+
+    /// Write relay.json from the form. True when the file was written.
+    fn save_now(&mut self) -> bool {
+        let settings = self.settings();
         match relay_settings::save(&self.state, &settings) {
             Ok(()) => {
                 self.message = t(if settings.mode == Mode::Local { "settings.save_ok_local" } else { "settings.save_ok_supabase" }, &[]);
@@ -216,16 +363,6 @@ impl Form {
                 self.message = t("gui.relay.not_saved", &[("error", &error.to_string())]);
                 false
             }
-        }
-    }
-
-    /// The text the window shows for one field (the key only as its length, by the password field).
-    #[cfg(test)]
-    fn shown_label(&self, index: usize) -> String {
-        if index == KEY_FIELD {
-            relay_settings::key_label(&self.fields[index])
-        } else {
-            self.fields[index].clone()
         }
     }
 }
@@ -354,7 +491,7 @@ fn centered_column<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), add).inner
 }
 
-/// Draw the settings window: the mode row, the four fields (greyed out in Local mode), and the buttons.
+/// Draw the settings window: the mode row, the setup-code row (greyed out in Local mode), the room rows, and the buttons.
 pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
     let mut action = Action::Stay;
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
@@ -366,9 +503,45 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
         match answer {
             Ok(code) => {
                 form.message = format!("방을 만들었습니다: {code} (저장을 눌러야 적용됩니다)");
-                form.fields[3] = code;
+                form.fields[ROOM_FIELD] = code;
             }
             Err(error) => form.message = format!("방 만들기 실패: {error}"),
+        }
+    }
+    // The trust check from `open`: show the refusal in the message line; keep polling until it answers.
+    let answer = form.trust_check.as_ref().and_then(|(receiver, opened)| receiver.try_recv().ok().map(|refused| (refused, opened.clone())));
+    if let Some((refused, opened)) = answer {
+        form.trust_check = None;
+        apply_trust(&mut form.message, &opened, refused);
+    }
+    if form.trust_check.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+    // The operator passphrase row opens with F9 (not named in any text).
+    if operator_key(ctx) {
+        form.operator = true;
+    }
+    // The issue answer: the code is shown once in the bar, never written to a file or log.
+    if let Some(answer) = form.issuing.as_ref().and_then(|receiver| receiver.try_recv().ok()) {
+        form.issuing = None;
+        form.message = issue_message(answer);
+    }
+    // The Save setup code answer: the URL, key and setup code are written at once (the middle save); nothing is shown.
+    if let Some(answer) = form.redeeming.as_ref().and_then(|receiver| receiver.try_recv().ok()) {
+        form.redeeming = None;
+        match answer {
+            Ok((url, key, code)) => {
+                // The code is single-use: clear it once redeemed, so a retry uses the kept URL and key.
+                form.fields[CODE_FIELD].clear();
+                form.url = url;
+                form.key = key;
+                form.setup_code = code;
+                form.message = match relay_settings::save_connection(&form.state, &form.url, &form.key, &form.setup_code) {
+                    Ok(()) => "Setup code saved: the URL and key are stored (not shown).".to_string(),
+                    Err(error) => t("gui.relay.not_saved", &[("error", &error)]),
+                };
+            }
+            Err(error) => form.message = format!("설정 코드 실패: {error}"),
         }
     }
     egui::TopBottomPanel::bottom("relay_settings_actions")
@@ -380,8 +553,9 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                     ui.colored_label(palette.muted, egui::RichText::new(form.message.as_str()).monospace());
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_sized([150.0, 40.0], egui::Button::new(egui::RichText::new("SAVE SETTINGS").monospace().color(palette.accent))).clicked() && form.save() {
-                        action = Action::Saved;
+                    let save = egui::Button::new(egui::RichText::new("SAVE SETTINGS").monospace().color(palette.accent)).min_size(egui::vec2(150.0, 40.0));
+                    if ui.add_enabled(form.redeeming.is_none(), save).clicked() {
+                        action = form.save();
                     }
                     if ui.add_sized([90.0, 40.0], egui::Button::new(egui::RichText::new("CANCEL").monospace())).clicked() {
                         action = Action::Discard;
@@ -402,6 +576,7 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                 egui::ScrollArea::vertical().id_salt("relay_settings_scroll").show(ui, |ui| {
                     ui.add_space(24.0);
                     let enabled = form.mode == Mode::Supabase;
+                    let labels = labels();
                     egui::Frame::new()
                         .fill(palette.panel)
                         .stroke(egui::Stroke::new(1.0_f32, palette.border))
@@ -409,17 +584,42 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                         .show(ui, |ui| {
                             ui.colored_label(palette.accent, egui::RichText::new("SECTION 01  SUPABASE CONNECTION").monospace());
                             ui.add_space(14.0);
-                            for (index, label) in labels().iter().take(2).enumerate() {
-                                ui.colored_label(palette.text, egui::RichText::new(label).monospace());
-                                let edit = egui::TextEdit::singleline(&mut form.fields[index]).password(index == KEY_FIELD);
-                                ui.add_enabled_ui(enabled, |ui| {
-                                    ui.add_sized([ui.available_width(), 40.0], edit);
+                            ui.colored_label(palette.text, egui::RichText::new(labels[CODE_FIELD].as_str()).monospace());
+                            let redeeming = form.redeeming.is_some();
+                            let mut save_setup = false;
+                            ui.add_enabled_ui(enabled, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized([(ui.available_width() - 170.0).max(120.0), 40.0], egui::TextEdit::singleline(&mut form.fields[CODE_FIELD]));
+                                    let button = egui::Button::new(egui::RichText::new("Save setup code").monospace()).min_size(egui::vec2(160.0, 40.0));
+                                    save_setup = ui.add_enabled(!redeeming, button).clicked();
                                 });
-                                let (env_url, env_key) = form.from_env;
-                                if (index == 0 && env_url) || (index == KEY_FIELD && env_key) {
-                                    ui.colored_label(palette.muted, egui::RichText::new(t("gui.relay.env_wins", &[])).monospace());
-                                }
+                            });
+                            ui.colored_label(palette.muted, egui::RichText::new("Type the setup code, then Save setup code: the URL and key are saved (not shown)").monospace());
+                            if save_setup {
+                                form.save_setup_code(ctx);
+                            }
+                            if form.operator {
                                 ui.add_space(14.0);
+                                ui.colored_label(palette.text, egui::RichText::new("Operator passphrase").monospace());
+                                let issuing = form.issuing.is_some() || form.redeeming.is_some();
+                                let mut issue = false;
+                                ui.horizontal(|ui| {
+                                    let edit = egui::TextEdit::singleline(&mut form.passphrase).password(true);
+                                    let response = ui.add_sized([(ui.available_width() - 170.0).max(120.0), 40.0], edit);
+                                    let button = egui::Button::new(egui::RichText::new("Issue setup code").monospace()).min_size(egui::vec2(160.0, 40.0));
+                                    issue = ui.add_enabled(!issuing, button).clicked() || (response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));
+                                });
+                                if issue && !issuing {
+                                    form.start_issue(ctx);
+                                }
+                            }
+                            let (env_url, env_key) = form.from_env;
+                            if env_url || env_key {
+                                ui.colored_label(palette.muted, egui::RichText::new(t("gui.relay.env_wins", &[])).monospace());
+                            }
+                            // The key is shown by its length only.
+                            if !form.key.is_empty() {
+                                ui.colored_label(palette.muted, egui::RichText::new(format!("{} {}", t("gui.relay.label.key", &[]), relay_settings::key_label(&form.key))).monospace());
                             }
                         });
                     ui.add_space(24.0);
@@ -430,12 +630,13 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
                         .show(ui, |ui| {
                             ui.colored_label(palette.accent, egui::RichText::new("SECTION 02  ROOM SETTINGS").monospace());
                             ui.add_space(14.0);
-                            for (index, label) in labels().iter().enumerate().skip(2) {
-                                let field_label = if index == 2 { "DISPLAY ID" } else { label };
-                                let label_color = if index == 2 { palette.muted } else { palette.text };
-                                ui.colored_label(label_color, egui::RichText::new(field_label).monospace());
+                            // The rows in Python's order: trust code, display name (generated, read-only), room ID.
+                            for index in [TRUST_FIELD, NAME_FIELD, ROOM_FIELD] {
+                                let read_only = index == NAME_FIELD;
+                                let label_color = if read_only { palette.muted } else { palette.text };
+                                ui.colored_label(label_color, egui::RichText::new(labels[index].as_str()).monospace());
                                 let edit = egui::TextEdit::singleline(&mut form.fields[index]);
-                                ui.add_enabled_ui(enabled && index != 2, |ui| {
+                                ui.add_enabled_ui(enabled && !read_only, |ui| {
                                     ui.add_sized([ui.available_width(), 40.0], edit);
                                 });
                                 ui.add_space(14.0);
@@ -490,33 +691,154 @@ mod tests {
     }
 
     fn form_at(state: &Path) -> Form {
-        Form { mode: Mode::Local, fields: Default::default(), message: String::new(), from_env: (false, false), mine: None, short_id: String::new(), state: state.to_path_buf(), creating: None }
+        Form {
+            mode: Mode::Local,
+            url: String::new(),
+            key: String::new(),
+            setup_code: String::new(),
+            trust_check: None,
+            fields: Default::default(),
+            message: String::new(),
+            from_env: (false, false),
+            mine: None,
+            short_id: String::new(),
+            state: state.to_path_buf(),
+            creating: None,
+            redeeming: None,
+            operator: false,
+            passphrase: String::new(),
+            issuing: None,
+        }
+    }
+
+    /// A Supabase form with a trust code, a display name and a room ID, and no setup code and no saved URL and key.
+    fn supabase_form(state: &Path) -> Form {
+        let mut form = form_at(state);
+        form.mode = Mode::Supabase;
+        form.fields = [String::new(), "12345678".into(), "Alice".into(), "abcd2345".into()];
+        form
     }
 
     #[test]
-    fn the_key_is_shown_by_length_only() {
-        let mut form = form_at(&folder("mask"));
-        form.fields[KEY_FIELD] = "dummy-test-key".into();
-        assert_eq!(form.shown_label(KEY_FIELD), "(14 chars)");
+    fn a_typed_setup_code_is_not_redeemed_by_the_final_save() {
+        let mut form = supabase_form(&folder("typed"));
+        form.url = "https://example.supabase.co".into();
+        form.key = "dummy-test-key".into();
+        form.fields[CODE_FIELD] = "abcd-2345".into();
+        assert!(matches!(form.next_step(), Step::Refuse(message) if message.contains("Save setup code")));
+    }
+
+    #[test]
+    fn the_save_setup_code_button_refuses_a_malformed_code_without_a_request() {
+        let mut form = supabase_form(&folder("button"));
+        form.fields[CODE_FIELD] = "ABC".into();
+        form.save_setup_code(&egui::Context::default());
+        assert!(form.redeeming.is_none());
+        assert!(form.message.contains("8자리"), "{}", form.message);
+    }
+
+    #[test]
+    fn the_final_save_keeps_the_saved_setup_code() {
+        let dir = folder("keep_code");
+        let mut form = supabase_form(&dir);
+        form.url = "https://example.supabase.co".into();
+        form.key = "dummy-test-key".into();
+        form.setup_code = "ABCD2345".into();
+        form.fields[ROOM_FIELD] = "ABCD2345".into();
+        assert!(form.save_now());
+        assert_eq!(relay_settings::load_saved(&dir).setup_code, "ABCD2345");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_trust_refusal_shows_only_while_the_opening_message_is_still_shown() {
+        let mut message = String::new();
+        apply_trust(&mut message, "", true);
+        assert_eq!(message, t("room.trust_wrong", &[]));
+        let mut newer = "saved".to_string();
+        apply_trust(&mut newer, "", true);
+        assert_eq!(newer, "saved", "a late refusal does not replace a newer message");
+        let mut accepted = String::new();
+        apply_trust(&mut accepted, "", false);
+        assert_eq!(accepted, "", "an accepted trust code shows nothing");
+    }
+
+    #[test]
+    fn a_join_refused_with_403_gives_the_trust_message() {
+        match relay_rest::read_join_room_response(403, "") {
+            Err(error) => assert_eq!(error, t("room.trust_wrong", &[])),
+            Ok(_) => panic!("403 must not join"),
+        }
+    }
+
+    #[test]
+    fn an_issue_answer_shows_the_code_or_the_reason() {
+        assert_eq!(issue_message(Ok("ABCD2345".into())), "new setup code: ABCD2345 (20 uses, 7 days; write it down now)");
+        assert_eq!(issue_message(Err("wrong passphrase".into())), "issue failed: wrong passphrase");
+    }
+
+    #[test]
+    fn f9_opens_the_operator_row_and_other_keys_do_not() {
+        let ctx = egui::Context::default();
+        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        ctx.begin_pass(egui::RawInput { events: vec![key(egui::Key::F9)], ..Default::default() });
+        assert!(operator_key(&ctx));
+        let _ = ctx.end_pass();
+        ctx.begin_pass(egui::RawInput { events: vec![key(egui::Key::F8)], ..Default::default() });
+        assert!(!operator_key(&ctx));
+        let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn issuing_without_a_passphrase_sends_no_request() {
+        let mut form = supabase_form(&folder("issue"));
+        form.start_issue(&egui::Context::default());
+        assert!(form.issuing.is_none());
+        assert!(form.message.contains("운영자 암호"), "{}", form.message);
+    }
+
+    #[test]
+    fn saved_url_and_key_are_kept_when_no_code_is_typed() {
+        let dir = folder("kept");
+        let mut form = supabase_form(&dir);
+        form.url = "https://example.supabase.co".into();
+        form.key = "dummy-test-key".into();
+        assert_eq!(form.next_step(), Step::Write);
+        assert!(form.save_now());
+        let saved = relay_settings::load_saved(&dir);
+        assert_eq!(saved.url, "https://example.supabase.co");
+        assert_eq!(saved.key, "dummy-test-key");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn with_no_code_and_no_saved_url_and_key_the_save_refuses_and_asks_for_the_code() {
+        let form = supabase_form(&folder("neither"));
+        match form.next_step() {
+            Step::Refuse(message) => assert!(message.contains(&labels()[CODE_FIELD]), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[test]
     fn a_supabase_save_names_the_missing_fields_and_writes_nothing() {
-        let dir = folder("refused");
-        let mut form = form_at(&dir);
-        form.mode = Mode::Supabase;
-        form.fields[0] = "https://example.supabase.co".into();
-        assert!(!form.save());
-        assert!(form.message.contains(&t("gui.relay.label.key", &[])) && form.message.contains(&t("gui.relay.label.name", &[])), "{}", form.message);
-        assert!(!dir.join(relay_settings::FILE).exists());
+        let mut form = supabase_form(&folder("refused"));
+        form.url = "https://example.supabase.co".into();
+        form.key = "dummy-test-key".into();
+        form.fields[NAME_FIELD].clear();
+        match form.next_step() {
+            Step::Refuse(message) => assert!(message.contains(&labels()[NAME_FIELD]), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[test]
     fn a_local_save_keeps_the_fields_and_writes_the_mode() {
         let dir = folder("local");
         let mut form = form_at(&dir);
-        form.fields[2] = "Alice".into();
-        assert!(form.save());
+        form.fields[NAME_FIELD] = "Alice".into();
+        assert_eq!(form.next_step(), Step::Write);
+        assert!(form.save_now());
         let saved = relay_settings::load_saved(&dir);
         assert_eq!(saved.mode, Mode::Local);
         assert_eq!(saved.name, "Alice");
@@ -526,10 +848,10 @@ mod tests {
     #[test]
     fn a_complete_supabase_save_is_written_without_a_byte_order_mark() {
         let dir = folder("good");
-        let mut form = form_at(&dir);
-        form.mode = Mode::Supabase;
-        form.fields = ["https://example.supabase.co".into(), "dummy-test-key".into(), "Alice".into(), "abcd2345".into()];
-        assert!(form.save());
+        let mut form = supabase_form(&dir);
+        form.url = "https://example.supabase.co".into();
+        form.key = "dummy-test-key".into();
+        assert!(form.save_now());
         let bytes = std::fs::read(dir.join(relay_settings::FILE)).unwrap();
         assert!(!bytes.starts_with(&[0xEF, 0xBB, 0xBF]), "written without BOM");
         let saved = relay_settings::load_saved(&dir);
@@ -541,7 +863,7 @@ mod tests {
     #[test]
     fn a_signed_create_body_has_the_required_fields() {
         let nonce = "00".repeat(16);
-        let body = signed_room_body(&[7; 32], RoomAction::Create, "", "Alice", 1_700_000_000, &nonce).unwrap();
+        let body = signed_room_body(&[7; 32], RoomAction::Create, "", "Alice", "12345678", 1_700_000_000, &nonce).unwrap();
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
         for field in ["peer_pk", "display_name", "ts", "nonce", "sig"] {
             assert!(value.get(field).is_some(), "{field} missing from {body}");
