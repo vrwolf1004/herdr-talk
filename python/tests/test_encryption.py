@@ -447,6 +447,14 @@ class PeerCapTests(unittest.TestCase):
         self.assertIsNone(self._announce(chat, keys[talk.MAX_TOTAL_PEERS], talk.MAX_TOTAL_PEERS), "the eleventh is ignored")
         self.assertIsNotNone(self._announce(chat, keys[0], 0), "a known peer still passes")
 
+    def test_a_verified_peer_still_gets_in_when_unverified_ones_fill_the_total(self):
+        chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        for index in range(talk.MAX_TOTAL_PEERS):
+            self.assertIsNotNone(self._announce(chat, bytes([100 + index]) * 32, 50 + index))
+        verified = self._verified(chat, 0)
+        self.assertIsNotNone(self._announce(chat, verified, 0), "a trusted peer is not shut out by the total cap")
+        self.assertIsNone(self._announce(chat, bytes([200]) * 32, 99), "an unverified newcomer still is")
+
     def test_unverified_peers_do_not_take_a_place(self):
         chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
         keys = [self._verified(chat, index) for index in range(talk.MAX_PEERS - 2)]

@@ -624,11 +624,13 @@ def remember_peer(chat, info, ip):
     if key is not None and not trusted:
         chat.waiting_since.setdefault(key, time.time())
     # At most MAX_PEERS people including this PC, counting only verified peers: a new peer past that is ignored (a known
-    # peer's announcements always pass). An unverified peer does not take a place.
+    # peer's announcements always pass). An unverified peer does not take a place. The MAX_TOTAL_PEERS cap is for unverified
+    # and plain entries only, so a verified peer is never shut out by them.
     here = chat.fresh_peers()
     known_peer = any(known.get("id") == peer_id for known in here.values())
     verified = sum(1 for known in here.values() if known.get("key") is not None and chat.trusts(known["key"]))
-    if not known_peer and (verified >= MAX_PEERS - 1 or len(here) >= MAX_TOTAL_PEERS):
+    full = verified >= MAX_PEERS - 1 or (not trusted and len(here) >= MAX_TOTAL_PEERS)
+    if not known_peer and full:
         return None
     entry = {"id": peer_id, "name": name, "ip": ip, "port": port, "seen": time.time(), "key": key}
     with chat.peers_lock:

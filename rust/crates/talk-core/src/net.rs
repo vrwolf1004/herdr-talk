@@ -206,15 +206,24 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
         chat.note_waiting(key);
     }
     // A room holds MAX_PEERS with this PC. Only verified (trusted) peers count: a new peer is ignored while MAX_PEERS - 1
-    // of them are here. Unverified peers do not take a place. Known peers always pass.
+    // of them are here. Known peers always pass.
     let here = chat.fresh_peers();
-    // Every peer counts here, verified or not; a known peer always passes.
-    if here.len() >= MAX_TOTAL_PEERS && !here.iter().any(|known| known.id == id) {
+    let is_known = here.iter().any(|known| known.id == id);
+    let verified = |known: &Peer| known.key.as_deref().is_some_and(|key| chat.trusts(key));
+    if !is_known && here.iter().filter(|known| verified(known)).count() >= MAX_PEERS - 1 {
         return;
     }
-    let verified = here.iter().filter(|known| known.key.as_deref().is_some_and(|key| chat.trusts(key))).count();
-    if verified >= MAX_PEERS - 1 && !here.iter().any(|known| known.id == id) {
-        return;
+    // Unverified and keyless peers have their own cap of MAX_TOTAL_PEERS: when it is full, the one quietest for longest makes room.
+    // Trusted peers are never held back by it.
+    let trusted_new = key.as_deref().is_some_and(|key| chat.trusts(key));
+    if !is_known && !trusted_new {
+        let unverified: Vec<&Peer> = here.iter().filter(|known| !verified(known)).collect();
+        if unverified.len() >= MAX_TOTAL_PEERS {
+            if let Some(oldest) = unverified.iter().min_by_key(|known| known.seen) {
+                let (oid, oport, oip) = (oldest.id.clone(), oldest.port, oldest.ip.clone());
+                chat.peers.lock().unwrap().retain(|known| !(known.id == oid && known.port == oport && known.ip == oip));
+            }
+        }
     }
     let peer = Peer { id: id.to_string(), name: name.clone(), ip: ip.clone(), port, seen: Instant::now(), key: key.clone() };
     let mut peers = chat.peers.lock().unwrap();
@@ -855,25 +864,26 @@ mod tests {
     }
 
     #[test]
-    fn the_total_list_is_capped_at_ten_and_a_known_peer_still_passes() {
+    fn the_unverified_cap_makes_room_by_evicting_the_quietest_and_a_trusted_peer_is_never_held_back() {
         let chat = chat();
         let key = |n: u8| [n; 32];
         let packet = |n: u8| json!({"app": APP, "id": store::peer_id(&key(n)), "name": format!("P{n}"), "port": 9, "key": store::to_hex(&key(n))}).to_string();
-        // Ten unverified peers fill the list: none of them is verified, so only the total limit applies.
+        // Ten unverified peers fill their cap.
         for n in 1..=MAX_TOTAL_PEERS as u8 {
             remember_peer(&chat, packet(n).as_bytes(), format!("10.0.5.{n}"));
         }
         assert_eq!(chat.fresh_peers().len(), MAX_TOTAL_PEERS);
-        // The eleventh is refused, verified or not.
+        // An unverified newcomer makes room: the quietest (the first one) goes.
         remember_peer(&chat, packet(50).as_bytes(), "10.0.5.50".into());
-        assert_eq!(chat.fresh_peers().len(), MAX_TOTAL_PEERS, "the unverified eleventh is ignored");
+        assert_eq!(chat.fresh_peers().len(), MAX_TOTAL_PEERS, "still ten");
+        assert!(!chat.fresh_peers().iter().any(|peer| peer.key.as_deref() == Some(&key(1)[..])), "the quietest is gone");
+        // A trusted peer is admitted even with the unverified cap full.
         chat.trusted.lock().unwrap().push(Trusted { name: "P51".into(), key: key(51).to_vec(), ip: "10.0.5.51".into() });
         remember_peer(&chat, packet(51).as_bytes(), "10.0.5.51".into());
-        assert_eq!(chat.fresh_peers().len(), MAX_TOTAL_PEERS, "a verified eleventh is ignored too");
+        assert!(chat.fresh_peers().iter().any(|peer| peer.key.as_deref() == Some(&key(51)[..])), "the trusted peer is admitted");
         // A peer already in the list still passes (its announce refreshes it).
         remember_peer(&chat, packet(4).as_bytes(), "10.0.5.4".into());
-        assert_eq!(chat.fresh_peers().len(), MAX_TOTAL_PEERS, "a known peer still passes");
-        assert!(chat.fresh_peers().iter().any(|peer| peer.key.as_deref() == Some(&key(4)[..])));
+        assert!(chat.fresh_peers().iter().any(|peer| peer.key.as_deref() == Some(&key(4)[..])), "a known peer still passes");
     }
 
     #[test]
