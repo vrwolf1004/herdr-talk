@@ -13,24 +13,24 @@ Chat with people on other PCs from inside herdr. Nearby peers connect directly o
 
 ## Dashboard design
 
-Chat pane (Python edition, the default):
+Chat pane (Python edition, the default), English screen:
 
 ```text
 ▣ HERDR-TALK                                                    SYS.VER 1.0
 ────────────────────────────────────────────────────────────────────────
 COMMUNICATION LOG
-herdr-talk: 당신의 이름은 '서연'입니다 (TCP 포트 55668). 명령어는 /help를 입력하세요.
-[23:33] 서연 (나) : 하하
-[23:33] 하준 : dho
+herdr-talk: your name is 'Haruto' (TCP port 52311). Type /help for commands.
+[23:33] Haruto (you) : hello!
+[23:33] Liam : hi, anyone here?
 CONNECTED NODES
-HOST/YOU 서연, 하준, 지호
+HOST/YOU Haruto, Liam, Jiho
 ────────────────────────────────────────────────────────────────────────
-MESSAGE > 메시지를 입력하세요...
-[방장]  상대: 2 · CLOUD SERVICE · room ID: PRXALBYO · setup code: HBJW1MI5   [CONNECTED]  F1 도움말
+MESSAGE > type a message...
+[host]  peers: 2 · CLOUD SERVICE · room ID: PRXALBYO · setup code: HBJW1MI5   [CONNECTED]  F1 help
 ```
 
-- Each message line is `[HH:MM] name : text`. Your own lines show `(나)` after your name.
-- The status line shows the host badge `[방장]`, the peer count, the mode (`BASE STATION` or `CLOUD SERVICE`), and in cloud mode the room ID and setup code. A problem is appended after them.
+- Each message line is `[HH:MM] name : text`. Your own lines show `(you)` after your name.
+- The status line shows the host badge `[host]`, the peer count, the mode (`BASE STATION` or `CLOUD SERVICE`), and in cloud mode the room ID and setup code. A problem is appended after them.
 - `F1` shows the help, `F3` switches the language.
 
 ## Installation

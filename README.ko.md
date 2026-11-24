@@ -8,17 +8,25 @@ herdr 안에서 다른 PC의 사람과 채팅합니다. 같은 네트워크의 �
 
 ## 대시보드 디자인
 
-채팅 pane:
+채팅 pane (Python 판, 기본):
 
 ```text
-herdr-talk: 내 이름은 'Haruto' (TCP port 52311). 명령은 /help를 입력하세요.
-* Liam 접속 (172.31.99.181)
-
-Liam: hi, anyone here?
-Haruto (나): hello!
-
->
+▣ HERDR-TALK                                                    SYS.VER 1.0
+────────────────────────────────────────────────────────────────────────
+COMMUNICATION LOG
+herdr-talk: 당신의 이름은 '서연'입니다 (TCP 포트 55668). 명령어는 /help를 입력하세요.
+[23:33] 서연 (나) : 하하
+[23:33] 하준 : dho
+CONNECTED NODES
+HOST/YOU 서연, 하준, 지호
+────────────────────────────────────────────────────────────────────────
+MESSAGE > 메시지를 입력하세요...
+[방장]  상대: 2 · CLOUD SERVICE · room ID: PRXALBYO · setup code: HBJW1MI5   [CONNECTED]  F1 도움말
 ```
+
+- 메시지 줄은 `[HH:MM] 이름 : 내용` 형식입니다. 내 메시지는 이름 뒤에 `(나)`가 붙습니다.
+- 상태 줄에는 방장 표시 `[방장]`, 상대 수, 모드(`BASE STATION` 또는 `CLOUD SERVICE`)가 나오고, 클라우드 모드에서는 방 ID와 설정 코드도 나옵니다. 문제가 있으면 뒤에 덧붙입니다.
+- `F1`은 도움말, `F3`은 언어 전환입니다.
 
 이 플러그인은 Agents 사이드바 블록 대신 채팅 pane을 사용합니다. 현재 구현은 같은 LAN에서만 동작하며 UDP 브로드캐스트로 상대를 찾고 TCP로 메시지를 직접 보냅니다. 확인된 상대와의 메시지는 암호화됩니다(Noise). 메시지는 저장되지 않습니다. 자세한 내용은 [설정: 암호화](docs/configuration.md#encryption)를 참고하세요.
 
