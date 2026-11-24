@@ -7,6 +7,8 @@
 
 pub mod chat;
 pub mod choice_timer;
+pub mod clock;
+pub mod control;
 pub mod i18n;
 pub mod net;
 pub mod phone;

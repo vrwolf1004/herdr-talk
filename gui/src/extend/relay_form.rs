@@ -2,7 +2,7 @@
 //! when relay.json has no `mode`, and the settings window (`Form`, Ctrl+R and the top-bar button) with the mode row, the setup-code row and the room rows.
 //! The rules (validation, saving, BOM, mode, texts) live in talk-core; this file only draws and keeps the typed text.
 
-use crate::Palette;
+use crate::extend::Palette;
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use talk_core::choice_timer::ChoiceTimer;
@@ -26,6 +26,15 @@ fn labels() -> [String; 4] {
 fn apply_trust(message: &mut String, opened: &str, refused: bool) {
     if refused && message == opened {
         *message = t("room.trust_wrong", &[]);
+    }
+}
+
+/// Takes the trust check's answer if it has come back, and applies it with the message as it is now.
+fn poll_trust(form: &mut Form) {
+    let answer = form.trust_check.as_ref().and_then(|(receiver, opened)| receiver.try_recv().ok().map(|refused| (refused, opened.clone())));
+    if let Some((refused, opened)) = answer {
+        form.trust_check = None;
+        apply_trust(&mut form.message, &opened, refused);
     }
 }
 
@@ -286,6 +295,12 @@ impl Form {
     /// The Save setup code button (Python's F2): redeem the typed code now and store its URL and key.
     fn save_setup_code(&mut self, ctx: &egui::Context) {
         match relay_rest::normalize_setup_code(self.fields[CODE_FIELD].trim()) {
+            Some(code) if code == self.setup_code && !self.url.is_empty() => {
+                self.message = match relay_settings::save_connection(&self.state, &self.url, &self.key, &self.setup_code) {
+                    Ok(()) => t("gui.relay.setup_saved", &[]),
+                    Err(error) => t("gui.relay.not_saved", &[("error", &error)]),
+                };
+            }
             Some(code) => self.start_redeem(ctx, code),
             None => self.message = t("setup.invalid", &[]),
         }
@@ -316,7 +331,10 @@ impl Form {
             return Step::Write;
         }
         let labels = labels();
-        match relay_settings::check_save(&self.settings(), &self.fields[CODE_FIELD]) {
+        // The input keeps the saved code after a save: that code is already redeemed, so it is not a pending one.
+        let typed = relay_rest::normalize_setup_code(self.fields[CODE_FIELD].trim());
+        let pending = if typed.as_deref() == Some(self.setup_code.as_str()) { "" } else { self.fields[CODE_FIELD].as_str() };
+        match relay_settings::check_save(&self.settings(), pending) {
             Ok(()) => Step::Write,
             Err(SaveRefusal::UnredeemedCode) => Step::Refuse(t("gui.relay.save_code_first", &[])),
             Err(SaveRefusal::MissingFields(missing)) => {
@@ -512,11 +530,7 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
         }
     }
     // The trust check from `open`: show the refusal in the message line; keep polling until it answers.
-    let answer = form.trust_check.as_ref().and_then(|(receiver, opened)| receiver.try_recv().ok().map(|refused| (refused, opened.clone())));
-    if let Some((refused, opened)) = answer {
-        form.trust_check = None;
-        apply_trust(&mut form.message, &opened, refused);
-    }
+    poll_trust(form);
     if form.trust_check.is_some() {
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
@@ -537,8 +551,8 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
         form.redeeming = None;
         match answer {
             Ok((url, key, code)) => {
-                // The code is single-use: clear it once redeemed, so a retry uses the kept URL and key.
-                form.fields[CODE_FIELD].clear();
+                // The code stays in the input after a save; pressing save again with the same code only re-saves (no second redeem).
+                form.fields[CODE_FIELD] = code.clone();
                 form.url = url;
                 form.key = key;
                 form.setup_code = code;
@@ -724,6 +738,18 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_code_left_in_the_input_does_not_block_the_final_save() {
+        let mut form = supabase_form(&folder("saved-code-input"));
+        form.url = "https://example.supabase.co".into();
+        form.key = "k".into();
+        form.setup_code = "ABCD2345".into();
+        form.fields[CODE_FIELD] = "ABCD-2345".into();
+        assert!(matches!(form.next_step(), Step::Write));
+        form.fields[CODE_FIELD] = "WXYZ6789".into();
+        assert!(matches!(form.next_step(), Step::Refuse(_)));
+    }
+
+    #[test]
     fn a_typed_setup_code_is_not_redeemed_by_the_final_save() {
         let mut form = supabase_form(&folder("typed"));
         form.url = "https://example.supabase.co".into();
@@ -765,6 +791,27 @@ mod tests {
         let mut accepted = String::new();
         apply_trust(&mut accepted, "", false);
         assert_eq!(accepted, "", "an accepted trust code shows nothing");
+    }
+
+    #[test]
+    fn a_late_trust_refusal_does_not_overwrite_a_message_shown_after_the_window_opened() {
+        // Repro: the window opens with no message, the user saves (a new message), then the slow trust check says no.
+        let dir = folder("late_trust");
+        let mut form = form_at(&dir);
+        let (sender, receiver) = mpsc::channel();
+        form.trust_check = Some((receiver, String::new()));
+        form.message = t("settings.save_ok_local", &[]);
+        sender.send(true).unwrap();
+        poll_trust(&mut form);
+        assert_eq!(form.message, t("settings.save_ok_local", &[]), "the newer message stays");
+        assert!(form.trust_check.is_none(), "the answer is taken once");
+        // And the answer still shows when nothing newer was written in the meantime.
+        let (sender, receiver) = mpsc::channel();
+        form.trust_check = Some((receiver, String::new()));
+        form.message.clear();
+        sender.send(true).unwrap();
+        poll_trust(&mut form);
+        assert_eq!(form.message, t("room.trust_wrong", &[]));
     }
 
     #[test]

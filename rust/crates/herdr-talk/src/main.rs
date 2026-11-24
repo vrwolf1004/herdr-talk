@@ -1,98 +1,20 @@
 //! herdr-talk: chat between PCs on the same network, as a herdr plugin.
+//! This file only starts the command and assembles the chat with the screen (see `run`).
 
-mod control;
-mod first_run;
-mod settings_form;
-mod dock;
-mod herdr_api;
-mod screen;
+mod core;
+mod extend;
 
+use crate::core::commands::{USAGE, parse_run, serve, dock_start, dock_stop, list_sessions, open_chat};
+use crate::core::commands::{tidy_sessions, RunArgs, AGENT_ID, DOCK_KEY};
+use crate::core::control;
+use crate::core::dock::{self, keep_dock_block, SOURCE};
+use crate::core::herdr_api;
+use crate::extend::screen;
 use serde_json::json;
 use std::env;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
-use talk_core::{start, t, udp_port, Chat};
-
-const DOCK_KEY: &str = "herdr-talk";
-const DOCK_REPORT: Duration = Duration::from_secs(2);
-const DOCK_TOKEN_TTL_MS: u64 = 15_000;
-const AGENT_ID: &str = "talk";
-const SOURCE: &str = "plugin:herdr-talk";
-const USAGE: &str = "usage: herdr-talk <run [--session ID] [--name NAME] [--tcp-port N] [--udp-port N] [--dock] [--pane ID] | serve [--session ID] [--name NAME] [--tcp-port N] [--udp-port N] | sessions | open | dock-start | dock-stop>";
-
-#[derive(Default)]
-struct RunArgs {
-    name: Option<String>,
-    tcp_port: Option<u16>,
-    udp_port: Option<u16>,
-    dock: bool,
-    pane: Option<String>,
-    /// The session folder to use (a session id, or "default"). None: a new session.
-    session: Option<String>,
-}
-
-fn parse_run(args: &[String]) -> Result<RunArgs, String> {
-    let mut parsed = RunArgs::default();
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        let mut value = || args.next().cloned().ok_or(format!("{arg} needs a value"));
-        let port = |text: String| text.parse::<u16>().map_err(|_| format!("{arg}: not a port: {text}"));
-        match arg.as_str() {
-            "--name" => parsed.name = Some(value()?),
-            "--tcp-port" => parsed.tcp_port = Some(port(value()?)?),
-            "--udp-port" => parsed.udp_port = Some(port(value()?)?),
-            "--pane" => parsed.pane = Some(value()?),
-            "--session" => parsed.session = Some(value()?),
-            "--dock" => parsed.dock = true,
-            other => return Err(format!("unknown option: {other}")),
-        }
-    }
-    if parsed.dock && parsed.pane.is_none() {
-        return Err("--dock needs --pane".to_string());
-    }
-    Ok(parsed)
-}
-
-fn this_program() -> Result<String, String> {
-    env::current_exe().map(|path| path.to_string_lossy().into_owned()).map_err(|error| error.to_string())
-}
-
-/// Split the pane below the current one and run the chat there. After Ctrl+C its shell prompt stays.
-fn open_chat() -> Result<(), String> {
-    let anchor = env::var("HERDR_PANE_ID").map_err(|_| t("open.no_pane", &[]))?;
-    let program = this_program()?;
-    let folder = env::current_exe().ok().and_then(|path| path.parent().map(|parent| parent.to_string_lossy().into_owned())).unwrap_or_default();
-    let split = herdr_api::cli(&["pane", "split", &anchor, "--direction", "down", "--cwd", &folder])?;
-    let pane = split["pane"]["pane_id"].as_str().ok_or("herdr pane split gave no pane id")?;
-    herdr_api::cli(&["pane", "run", pane, &program, "run"]).map(|_| ())
-}
-
-/// Keep telling the dock block how many people are connected, until the chat ends.
-fn keep_dock_block(pane: String, chat: Arc<Chat>) {
-    while !chat.stop.is_set() {
-        let count = chat.fresh_peers().len().to_string();
-        herdr_api::try_request("pane.report_metadata", json!({
-            "pane_id": pane,
-            "source": SOURCE,
-            "display_agent": t("dock.agent_name", &[("count", &count)]),
-            "tokens": {},
-            "ttl_ms": DOCK_TOKEN_TTL_MS,
-        }));
-        chat.stop.wait(DOCK_REPORT);
-    }
-}
-
-/// Remove node folders whose node has ended without cleaning up, each after its relay row (best effort). In the
-/// background: the start does not wait for the relay. Quiet: a folder that cannot be removed is only named, through `report`.
-fn tidy_sessions(report: impl Fn(String) + Send + 'static) {
-    thread::spawn(move || {
-        for id in talk_core::store::remove_dead_sessions(&talk_core::store::base_dir(), &talk_core::relay_chat::leave_folder) {
-            report(format!("could not remove dead session {id}"));
-        }
-    });
-}
+use talk_core::{start, t, udp_port};
 
 fn run(args: RunArgs) -> Result<(), String> {
     talk_core::store::choose_session(args.session.as_deref())?;
@@ -147,83 +69,6 @@ fn run(args: RunArgs) -> Result<(), String> {
     result
 }
 
-/// Chat without a screen, for a GUI: only the control channel runs. Ends on Ctrl+C, a termination
-/// signal, or a `shutdown` request, and removes the control file on the way out.
-fn serve(args: RunArgs) -> Result<(), String> {
-    talk_core::store::choose_session(args.session.as_deref())?;
-    tidy_sessions(|line| eprintln!("{line}"));
-    if args.dock || args.pane.is_some() {
-        return Err("serve has no dock: --dock and --pane belong to run".to_string());
-    }
-    let udp = match args.udp_port {
-        Some(port) => port,
-        None => udp_port()?,
-    };
-    let chat = start(args.name, args.tcp_port.unwrap_or(0), udp).map_err(|error| error.to_string())?;
-    chat.set_lan_listening(false); // no LAN peer is remembered until the mode is known
-    let control = control::serve(chat.clone(), &talk_core::store::state_dir(), true).map_err(|error| error.to_string())?;
-    chat.watch_host();
-    // The relay runs here too, so a GUI (which talks to this serve) gets it. A bad setting only shows a line.
-    if let Err(error) = talk_core::relay_chat::start(&chat, &talk_core::store::state_dir()) {
-        chat.say(format!("relay: {error}"));
-    }
-    if talk_core::relay_settings::needs_first_run(&talk_core::store::state_dir()) {
-        chat.set_lan_listening(false); // the GUI's first-run choice is still to come: its relay_reload starts the listening
-    }
-    let signalled = chat.clone();
-    ctrlc::set_handler(move || signalled.stop.set()).map_err(|error| error.to_string())?;
-    let me = chat.me.lock().unwrap().clone();
-    chat.say(t("start.hello", &[("name", &me.name), ("port", &me.port.to_string())]));
-    while !chat.stop.is_set() {
-        chat.stop.wait(Duration::from_secs(1));
-    }
-    chat.release_host();
-    drop(control);
-    Ok(())
-}
-
-fn dock_start() -> Result<(), String> {
-    let folder = dock::plugins_folder();
-    let stored = dock::read_dock_pane(&folder, DOCK_KEY);
-    let agents = herdr_api::cli(&["agent", "list"])?;
-    let running = agents["agents"].as_array().into_iter().flatten()
-        .any(|agent| !stored.is_empty() && dock::pane_id(agent) == stored && agent["agent"] == AGENT_ID);
-    if running {
-        return Ok(());
-    }
-    let pane = dock::ensure_dock_pane(DOCK_KEY, &folder)?;
-    herdr_api::cli(&["pane", "run", &pane, &this_program()?, "run", "--dock", "--pane", &pane]).map(|_| ())
-}
-
-fn dock_stop() -> Result<(), String> {
-    let pane = dock::read_dock_pane(&dock::plugins_folder(), DOCK_KEY);
-    if !pane.is_empty() {
-        herdr_api::try_request("pane.release_agent", json!({"pane_id": pane, "source": SOURCE, "agent": AGENT_ID}));
-        if let Some(workspace) = dock::dock_workspace_id()? {
-            let panes = dock::workspace_panes(&workspace)?;
-            let others = panes.iter().any(|other| dock::pane_id(other) != pane && !dock::is_sidebar(other));
-            // Closing can fail when the pane is already gone, which is the state we want.
-            let _ = if others {
-                herdr_api::cli(&["pane", "close", &pane])
-            } else {
-                herdr_api::cli(&["workspace", "close", &workspace])
-            };
-        }
-    }
-    dock::release_dock_pane(DOCK_KEY)
-}
-
-/// Print the sessions under the base folder: id, folder and the connection mode saved there. The default folder first.
-fn list_sessions() -> Result<(), String> {
-    let base = talk_core::store::base_dir();
-    let mut rows = vec![(talk_core::store::DEFAULT_SESSION.to_string(), base.clone())];
-    rows.extend(talk_core::store::list_sessions(&base));
-    for (id, dir) in rows {
-        let mode = talk_core::relay_settings::load_saved(&dir).mode;
-        println!("{id}  {}  mode={}", dir.display(), mode.as_str());
-    }
-    Ok(())
-}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -248,31 +93,6 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse(args: &[&str]) -> Result<RunArgs, String> {
-        parse_run(&args.iter().map(ToString::to_string).collect::<Vec<_>>())
-    }
-
-    #[test]
-    fn parses_run_options() {
-        let parsed = parse(&["--name", "a", "--tcp-port", "47900", "--dock", "--pane", "w1:p1"]).ok().unwrap();
-        assert_eq!(parsed.name.as_deref(), Some("a"));
-        assert_eq!(parsed.tcp_port, Some(47900));
-        assert!(parsed.dock);
-        assert_eq!(parsed.pane.as_deref(), Some("w1:p1"));
-    }
-
-    #[test]
-    fn rejects_bad_options() {
-        for args in [&["--tcp-port", "x"][..], &["--name"], &["--what"], &["--dock"]] {
-            assert!(parse(args).is_err());
         }
     }
 }

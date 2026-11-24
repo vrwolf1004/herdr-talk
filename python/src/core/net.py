@@ -4,6 +4,7 @@ Moved out of talk.py unchanged. core/chat.py holds the chat state and the receiv
 """
 
 import errno
+import os
 import ipaddress
 import json
 import socket
@@ -190,3 +191,22 @@ def _send_encrypted(conn, me, peer_key, message):
     conn.write_frame(handshake.write_message1())
     handshake.read_message2(conn.read_frame())
     conn.write_frame(handshake.send.encrypt(message))
+
+
+DEFAULT_UDP_PORT = 47850  # discovery port, the same on every PC
+UDP_PORT_VARIABLE = "HERDR_TALK_UDP_PORT"  # only for separate test networks: unset means the default
+
+
+def parse_udp_port(text):
+    """The discovery port for a value of HERDR_TALK_UDP_PORT: None or empty gives the default. Anything that is not
+    a port number from 1 to 65535 raises ValueError; it never falls back silently."""
+    if text is None or not text.strip():
+        return DEFAULT_UDP_PORT
+    stripped = text.strip()
+    if stripped.isascii() and stripped.isdigit() and 1 <= int(stripped) <= 65535:
+        return int(stripped)
+    raise ValueError(f"{UDP_PORT_VARIABLE} must be a port number from 1 to 65535, got {text!r}")
+
+
+def udp_port():
+    return parse_udp_port(os.environ.get(UDP_PORT_VARIABLE))

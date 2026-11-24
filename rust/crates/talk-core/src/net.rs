@@ -716,7 +716,7 @@ mod tests {
     fn valid_message_is_shown() {
         let chat = chat_with_plain_text();
         deliver_plain(&chat, r#"{"app":"herdr-talk","from":"Bob","text":"hi"}"#);
-        assert_eq!(texts(&chat), [format!("Bob ({}): hi", t("chat.plain", &[]))]);
+        assert_eq!(texts(&chat), [format!("Bob ({}) : hi", t("chat.plain", &[]))]);
     }
 
     #[test]
@@ -763,14 +763,14 @@ mod tests {
         let chat = chat_with_plain_text();
         deliver_plain(&chat, &json!({"app": APP, "from": "\x07\x02", "text": "hi"}).to_string());
         // A sender of only blanks is unknown, as a sender of nothing is.
-        assert_eq!(texts(&chat), [format!("unknown ({}): hi", t("chat.plain", &[]))]);
+        assert_eq!(texts(&chat), [format!("unknown ({}) : hi", t("chat.plain", &[]))]);
     }
 
     #[test]
     fn plain_sender_colons_and_space_runs_are_removed() {
         let chat = chat_with_plain_text();
         deliver_plain(&chat, &json!({"app": APP, "from": "Bo:b   x", "text": "hi    there"}).to_string());
-        assert_eq!(texts(&chat), [format!("Bob x ({}): hi there", t("chat.plain", &[]))]);
+        assert_eq!(texts(&chat), [format!("Bob x ({}) : hi there", t("chat.plain", &[]))]);
     }
 
     #[test]
@@ -779,7 +779,7 @@ mod tests {
         let chat = chat_with_plain_text();
         deliver_plain(&chat, &json!({"app": APP, "from": "Bob", "text": "first\nBob: forged"}).to_string());
         let label = format!("Bob ({})", t("chat.plain", &[]));
-        assert_eq!(texts(&chat), [format!("{label}: first"), format!("{label}: Bob: forged")]);
+        assert_eq!(texts(&chat), [format!("{label} : first"), format!("{label} : Bob: forged")]);
     }
 
     #[test]
@@ -1043,7 +1043,7 @@ mod tests {
         let me = first.me.lock().unwrap().clone();
         send_to(&to_second, &me, "안녕").unwrap();
         wait_for_lines(&second, 1);
-        assert_eq!(texts(&second), ["A: 안녕"]);
+        assert_eq!(texts(&second), ["A : 안녕"]);
         first.stop.set();
         second.stop.set();
         fs::remove_dir_all(base).ok();
@@ -1085,7 +1085,7 @@ mod tests {
         second.peers.lock().unwrap().push(Peer { id: me_first.id.clone(), name: "A".into(), ip: "127.0.0.1".into(), port: me_first.port, seen: Instant::now(), key: Some(me_first.key.clone()) });
         send_to(&to_second, &me_first, "same pc").unwrap();
         wait_for_lines(&second, 1);
-        assert_eq!(texts(&second), ["A: same pc"]);
+        assert_eq!(texts(&second), ["A : same pc"]);
         first.stop.set();
         second.stop.set();
         fs::remove_dir_all(base).ok();
@@ -1114,7 +1114,7 @@ mod tests {
         let mut conn = TcpStream::connect(("127.0.0.1", to_second.port)).unwrap();
         send_encrypted(&mut conn, &me, to_second.key.as_deref().unwrap(), claimed.as_bytes()).unwrap();
         wait_for_lines(&second, 1);
-        assert_eq!(texts(&second), ["A: hi"]);
+        assert_eq!(texts(&second), ["A : hi"]);
         first.stop.set();
         second.stop.set();
         fs::remove_dir_all(base).ok();

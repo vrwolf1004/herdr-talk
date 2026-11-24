@@ -13,12 +13,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use talk_core::{Chat, Line};
+use talk_core::control::answer;
+use talk_core::Chat;
 
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 const MAX_CLIENTS: usize = 4;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-const LINES_SHOWN: usize = 300;
 
 /// Owns the control file; removes it when the chat ends.
 pub struct Control {
@@ -150,58 +150,6 @@ fn read_request(reader: &mut impl BufRead) -> io::Result<Value> {
     serde_json::from_slice(&line).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-fn answer(chat: &Arc<Chat>, request: &Value, allow_shutdown: bool) -> Value {
-    match request.get("cmd").and_then(Value::as_str) {
-        Some("lines") => {
-            let lines: Vec<Line> = chat.lines();
-            let start = lines.len().saturating_sub(LINES_SHOWN);
-            let rows: Vec<Value> = lines[start..]
-                .iter()
-                .map(|line| json!({"text": line.render(), "mine": line.mine}))
-                .collect();
-            json!({"ok": true, "lines": rows})
-        }
-        Some("peers") => {
-            let peers: Vec<Value> = chat
-                .fresh_peers()
-                .iter()
-                .map(|peer| json!({"name": peer.name, "ip": peer.ip, "port": peer.port}))
-                .collect();
-            // This chat's own name and port, so a GUI can list it above the others.
-            let me = chat.me.lock().unwrap().clone();
-            // Peers waiting for a /join: their name and the code the GUI shows for the comparison.
-            let pending: Vec<Value> = chat.fresh_peers().iter().filter_map(|peer| {
-                let code = chat.sas_for(peer.key.as_deref()?)?;
-                (chat.link_of(peer) == talk_core::chat::Link::Unverified).then(|| json!({"name": peer.name, "code": code}))
-            }).collect();
-            json!({"ok": true, "peers": peers, "pending": pending, "me": {"name": me.name, "port": me.port}, "room": chat.room_names(), "relay": chat.relay_status(), "mode": chat.mode_name()})
-        }
-        Some("send") => match request.get("text").and_then(Value::as_str) {
-            // Same path as typing in the terminal: commands and plain messages both work.
-            Some(text) => {
-                chat.handle(text);
-                json!({"ok": true})
-            }
-            None => json!({"ok": false, "error": "text missing"}),
-        },
-        // The settings were saved (by the GUI or the terminal screen): start the relay again with them.
-        Some("relay_reload") => match talk_core::relay_chat::start(chat, &talk_core::store::state_dir()) {
-            Ok(on) => json!({"ok": true, "on": on}),
-            Err(error) => json!({"ok": false, "error": error}),
-        },
-        // Ctrl+L in the GUI: the same clear as the terminal's Ctrl+L.
-        Some("clear") => {
-            chat.clear_lines();
-            json!({"ok": true})
-        }
-        Some("shutdown") if allow_shutdown => {
-            chat.stop.set();
-            json!({"ok": true})
-        }
-        _ => json!({"ok": false, "error": "unknown cmd"}),
-    }
-}
-
 fn reply(writer: &mut impl Write, value: Value) -> io::Result<()> {
     writer.write_all(format!("{value}\n").as_bytes())?;
     writer.flush()
@@ -224,6 +172,14 @@ mod tests {
         assert!(!gone.exists());
         assert!(own.exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn peers_answer_carries_the_room_status_string() {
+        let chat = Arc::new(Chat::new(talk_core::Me { id: "me".into(), name: "Me".into(), port: 1, key: vec![], secret: vec![] }));
+        // Local mode has no room line: the key is still there, as an empty string the GUI reads as "no room".
+        let answer = answer(&chat, &json!({"cmd": "peers"}), false);
+        assert_eq!(answer["room_status"], json!(""));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use talk_core::relay_key;
 use talk_core::relay_rest::{self, Request};
 use talk_core::relay_settings::{self, Mode, Settings};
 use talk_core::{relay_chat, t, Chat};
-use crate::screen::{classic, paint, Frame, Row, Tone};
+use crate::extend::frame::{classic, paint, Frame, Row, Tone};
 use talk_core::text::char_width;
 
 /// The four field labels, in field order.
@@ -767,13 +767,13 @@ mod tests {
     #[test]
     fn the_input_column_is_the_same_in_every_language() {
         let files = [
-            ("en", include_str!("../../talk-core/locales/en.json")),
-            ("ko", include_str!("../../talk-core/locales/ko.json")),
-            ("ru", include_str!("../../talk-core/locales/ru.json")),
-            ("fr", include_str!("../../talk-core/locales/fr.json")),
-            ("es", include_str!("../../talk-core/locales/es.json")),
-            ("de", include_str!("../../talk-core/locales/de.json")),
-            ("ja", include_str!("../../talk-core/locales/ja.json")),
+            ("en", include_str!("../../../talk-core/locales/en.json")),
+            ("ko", include_str!("../../../talk-core/locales/ko.json")),
+            ("ru", include_str!("../../../talk-core/locales/ru.json")),
+            ("fr", include_str!("../../../talk-core/locales/fr.json")),
+            ("es", include_str!("../../../talk-core/locales/es.json")),
+            ("de", include_str!("../../../talk-core/locales/de.json")),
+            ("ja", include_str!("../../../talk-core/locales/ja.json")),
         ];
         let keys = ["tui.settings.label.setup", "tui.settings.label.trust", "tui.settings.label.name", "tui.settings.label.room"];
         for (lang, text) in files {
@@ -910,6 +910,93 @@ mod tests {
         assert_eq!(saved.mode, Mode::Supabase);
         assert_eq!((saved.url.as_str(), saved.key.as_str()), ("http://127.0.0.1:9", "dummy-test-key"), "no code typed: the saved URL and key are kept");
         assert_eq!(saved.trust, "12345678");
+        chat.stop_relay();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A one-shot local relay: reads one request, answers with `response`. Returns its URL.
+    fn serve_once(response: String) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_millis(300))).unwrap();
+            let mut buf = [0u8; 4096];
+            while matches!(stream.read(&mut buf), Ok(n) if n > 0) {}
+            let _ = stream.write_all(response.as_bytes());
+        });
+        url
+    }
+
+    /// Runs F2 on the form with the given typed code, the relay answering `response`. The URL env var is only set here.
+    fn f2_with_answer(form: &mut Form, chat: &Arc<Chat>, typed: &str, response: String) {
+        // The F2 tests share the env var, so they run one at a time.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var(relay_rest::URL_VARIABLE, serve_once(response));
+        form.fields[SETUP_FIELD] = typed.into();
+        form.focus = SETUP_FIELD + 1;
+        press(form, chat, KeyCode::F(2));
+        std::env::remove_var(relay_rest::URL_VARIABLE);
+    }
+
+    fn ok_answer() -> String {
+        let body = r#"{"url":"http://127.0.0.1:9","key":"dummy-test-key"}"#;
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+    }
+
+    #[test]
+    fn f2_redeems_the_code_and_saves_only_the_connection() {
+        let dir = folder("f2-full");
+        let chat = chat();
+        let mut form = form_at(&dir);
+        form.fields[NAME_FIELD] = "Alice".into();
+        f2_with_answer(&mut form, &chat, "abcd-2345", ok_answer());
+        assert_eq!(form.message, t("tui.settings.setup_saved", &[]));
+        assert_eq!((form.url.as_str(), form.key.as_str(), form.setup_code.as_str()), ("http://127.0.0.1:9", "dummy-test-key", "ABCD2345"));
+        assert!(form.fields[SETUP_FIELD].is_empty(), "the typed code is cleared once redeemed");
+        let saved = relay_settings::load_saved(&dir);
+        assert_eq!((saved.mode, saved.url.as_str(), saved.key.as_str(), saved.setup_code.as_str()), (Mode::Supabase, "http://127.0.0.1:9", "dummy-test-key", "ABCD2345"));
+        assert!(saved.name.is_empty(), "F2 does not save the other fields (the name typed here waits for Enter)");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_refused_f2_keeps_the_typed_code_and_writes_nothing() {
+        let dir = folder("f2-refused");
+        let chat = chat();
+        let mut form = form_at(&dir);
+        f2_with_answer(&mut form, &chat, "abcd-2345", "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into());
+        assert_eq!(form.message, t("setup.wrong", &[]));
+        assert_eq!(form.fields[SETUP_FIELD], "abcd-2345", "the typed code stays for a fix");
+        assert!(form.url.is_empty() && form.key.is_empty());
+        assert!(!dir.join(relay_settings::FILE).exists());
+    }
+
+    #[test]
+    fn enter_after_f2_saves_the_rest_only_when_every_field_is_filled() {
+        let dir = folder("f2-then-enter");
+        let chat = chat();
+        let mut form = form_at(&dir);
+        form.mode = Mode::Supabase; // the checks of a Supabase save apply (Local saves keep the fields)
+        f2_with_answer(&mut form, &chat, "ABCD2345", ok_answer());
+        // Trust and name are still empty: the final save refuses and keeps the connection F2 saved.
+        form.fields = [String::new(), String::new(), String::new(), "ABCD2345".into()];
+        form.focus = FIELDS;
+        press(&mut form, &chat, KeyCode::Enter);
+        assert!(!form.is_saved());
+        assert!(form.message.contains(&t("tui.settings.label.trust", &[])), "{}", form.message);
+        let saved = relay_settings::load_saved(&dir);
+        assert_eq!((saved.url.as_str(), saved.key.as_str()), ("http://127.0.0.1:9", "dummy-test-key"));
+        assert!(saved.trust.is_empty() && saved.name.is_empty());
+        // All fields filled: the final save writes them with the redeemed connection, and the setup code stays.
+        form.fields = [String::new(), "12345678".into(), "Alice".into(), "ABCD2345".into()];
+        press(&mut form, &chat, KeyCode::Enter);
+        assert!(form.is_saved(), "{}", form.message);
+        let saved = relay_settings::load_saved(&dir);
+        assert_eq!((saved.trust.as_str(), saved.name.as_str(), saved.room_code.as_str()), ("12345678", "Alice", "ABCD2345"));
+        assert_eq!((saved.url.as_str(), saved.key.as_str(), saved.setup_code.as_str()), ("http://127.0.0.1:9", "dummy-test-key", "ABCD2345"));
         chat.stop_relay();
         std::fs::remove_dir_all(&dir).unwrap();
     }

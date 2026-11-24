@@ -1,20 +1,26 @@
 //! Shared dock workspace allocation: the parts of herdr-dock-grid's dock_layout.py this plugin uses.
 //! Python plugins share the same registry, markers and lock, so these rules must stay in step with that file.
 
-use crate::herdr_api::cli;
+use crate::core::herdr_api::{cli, try_request};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use talk_core::{t, Chat};
 
 const DOCK_LABEL: &str = "herdr-dock";
 const DOCK_WAIT: Duration = Duration::from_secs(5);
 const DOCK_MARKER_STALE: Duration = Duration::from_secs(10);
 const MAX_DOCKS: usize = 4; // the grid-2x2 policy, the only one there is
+const DOCK_REPORT: Duration = Duration::from_secs(2);
+const DOCK_TOKEN_TTL_MS: u64 = 15_000;
+/// The source name the chat reports its dock block under.
+pub const SOURCE: &str = "plugin:herdr-talk";
 
 fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64()
@@ -418,5 +424,20 @@ mod tests {
         drop(lock);
         assert!(!folder.join("herdr-dock-grid.lock").exists());
         fs::remove_dir_all(folder).unwrap();
+    }
+}
+
+/// Keep telling the dock block how many people are connected, until the chat ends.
+pub fn keep_dock_block(pane: String, chat: Arc<Chat>) {
+    while !chat.stop.is_set() {
+        let count = chat.fresh_peers().len().to_string();
+        try_request("pane.report_metadata", json!({
+            "pane_id": pane,
+            "source": SOURCE,
+            "display_agent": t("dock.agent_name", &[("count", &count)]),
+            "tokens": {},
+            "ttl_ms": DOCK_TOKEN_TTL_MS,
+        }));
+        chat.stop.wait(DOCK_REPORT);
     }
 }

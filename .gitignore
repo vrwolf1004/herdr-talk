@@ -6,3 +6,7 @@ __pycache__/
 
 # Supabase CLI temp files (local only)
 supabase/.temp/
+
+# Python exe build output (python/build, python/dist)
+python/build/
+python/dist/

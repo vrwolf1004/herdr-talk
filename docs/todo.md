@@ -4,6 +4,27 @@
 
 Improvement list for herdr-talk. Items are grouped by area, most important first inside each group.
 
+## 2026-11-24 작업 현황
+
+완료 (테스트 통과, 커밋 전)
+- [x] 채팅 표시 형식 통일 목표: `[HH:MM] 이름 : 내용`. Rust `Line::render`, Rust TUI 메시지 행, Python TUI 메시지 행, 시간 표시 HH:MM.
+- [x] 설정 저장 문구: TUI(Rust·Python)는 "설정 코드 확인됨, 설정 저장됨. 나머지 입력 후 마지막 줄에서 Enter", GUI는 "나머지 입력 후 '저장' 버튼을 누르세요"(7개 언어).
+- [x] GUI 설정 코드 입력칸: 저장 후 코드를 입력칸에 유지하고, 같은 코드 재저장은 상환하지 않는다(회귀 테스트 추가).
+- [x] 제어 채널(serve) 상태에 방 ID·설정 코드 전달(`peers`의 `room_status`). GUI 가 serve 에 붙을 때도 하단 줄에 표시.
+- [x] GUI 창 기본 폭 400px, 하단 줄은 줄바꿈(잘림 방지).
+- [x] 실행 스크립트: `run/run-py-tui.bat`(exe 빌드 후 실행), `run/run-rust-tui.bat`, `run/run-gui.bat`(CLI+GUI 빌드). `python/build-py-tui.bat`로 PyInstaller 단일 exe(`distherdr-talk-py.exe`) 빌드.
+
+진행 중 (워커)
+- [ ] dev1: GUI 문구 i18n 이전, GUI 채팅 줄 [HH:MM], 이어서 GUI core/extend 분리, 이어서 Rust TUI(herdr-talk) core/extend 분리.
+- [ ] dev2: Python TUI core/extend 분리 (talk.py 는 진입점과 조립만).
+
+미확인 / 남은 것
+- [ ] Rust 테스트 실패 일부(`net::tests`, `relay_chat::room_relay::tests`): 표시 형식 변경으로 기대값이 옛 형식. 기대값 정리 필요(dev1 확인).
+- [ ] GUI 실제 화면 확인: 하단 줄 room ID·설정 코드, 저장 문구, 시간 표시. 옛 창과 옛 serve 를 닫고 재실행해야 반영됨.
+- [ ] 실환경 F2·설정 코드 상환(회사 또는 실서버).
+- [ ] 다른 언어 번역(GUI 저장 문구) 원어민 검토.
+- [ ] 커밋 범위: dev1·dev2 변경이 talk-core 와 herdr-talk 에 섞여 있어 커밋 전에 나눠야 함.
+
 ## 보안 리뷰 결정 (2026-11-19)
 
 - [x] **LAN 인원 제한 기준 변경:** 확인된(/join) 상대만 10명(나 포함)에 센다. 확인되지 않은 상대는 인원을 차지하지 않는다. (반영, Rust·Python)
@@ -27,7 +48,7 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 남은 것
 - [ ] **main 병합:** `ui-i18n-f3` 브랜치를 main에 합칠지 결정.
 - [ ] **실환경 확인:** 실제 터미널의 F2·F3·F9 입력, 한글·일본어 칸 정렬, GUI 창의 F3과 입력 칸 높이.
-- [ ] **GUI 채팅 창 번역:** `gui/src/main.rs`의 `CONNECTED NODES`, `COMMUNICATION LOG`, `BASE STATION : CONNECTED` 등 영어 문구.
+- [ ] **GUI 채팅 창 번역 (진행 중, dev1):** `gui/src/main.rs`의 `CONNECTED NODES`, `COMMUNICATION LOG`, `BASE STATION : CONNECTED` 등 영어 문구.
 - [ ] **SYS.VER 1.0:** 상태 문구라 영어로 두었다. 번역할지 결정.
 - [ ] **설정 코드 전체 표시 (보안):** 자동 보안 검토가 마스킹을 권했다. 요청 사항이라 그대로 두었다. 마스킹 여부 결정 필요.
 
@@ -69,7 +90,7 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 
 - [x] **trust 403 경로 테스트 추가 (Rust, GUI)**: 틀린 trust에서 `room_refuses`가 true를 돌려주고 설정 화면으로 돌아가는지 테스트가 없다.
 - [x] **상태 줄 전체 문자열 테스트 (Rust, GUI)**: `[방장] 상대: N · CLOUD SERVICE · room ID · setup code`와 "오류만 붙는다" 규칙을 테스트로 고정한다.
-- [ ] **F2 중간 저장 전체 경로 테스트 (Rust, GUI)**: 상환 성공 후 `save_connection`까지 가는 흐름을 mock 서버로 테스트한다.
+- [x] **F2 중간 저장 전체 경로 테스트 (Rust, GUI)** (2026-11-24, dev1: 로컬 mock 서버 성공·404 거부 테스트): 상환 성공 후 `save_connection`까지 가는 흐름을 mock 서버로 테스트한다.
 - [x] **F9 운영자 발급 키 입력 테스트 (GUI)**: 빈 암호만 테스트되어 있다. 실제 키 입력과 발급 응답 처리를 확인한다.
 - [x] **GUI 하단 바 성공 문구 정리**: 지금은 "relay: room joined" 문구만 숨긴다. Python처럼 성공 문구는 숨기고 오류만 보이게 한다.
 - [x] **GUI 메시지 덮어쓰기 방지**: 늦게 도착한 trust 확인 결과가 더 새로운 메시지를 덮어쓸 수 있다. 메시지 순서를 맞춘다.

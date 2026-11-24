@@ -15,6 +15,7 @@ import relay_chat  # noqa: E402
 import relay_settings  # noqa: E402
 from core import store  # noqa: E402
 import talk  # noqa: E402
+from extend import tui  # noqa: E402
 
 
 class FakeRelay:
@@ -33,7 +34,7 @@ class SettingsScreenTest(unittest.TestCase):
     def test_the_settings_screen_polls_for_a_room_answer_between_keys(self):
         state = tempfile.mkdtemp(prefix="herdr-talk-settings-screen-")
         self.addCleanup(shutil.rmtree, state, True)
-        with mock.patch.object(talk, "read_char_timeout", side_effect=[None, None, ""]) as read,                 mock.patch.object(talk, "_draw"),                 mock.patch("extend.settings_form.SettingsForm.poll", return_value=False) as poll:
+        with mock.patch.object(tui, "read_char_timeout", side_effect=[None, None, ""]) as read,                 mock.patch.object(tui, "_draw"),                 mock.patch("extend.settings_form.SettingsForm.poll", return_value=False) as poll:
             outcome, _message = talk.settings_screen(state)
         self.assertEqual(outcome, "cancel")
         self.assertEqual(poll.call_count, 2, "polled on each empty wait")

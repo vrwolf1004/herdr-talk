@@ -17,6 +17,7 @@ sys.path.insert(0, str(SRC))
 os.environ.setdefault("HERDR_TALK_LANG", "en")
 
 import talk  # noqa: E402
+from extend import tui  # noqa: E402
 
 
 class CollectSayTest(unittest.TestCase):
@@ -278,9 +279,9 @@ class ChatStatusRowTest(unittest.TestCase):
         chat.phone_overlay.return_value = ""
         chat.relay_status = relay_status
         frames = []
-        with mock.patch.object(talk, "_enter_screen", return_value=lambda: None), mock.patch.object(talk, "_draw", side_effect=frames.append), \
-                mock.patch.object(talk, "leave_when_idle"), mock.patch.object(talk, "read_char", side_effect=KeyboardInterrupt), \
-                mock.patch.object(talk.shutil, "get_terminal_size", return_value=os.terminal_size((200, 30))):
+        with mock.patch.object(tui, "_enter_screen", return_value=lambda: None), mock.patch.object(tui, "_draw", side_effect=frames.append), \
+                mock.patch.object(tui, "leave_when_idle"), mock.patch.object(tui, "read_char", side_effect=KeyboardInterrupt), \
+                mock.patch.object(tui.shutil, "get_terminal_size", return_value=os.terminal_size((200, 30))):
             with self.assertRaises(KeyboardInterrupt):
                 talk.run_ansi(chat)
         return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frames[0])

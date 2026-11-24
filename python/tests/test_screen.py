@@ -8,6 +8,7 @@ import unittest.mock
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import talk  # noqa: E402
+from extend import tui  # noqa: E402
 from core import chat as core_chat  # noqa: E402
 from extend.settings_form import ACCENT, BACKGROUND, BOLD, BORDER, MUTED, RESET, TEXT, place_row as place  # noqa: E402
 
@@ -105,8 +106,8 @@ class FrameTest(unittest.TestCase):
 
     def test_my_lines_are_bold_green(self):
         frame = self.frame([("hi", True, "Haruto", "12:30:21"), ("yo", False, "Liam", "12:30:22")], cols=40, rows=12)
-        self.assertIn(place(4, f"{MUTED}[12:30:21] {BOLD}{ACCENT}Haruto {talk.t('chat.you')}{RESET}{MUTED} > {BOLD}{ACCENT}hi"), frame)
-        self.assertIn(place(5, f"{MUTED}[12:30:22] {BOLD}{ACCENT}Liam{RESET}{MUTED} > {TEXT}yo"), frame)
+        self.assertIn(place(4, f"{MUTED}[12:30:21] {BOLD}{ACCENT}Haruto {talk.t('chat.you')}{RESET}{MUTED} : {BOLD}{ACCENT}hi"), frame)
+        self.assertIn(place(5, f"{MUTED}[12:30:22] {BOLD}{ACCENT}Liam{RESET}{MUTED} : {TEXT}yo"), frame)
 
     def test_input_row_shows_the_typed_text_at_the_end(self):
         frame = self.frame([], typed="hello")
@@ -207,13 +208,13 @@ class DrawTest(unittest.TestCase):
     def test_an_unchanged_frame_is_not_written_again(self):
         import io
         out = io.StringIO()
-        talk._last_frame = None
+        tui._last_frame = None
         with unittest.mock.patch.object(talk.sys, "stdout", out):
-            talk._draw("one")
-            talk._draw("one")
-            talk._draw("two")
+            tui._draw("one")
+            tui._draw("one")
+            tui._draw("two")
         self.assertEqual(out.getvalue(), "onetwo")
-        talk._last_frame = None
+        tui._last_frame = None
 
 
 class FitTest(unittest.TestCase):

@@ -406,7 +406,7 @@ mod tests {
         show_message(&bob, &identity, &members, &mut names, &mut cache, &row);
         show_message(&bob, &identity, &members, &mut names, &mut cache, &row);
         let shown: Vec<String> = bob.lines().into_iter().map(|line| line.render()).collect();
-        assert_eq!(shown, vec!["Alice: hello room".to_string()], "shown once; a replay is dropped");
+        assert_eq!(shown, vec!["Alice : hello room".to_string()], "shown once; a replay is dropped");
         // A sender that is not a member, and a sender whose key differs from the member's, show nothing.
         let (_, stranger) = ed_key(5);
         let stranger_row = Message { sender_pk: stranger, ..row.clone() };
@@ -449,7 +449,7 @@ mod tests {
         let row = Message { message_id: "ff".repeat(16), sender_pk: alice_pk.clone(), ts, nonce: NONCE.into(), ciphertext, created_at: "2026".into() };
         show_message(&bob, &identity, &members, &mut HashMap::new(), &mut NonceCache::default(), &row);
         let shown: Vec<String> = bob.lines().into_iter().map(|line| line.render()).collect();
-        assert_eq!(shown, vec!["Alice: hi".to_string()]);
+        assert_eq!(shown, vec!["Alice : hi".to_string()]);
         // Shown like a LAN message: the name is the sender, the text is separate, and it is not this PC's own line.
         let line = &bob.lines()[0];
         assert_eq!((line.sender.as_deref(), line.text.as_str(), line.mine), (Some("Alice"), "hi", false));

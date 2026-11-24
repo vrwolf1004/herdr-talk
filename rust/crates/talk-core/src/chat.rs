@@ -121,7 +121,7 @@ impl Line {
     /// The row as shown: "sender: text", or the text alone for a notice or a continuation row.
     pub fn render(&self) -> String {
         match &self.sender {
-            Some(sender) => format!("{sender}: {}", self.text),
+            Some(sender) => format!("{sender} : {}", self.text),
             None => self.text.clone(),
         }
     }

@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use talk_core::relay_settings::{self, Mode};
 use talk_core::t;
-use crate::screen::{classic, paint, Frame, Row, Tone};
+use crate::extend::frame::{classic, paint, Frame, Row, Tone};
 
 /// Without a choice within this time the chat starts in Local mode, and nothing is saved.
 pub const TIMEOUT: Duration = Duration::from_secs(30);

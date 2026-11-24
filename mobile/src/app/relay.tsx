@@ -26,11 +26,13 @@ const POLL_MS = 3000;
 const MEMBERS_MS = 10000;
 const MAX_LINES = 200;
 const nowSeconds = () => Math.floor(Date.now() / 1000);
+/** Local HH:MM, taken once when a line is made (the same rule as the TUI time cache). */
+const clock = () => new Date().toTimeString().slice(0, 5);
 const randomHex = (length: number) => bytesToHex(randomBytes(length));
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const reason = (error: unknown) => (error instanceof Error ? error.message : 'error');
 
-type Line = { id: string; who: string; text: string; mine: boolean };
+type Line = { id: string; who: string; text: string; mine: boolean; time: string };
 type Session = { run: { stopped: boolean }; settings: RelaySettings; noisePrivate: Uint8Array; noisePublic: Uint8Array; seed: Uint8Array; shortId: string };
 
 export default function RelayScreen() {
@@ -152,7 +154,7 @@ export default function RelayScreen() {
             const shown = checkRow(row, membersRef.current, keys.noisePrivate, () => true, cache, nowSeconds(), started);
             if (shown === null) continue;
             names.set(row.sender_pk, shown.name);
-            const line: Line = { id: row.message_id, who: displayName(names, row.sender_pk, shown.name), text: shown.text, mine: false };
+            const line: Line = { id: row.message_id, who: displayName(names, row.sender_pk, shown.name), text: shown.text, mine: false, time: clock() };
             setLines((prev) => [...prev, line].slice(-MAX_LINES));
           }
         } catch (error) {
@@ -214,7 +216,7 @@ export default function RelayScreen() {
       setNotice(`not sent: ${reason(error)}`);
       return;
     }
-    setLines((prev) => [...prev, { id: randomHex(8), who: now.settings.name, text: message, mine: true }].slice(-MAX_LINES));
+    setLines((prev) => [...prev, { id: randomHex(8), who: now.settings.name, text: message, mine: true, time: clock() }].slice(-MAX_LINES));
     setText('');
     setNotice('');
   }
@@ -232,7 +234,7 @@ export default function RelayScreen() {
       const next = { ...settings, url, key, setupCode: code };
       await saveSettings(next);
       setSettings(next);
-      setDraft({ ...draft, setupCode: '' });
+      setDraft((current) => ({ ...current, setupCode: code })); // keep the code in the input after a save
       setNotice('Setup code saved: the URL and key are stored (not shown).');
     } catch (error) {
       setNotice(reason(error));
@@ -241,7 +243,7 @@ export default function RelayScreen() {
 
   /** Join: the final save of the room ID and trust code. A typed setup code is not redeemed here (Save setup code does that). */
   async function save() {
-    if (draft.setupCode.trim() !== '') {
+    if (normalizeSetupCode(draft.setupCode) !== null && normalizeSetupCode(draft.setupCode) !== settings.setupCode) {
       setNotice('Save setup code first: Join does not redeem a typed setup code');
       return;
     }
@@ -286,12 +288,10 @@ export default function RelayScreen() {
     ]);
   }
 
-  // The status line as Python shows it (English), with the room and setup code; only a problem is added after them.
+  // The status line shows only the peer count and the mode (the room ID and setup code stay in settings); a problem is added last.
   const statusLine = [
     `peers: ${members.size}`,
     'CLOUD SERVICE',
-    settings.roomCode ? `room ID: ${settings.roomCode}` : null,
-    settings.roomCode ? `setup code: ${settings.setupCode || '-'}` : null,
     problem || null,
   ]
     .filter(Boolean)
@@ -371,7 +371,7 @@ export default function RelayScreen() {
               ))}
               {lines.map((line) => (
                 <Text key={line.id} style={[styles.line, { color: line.mine ? colors.accent : colors.text }]}>
-                  {line.who} &gt; {line.text}
+                  [{line.time}] {line.who} : {line.text}
                 </Text>
               ))}
             </ScrollView>

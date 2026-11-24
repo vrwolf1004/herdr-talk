@@ -53,8 +53,24 @@ function answer(verdict: Verdict): Response {
   return new Response(null, { status: statusFor(verdict) });
 }
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+function withCors(response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(CORS_HEADERS)) headers.set(key, value);
+  return new Response(response.body, { status: response.status, headers });
+}
+
 Deno.serve(async (request: Request): Promise<Response> => {
-  if (request.method !== "POST") {
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+  return withCors(await handle(request));
+});
+
+async function handle(request: Request): Promise<Response> {  if (request.method !== "POST") {
     return new Response(null, { status: 405 });
   }
   let body: unknown;
@@ -74,4 +90,4 @@ Deno.serve(async (request: Request): Promise<Response> => {
     releaseNonce: () => releaseNonce(checked.nonce),
   });
   return new Response(null, { status });
-});
+}

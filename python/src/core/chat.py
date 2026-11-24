@@ -163,7 +163,7 @@ class Chat:
 
     def add_line(self, line, mine=False, sender=None):
         self.touch()
-        stamp = time.strftime("%H:%M:%S")  # the time the line first shows; it is not stored anywhere else
+        stamp = time.strftime("%H:%M")  # the time the line first shows; it is not stored anywhere else
         with self.lines_lock:
             self.lines.append((line, mine, sender, stamp))
             del self.lines[:-MAX_LINES]
