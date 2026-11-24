@@ -7,7 +7,8 @@ How to install, chat, what each command does, and how names and languages work.
 Install from GitHub:
 
 ```sh
-herdr plugin install vrwolf1004/herdr-talk/rust
+herdr plugin install vrwolf1004/herdr-talk/python   # recommended (Python edition)
+# Rust edition (optional): herdr plugin install vrwolf1004/herdr-talk/rust
 ```
 
 Requirements: herdr 0.9.0 or later, and both PCs on the same network. The install downloads a prebuilt binary, so nothing else is needed.

@@ -9,7 +9,7 @@ use crate::core::dock::SOURCE;
 use crate::core::{control, dock, herdr_api};
 use talk_core::{start, t, udp_port};
 
-pub(crate) const DOCK_KEY: &str = "herdr-talk";
+pub(crate) const DOCK_KEY: &str = "herdr-talk-rust";
 pub(crate) const AGENT_ID: &str = "talk";
 pub(crate) const USAGE: &str = "usage: herdr-talk <run [--session ID] [--name NAME] [--tcp-port N] [--udp-port N] [--dock] [--pane ID] | serve [--session ID] [--name NAME] [--tcp-port N] [--udp-port N] | sessions | open | dock-start | dock-stop>";
 

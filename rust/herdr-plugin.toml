@@ -1,5 +1,5 @@
-id = "herdr-talk"
-name = "herdr-talk"
+id = "herdr-talk-rust"
+name = "herdr-talk-rust"
 version = "0.8.0"
 min_herdr_version = "0.9.0"
 platforms = ["windows", "linux", "macos"]
@@ -7,7 +7,7 @@ description = "Chat with people on other PCs from inside herdr. Works directly o
 
 # Install downloads this platform's binary from the GitHub release into bin/; `plugin link` skips it,
 # so run scripts/build.sh after linking a local copy.
-# Open the chat pane from herdr: herdr plugin pane open --plugin herdr-talk --entrypoint chat
+# Open the chat pane from herdr: herdr plugin pane open --plugin herdr-talk-rust --entrypoint chat
 
 [[build]]
 platforms = ["linux", "macos"]

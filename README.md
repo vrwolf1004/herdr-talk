@@ -32,14 +32,18 @@ encrypted (Noise), and nothing is stored. See [configuration](docs/configuration
 
 ## Installation
 
-```sh
-herdr plugin install vrwolf1004/herdr-talk/rust
-```
 
-Without a Rust toolchain or for people who avoid downloaded executables, use the Python edition, which needs only Python 3:
+
+Recommended: the Python edition. It needs only Python 3 and no downloaded executables:
 
 ```sh
 herdr plugin install vrwolf1004/herdr-talk/python
+```
+
+Rust edition (optional, downloads an executable):
+
+```sh
+herdr plugin install vrwolf1004/herdr-talk/rust
 ```
 
 The Python edition encrypts the same way as the Rust edition (pure Python, no packages), so the two talk to each other after you compare codes and `/join`. Only an older Python edition without keys needs `"plaintext": true` on the Rust side. See [docs/encryption-protocol.md](docs/encryption-protocol.md).

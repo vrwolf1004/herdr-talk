@@ -9,11 +9,11 @@ from i18n import t
 # 공용 herdr-dock workspace 의 한 칸에 talk 대화창을 두고, 접속자 수를 에이전트 목록에 보여 준다.
 # 블록을 클릭하면 그 pane 이 포커스되고 대화창이 그대로 보인다. 다른 dock plugin 과 자리 규칙을 맞춘다.
 
-DOCK_KEY = "herdr-talk-python"
+DOCK_KEY = "herdr-talk"
 DOCK_REPORT_SECONDS = 2
 DOCK_TOKEN_TTL_MS = 15_000
 AGENT_ID = "talk"
-SOURCE = "plugin:herdr-talk-python"
+SOURCE = "plugin:herdr-talk"
 
 
 def keep_dock_block(pane_id, chat):
