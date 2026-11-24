@@ -4,6 +4,19 @@
 
 Improvement list for herdr-talk. Items are grouped by area, most important first inside each group.
 
+## 0.8.5 (2026-11-24)
+
+- herdr 플러그인 id: Python 판 `herdr-talk`(기본), Rust 판 `herdr-talk-rust`. 도크 키는 판별로 분리.
+- 채팅 줄 형식 `[HH:MM] 이름 : 내용`, 시간은 HH:MM.
+- GUI·TUI 가 talk-core 를 공유. GUI·Rust TUI·Python TUI 를 core/extend 로 분리.
+- 설정 저장 문구: TUI 와 GUI 를 분리. GUI 설정 코드 입력칸은 저장 후에도 유지.
+- 제어 채널(serve) 상태에 방 ID·설정 코드 전달. GUI 하단 줄 줄바꿈.
+- 실행 스크립트 `run/`: Rust TUI·GUI·Python TUI·모바일. 코드 변경이 없으면 재컴파일할지 묻고, 실행 중인 프로세스가 있으면 빌드를 막음.
+- 모바일: 웹용 secure-store 대체, 설정 저장 후 입력값 유지, 상태 줄은 peers·모드만 표시, 기본 방 ID 제거.
+- Supabase: put-peer·delete-peer 에 CORS 추가, 운영 배포 완료.
+
+미확인: 실제 기기 모바일 화면, GUI·TUI 실행 화면, sqlite-jdbc 환경 테스트, 웹 배포 후 방 만들기.
+
 ## 2026-11-24 작업 현황
 
 완료 (테스트 통과, 커밋 전)

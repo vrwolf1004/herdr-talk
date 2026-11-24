@@ -19,7 +19,7 @@ herdr plugin install vrwolf1004/herdr-talk/rust
 각 PC의 herdr pane에서 `open` 액션을 실행해 현재 pane 아래에 채팅 pane을 나눕니다:
 
 ```sh
-herdr plugin action invoke open --plugin herdr-talk           # Linux, macOS
+herdr plugin action invoke open --plugin herdr-talk           # Python 판(기본), Linux, macOS
 ```
 
 이 액션은 현재 herdr pane의 `HERDR_PANE_ID`가 필요합니다. 채팅 pane을 직접 열 수도 있습니다: `herdr plugin pane open --plugin herdr-talk --entrypoint chat`. Ctrl+C를 누르면 채팅 명령이 끝나고 나뉜 pane은 셸 프롬프트로 돌아옵니다.

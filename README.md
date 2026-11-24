@@ -13,22 +13,25 @@ Chat with people on other PCs from inside herdr. Nearby peers connect directly o
 
 ## Dashboard design
 
-Chat pane:
+Chat pane (Python edition, the default):
 
 ```text
-herdr-talk: you are 'Haruto' (TCP port 52311). Type /help for commands.
-* Liam joined (172.31.99.181)
-
-Liam: hi, anyone here?
-Haruto (you): hello!
-
->
+▣ HERDR-TALK                                                    SYS.VER 1.0
+────────────────────────────────────────────────────────────────────────
+COMMUNICATION LOG
+herdr-talk: 당신의 이름은 '서연'입니다 (TCP 포트 55668). 명령어는 /help를 입력하세요.
+[23:33] 서연 (나) : 하하
+[23:33] 하준 : dho
+CONNECTED NODES
+HOST/YOU 서연, 하준, 지호
+────────────────────────────────────────────────────────────────────────
+MESSAGE > 메시지를 입력하세요...
+[방장]  상대: 2 · CLOUD SERVICE · room ID: PRXALBYO · setup code: HBJW1MI5   [CONNECTED]  F1 도움말
 ```
 
-This plugin uses a chat pane rather than an Agents-sidebar block. The current
-implementation is LAN-only: peers are discovered with UDP broadcast and
-messages are sent directly over TCP. Messages between verified peers are
-encrypted (Noise), and nothing is stored. See [configuration](docs/configuration.md#encryption).
+- Each message line is `[HH:MM] name : text`. Your own lines show `(나)` after your name.
+- The status line shows the host badge `[방장]`, the peer count, the mode (`BASE STATION` or `CLOUD SERVICE`), and in cloud mode the room ID and setup code. A problem is appended after them.
+- `F1` shows the help, `F3` switches the language.
 
 ## Installation
 
