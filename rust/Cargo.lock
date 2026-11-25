@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "herdr-talk"
-version = "0.8.0"
+version = "0.8.5"
 dependencies = [
  "crossterm",
  "ctrlc",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "talk-core"
-version = "0.8.0"
+version = "0.8.5"
 dependencies = [
  "ed25519-dalek",
  "fastrand",

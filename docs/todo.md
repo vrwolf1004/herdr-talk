@@ -59,7 +59,9 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 - [x] **GUI 설정 입력 칸·버튼 높이 30px.**
 
 남은 것
-- [ ] **main 병합:** `ui-i18n-f3` 브랜치를 main에 합칠지 결정.
+- [x] **main 병합:** `ui-i18n-f3`는 이미 main에 포함되어 있다 (2026-11-25 확인).
+- [x] **저장 안내 수정:** 설정 폴더가 없으면 "이번 실행에만 바뀝니다" 안내가 나오도록 고쳤다. 안내 키 `tui.lang.not_saved`가 코드에서 쓰이지 않던 문제. (Rust talk-core `notice()`)
+- [x] **죽은 로케일 키 삭제:** Python `status.lang_hint` (7개 locale). 코드에서 쓰지 않음.
 - [ ] **실환경 확인:** 실제 터미널의 F2·F3·F9 입력, 한글·일본어 칸 정렬, GUI 창의 F3과 입력 칸 높이.
 - [ ] **GUI 채팅 창 번역 (진행 중, dev1):** `gui/src/main.rs`의 `CONNECTED NODES`, `COMMUNICATION LOG`, `BASE STATION : CONNECTED` 등 영어 문구.
 - [ ] **SYS.VER 1.0:** 상태 문구라 영어로 두었다. 번역할지 결정.

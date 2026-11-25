@@ -77,7 +77,6 @@
   "room.send_failed": "Échec du message de salon : {error}",
   "room.only_one": "Un seul salon par PC : ce PC utilise déjà le salon {code}",
   "status.help_hint": "F1 aide",
-  "status.lang_hint": "F3: langue",
   "trust.no_number": "Aucun correspondant en attente n'a le numéro {n}",
   "trust.already": "{n} est déjà vérifié ou n'attend plus",
   "nodes.waiting": "en attente d'entrée",

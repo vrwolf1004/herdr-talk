@@ -802,10 +802,14 @@ mod tests {
         assert!(form.message.is_empty(), "{}", form.message);
         let saved = std::fs::read_to_string(dir.join("config.json")).unwrap();
         assert!(saved.contains(&format!("\"lang\": \"{after}\"")) || saved.contains(&format!("\"lang\":\"{after}\"")), "{saved}");
-        // Without a config folder the switch still happens, and nothing is said.
+        // Without a config folder the switch still happens, and the not-saved line says so.
         std::env::remove_var("HERDR_PLUGIN_CONFIG_DIR");
         press(&mut form, &chat, KeyCode::F(3));
-        assert!(form.message.is_empty(), "{}", form.message);
+        assert_eq!(form.message, t("tui.lang.not_saved", &[]));
+        // Put the language back: it is process-wide and other tests read it.
+        while talk_core::i18n::language() != before {
+            let _ = talk_core::i18n::switch_language();
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

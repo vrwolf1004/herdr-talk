@@ -77,7 +77,6 @@
   "room.send_failed": "Raumnachricht fehlgeschlagen: {error}",
   "room.only_one": "Pro PC nur ein Raum: dieser PC nutzt bereits Raum {code}",
   "status.help_hint": "F1 Hilfe",
-  "status.lang_hint": "F3 Sprache",
   "trust.no_number": "Kein wartender Partner mit der Nummer {n}",
   "trust.already": "{n} ist bereits bestätigt oder wartet nicht mehr",
   "nodes.waiting": "Beitritt wartet",

@@ -77,7 +77,6 @@
   "room.send_failed": "El mensaje de sala falló: {error}",
   "room.only_one": "Solo una sala por PC: este PC ya usa la sala {code}",
   "status.help_hint": "F1 ayuda",
-  "status.lang_hint": "F3: idioma",
   "trust.no_number": "Ningún contacto en espera tiene el número {n}",
   "trust.already": "{n} ya está verificado o ya no está en espera",
   "nodes.waiting": "esperando unirse",
