@@ -15,7 +15,7 @@ import unicodedata
 from core import relay_key
 from core import relay_rest
 from core import relay_settings
-from i18n import cycle_language, t
+from i18n import can_save_language, cycle_language, t
 
 TIMEOUT_SECONDS = 30
 FIELD_COUNT = 4
@@ -108,6 +108,7 @@ class FirstRun:
         self._clock = clock
         self._deadline = clock() + timeout
         self.selected = 0  # 0 local, 1 supabase
+        self.message = ""  # one line under the choices: the language note after F3 without a settings folder
 
     def remaining(self):
         """Whole seconds left (rounded up), or None once a key has stopped the timer."""
@@ -128,6 +129,7 @@ class FirstRun:
             return None
         if ch == KEY_F3:  # the language changes at once; the countdown keeps running (a language is not a choice)
             cycle_language()
+            self.message = "" if can_save_language() else t("lang.not_saved")
             return None
         self._deadline = None
         if ch == "1":
@@ -156,6 +158,7 @@ class FirstRun:
         left = self.remaining()
         if left is not None:
             lines.append((t("mode.timeout_hint", n=left), MUTED))
+        lines.append((self.message, WARN))
         # The divider and the key guide sit on the two rows above the status row, as on the settings screen.
         lines += [("", "")] * max(0, rows - 3 - len(lines))
         lines += [(divider(cols), BORDER), (t("first.hint"), MUTED)]
@@ -308,6 +311,8 @@ class SettingsForm:
                 return "saved"
         elif ch == KEY_F3:
             cycle_language()
+            if not can_save_language():
+                self.message = t("lang.not_saved")
         elif ch == "\x0e":
             self.create_room()
         elif ch in ("\x08", "\x7f"):

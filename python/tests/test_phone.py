@@ -6,13 +6,15 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 os.environ.setdefault("HERDR_TALK_LANG", "en")
 
 from core import noise  # noqa: E402
-from core import phone  # noqa: E402
+from core import phone, relay_chat, relay_rest  # noqa: E402
+from core.events import Status  # noqa: E402
 from extend import screen  # noqa: E402
 from core import store  # noqa: E402
 import talk  # noqa: E402
@@ -44,6 +46,36 @@ class Base(unittest.TestCase):
         chat = talk.Chat({"id": f"id{port}", "name": f"N{port}", "port": port})
         chat.state_dir = self.dir
         return chat
+
+
+class RoomHostTest(Base):
+    """[host] in Supabase mode is the room's owner only; in LAN mode it is still the PC's phone host."""
+
+    def test_in_supabase_only_the_room_owner_is_host_even_when_another_node_holds_the_pc_lock(self):
+        chat = self.chat(1)
+        chat.supabase = True
+        chat.host = object()  # another node on this PC holds the phone host lock
+        chat.relay = SimpleNamespace(owner_pk="bb" * 32, own_pk="aa" * 32)
+        self.assertFalse(chat.is_host())
+        chat.relay.owner_pk = "aa" * 32
+        self.assertTrue(chat.is_host(), "the room's creator is the host")
+        chat.relay = None
+        self.assertFalse(chat.is_host(), "no relay running: no room host")
+
+    def test_lan_mode_keeps_the_pc_host(self):
+        chat = self.chat(1)
+        chat.host = object()
+        self.assertTrue(chat.is_host())
+
+    def test_the_relay_takes_the_owner_from_the_join_answer(self):
+        config = relay_rest.Config("https://x.supabase.co", "dummy-test-key")
+        settings = {"mode": "supabase", "url": "https://x.supabase.co", "key": "dummy-test-key", "name": "Alice",
+                    "room_code": "ABCD1234", "trust": "12345678"}
+        relay = relay_chat.Relay(SimpleNamespace(emit=lambda event: None, my_name=lambda: "Alice"), None, config, settings, relay_chat.Session(bytes(range(32))))
+        info = {"room_code": "ABCD1234", "owner_pk": "cc" * 32, "members": []}
+        with mock.patch.object(relay_rest, "join_room", return_value=info):
+            relay._load_members()
+        self.assertEqual(relay.owner_pk, "cc" * 32)
 
 
 class TokenTest(unittest.TestCase):
@@ -120,10 +152,9 @@ class ChatPhoneTest(Base):
         self.assertTrue(first.try_become_host())
         self.assertFalse(second.try_become_host())
         token = phone.read(self.dir)["token"]
-        self.assertIn(token, "\n".join(screen.phone_overlay(first)))
-        self.assertIsNone(screen.phone_overlay(second), "a node that is not the host shows nothing by itself")
+        self.assertIsNone(screen.phone_overlay(first), "the phone panel is off: nothing is drawn")
         second.handle("/phone")
-        self.assertIn(token, "\n".join(screen.phone_overlay(second)))  # but it reads the host's phone.json when asked
+        self.assertIsNone(screen.phone_overlay(second))
         self.assertFalse([line for line in self.lines if token in line])
         self.assertFalse([line for chat in (first, second) for line, _ in chat.lines if token in line])
         first.release_host()
@@ -166,7 +197,7 @@ class ChatPhoneTest(Base):
     def test_no_phone_json_says_so(self):
         chat = self.chat(1)
         chat.show_phone()
-        self.assertEqual(screen.phone_overlay(chat), [talk.t("phone.none")])
+        self.assertIsNone(screen.phone_overlay(chat))  # shown or not, the panel draws nothing
 
     def test_the_host_joining_shows_the_phone_here_but_a_remote_one_does_not(self):
         host = self.chat(5000)
@@ -219,7 +250,6 @@ class ChatPhoneTest(Base):
     def test_help_mentions_the_command_and_the_key(self):
         box = "\n".join(talk.help_box())
         self.assertIn("/phone", box)
-        self.assertIn("Ctrl+P", box)
 
 
 if __name__ == "__main__":

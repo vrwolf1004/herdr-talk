@@ -54,9 +54,9 @@
   "trust.save_failed": "verificado solo para esta sesión, no se pudo guardar: {error}",
   "peer.unverified": "no enviado a {name}: aún sin verificar. Compara los códigos y luego /join",
   "peer.plain_off": "no enviado a {name}: no cifra, y el texto sin cifrar está desactivado",
-  "peer.fingerprint": "{name} ({ip}): aún no verificado\n  Código: {code}\n  Compárelo con el código de la otra pantalla y escriba /join",
+  "peer.fingerprint": "{name} ({ip}): aún no verificado\n  Código de verificación mutua: {code}\n  Compárelo con el código de la otra pantalla y escriba /join",
   "peer.key_changed": "{name} ({ip}) tiene una clave nueva. No confiado, nada enviado. Usa /join solo si sabes por qué",
-  "peer.kicked": "{name} ({ip}) fue expulsado: no se unió en 20 segundos. No se vuelve a aceptar en este chat.",
+  "peer.kicked": "{name} ({ip}) fue expulsado: no se unió en {seconds} segundos. No se vuelve a aceptar en este chat. Para volver a conectar, escriba /rejoin.",
   "peers.verified": "verificado",
   "peers.plain": "texto sin cifrar",
   "peers.unverified": "sin verificar, código {code}",
@@ -114,6 +114,10 @@
   "tui.settings.label.name": "ID único",
   "tui.settings.label.room": "ID de sala (8 caracteres)",
   "tui.settings.title": "AJUSTES DE SUPABASE",
+  "rejoin.done": "Los pares expulsados vuelven a admitirse. Use /join en {seconds} segundos.",
+  "help.rejoin": "  /rejoin         volver a admitir pares expulsados",
+  "nodes.seconds_left": "quedan {seconds} s",
+  "net.receive_stopped": "La recepción se detuvo tras errores repetidos. Reinicie el chat para volver a encontrar pares.",
   "tui.lang.not_saved": "El idioma cambia solo en esta ejecución (no hay carpeta de ajustes)",
   "tui.settings.create_need_connection": "Crear sala: en modo Supabase, escriba primero el código de configuración (URL y clave guardadas) y el nombre visible",
   "tui.settings.create_bad_trust": "Crear sala: el código de confianza debe tener 8 dígitos",
@@ -213,5 +217,7 @@
   "gui.mode.base_station": "ESTACIÓN BASE",
   "gui.mode.cloud_service": "SERVICIO EN LA NUBE",
   "gui.bottom.peers": "Pares: {peers}",
-  "gui.status.mode_connected": "{mode} : CONECTADO"
+  "gui.status.mode_connected": "{mode} : CONECTADO",
+  "rejoin.done": "Los pares excluidos vuelven a aceptarse. Usa /join en {seconds} s.",
+  "help.rejoin": "  /rejoin         recuperar pares excluidos"
 }

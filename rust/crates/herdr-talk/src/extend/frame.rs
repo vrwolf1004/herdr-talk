@@ -242,7 +242,13 @@ pub(crate) fn nodes_block(chat: &Chat, name: &str, rows: usize) -> Vec<Row> {
         let state = match chat.link_of(&peer) {
             Link::Encrypted => t("peers.verified", &[]),
             Link::Plain => t("peers.plain", &[]),
-            Link::Unverified => t("nodes.waiting", &[]),
+            Link::Unverified => {
+                let label = t("nodes.waiting", &[]);
+                match peer.key.as_deref().and_then(|key| chat.join_seconds_left(key)) {
+                    Some(seconds) => format!("{label} · {}", t("nodes.seconds_left", &[("seconds", &seconds.to_string())])),
+                    None => label,
+                }
+            }
         };
         lines.push(format!("{number}{} ({})  {state}", peer.name, peer.ip));
     }

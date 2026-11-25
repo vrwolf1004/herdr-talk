@@ -54,9 +54,9 @@
   "trust.save_failed": "이번 실행에서만 확인됨. 저장하지 못함: {error}",
   "peer.unverified": "{name} 에게 보내지 않음: 아직 확인 안 됨. 코드를 비교한 뒤 /join 하세요",
   "peer.plain_off": "{name} 에게 보내지 않음: 암호화하지 않는 상대이고 평문이 꺼져 있습니다",
-  "peer.fingerprint": "{name} ({ip}): 아직 확인되지 않음\n  코드: {code}\n  상대 화면의 코드와 같은지 비교한 뒤 /join 를 입력하세요",
+  "peer.fingerprint": "{name} ({ip}): 아직 확인되지 않음\n  쌍방 확인코드 : {code}\n  상대 화면의 코드와 같은지 비교한 뒤 /join 를 입력하세요",
   "peer.key_changed": "{name} ({ip}) 의 키가 바뀌었습니다. 확인하지 않았고 보내지도 않습니다. 이유를 알 때만 /join 하세요",
-  "peer.kicked": "{name} ({ip}) 은 20초 안에 /join 하지 않아 제외했습니다. 이번 대화에서는 다시 받지 않습니다.",
+  "peer.kicked": "{name} ({ip}) 은 {seconds}초 안에 /join 하지 않아 제외했습니다. 이번 대화에서는 다시 받지 않습니다. 다시 연결하시려면 /rejoin 를 입력하세요.",
   "peers.verified": "확인됨",
   "peers.plain": "평문",
   "peers.unverified": "미확인, 코드 {code}",
@@ -114,6 +114,10 @@
   "tui.settings.label.name": "유니크ID",
   "tui.settings.label.room": "방 ID (8자리)",
   "tui.settings.title": "SUPABASE 설정",
+  "rejoin.done": "제외된 상대를 다시 받습니다. {seconds}초 안에 /join 하세요.",
+  "help.rejoin": "  /rejoin         제외된 상대를 다시 받습니다",
+  "nodes.seconds_left": "남은 시간 {seconds}초",
+  "net.receive_stopped": "반복된 오류로 수신이 멈췄습니다. 채팅을 다시 시작하면 상대를 다시 찾습니다.",
   "tui.lang.not_saved": "언어는 이번 실행에만 바뀝니다 (설정 폴더 없음)",
   "tui.settings.create_need_connection": "방 만들기: Supabase 모드에서 설정 코드(저장된 URL·키)와 표시 이름을 먼저 입력하세요",
   "tui.settings.create_bad_trust": "방 만들기: trust 코드는 숫자 8자리여야 합니다",
@@ -213,5 +217,7 @@
   "gui.mode.base_station": "BASE STATION",
   "gui.mode.cloud_service": "CLOUD SERVICE",
   "gui.bottom.peers": "상대: {peers}",
-  "gui.status.mode_connected": "{mode} : 연결됨"
+  "gui.status.mode_connected": "{mode} : 연결됨",
+  "rejoin.done": "제외된 상대를 다시 받습니다. {seconds}초 안에 /join 하세요.",
+  "help.rejoin": "  /rejoin         제외된 상대 다시 받기"
 }

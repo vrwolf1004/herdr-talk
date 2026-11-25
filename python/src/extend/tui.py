@@ -12,7 +12,7 @@ from core.chat import Chat
 from core.events import Line, Notice
 from core.net import STOP
 from extend import settings_form as relay_form
-from extend.screen import add_event, enable_vt, help_box, on_key, phone_overlay, read_char, read_char_timeout, screen_frame, status_tag
+from extend.screen import add_event, enable_vt, help_box, on_key, read_char, read_char_timeout, screen_frame, status_tag
 from i18n import t
 
 
@@ -173,10 +173,14 @@ def run_ansi(chat):
             link = chat.link_of(info)
             number = chat.numbers.get(info.get("key")) if link == "unverified" else None
             prefix = f"[{number}] " if number is not None else ""
-            state = t("nodes.verified") if link == "encrypted" else t("nodes.waiting")
+            left = chat.join_seconds_left(info["key"]) if info.get("key") is not None else None
+            if left is not None:
+                state = t("nodes.waiting_left", seconds=left)
+            else:
+                state = t("nodes.verified") if link == "encrypted" else t("nodes.waiting")
             nodes.append(f"{prefix}{info['name']} ({info['ip']})  {state}")
         mode = "CLOUD SERVICE" if chat.supabase else "BASE STATION"
-        overlay = help_box() if chat.help_open else phone_overlay(chat)
+        overlay = help_box() if chat.help_open else None
         frame = screen_frame(lines, status, typed[0], size.columns, size.lines, overlay, nodes, mode, status_tag(chat))
         with screen_lock:
             _draw(frame)

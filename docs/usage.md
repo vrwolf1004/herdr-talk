@@ -169,7 +169,7 @@ Screens and controls:
 
 ## 11a. Connection mode (Local or Supabase)
 
-- **Local (LAN)**: the default. UDP broadcast discovers peers. A LAN chat holds **up to 10 people**, this PC included; an 11th PC is ignored. A peer must be accepted with `/join` within 20 seconds, or it is dropped for the rest of the chat.
+- **Local (LAN)**: the default. UDP broadcast discovers peers. A LAN chat holds **up to 10 people**, this PC included; an 11th PC is ignored. A peer must be accepted with `/join` within 30 seconds, or it is dropped for the rest of the chat. `/rejoin` takes the dropped peers back (they get a new 30 seconds).
 - **Supabase**: a room relay. One room holds **up to 10 people**, the owner included (the server answers `409` to an extra join). Setup: type the **setup code** (8 characters, `A-Z0-9`; spaces and dashes are ignored) and press **F2** in the TUI (the **Save setup code** button in the GUI). The app asks the server for the project URL and publishable key and saves them. They are not shown. Then type a display name, the room ID and the trust code (8 digits), and save on the last row.
 - **TUI settings rows, in order:** Setup code, Trust code (8 digits), Display name (a generated read-only code), Room id (8 characters). Enter moves to the next row and saves on the last one. Enter does not redeem a typed setup code: press F2 in the setup-code row first. F2 in any other row says `F2 saves in the setup-code row only`.
 - **Save rules** (talk-core `check_save`, used by the TUI): a typed but unredeemed setup code is refused. Supabase mode needs a display name, a room ID, a trust code, and a saved URL and key. The saved setup code is kept on every save.

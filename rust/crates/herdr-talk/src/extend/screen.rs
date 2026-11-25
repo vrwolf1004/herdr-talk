@@ -146,6 +146,15 @@ pub fn choose_mode(chat: &Arc<Chat>) -> io::Result<Choice> {
     }
 }
 
+/// The text compared to decide a redraw. The name is read first and its lock released: reading a keyed peer takes that lock
+/// again (trusts), so holding it here would stop this thread for good.
+fn status_key(chat: &Chat) -> String {
+    let name = chat.me.lock().unwrap().name.clone();
+    // The seconds left to /join are part of it, so the waiting rows are drawn again as the time runs down.
+    let countdown: Vec<u64> = chat.fresh_peers().iter().filter_map(|peer| chat.join_seconds_left(peer.key.as_deref()?)).collect();
+    format!("{}/{}/{}/{}/{:?}", name, chat.fresh_peers().len(), chat.is_host(), chat.relay_status(), countdown)
+}
+
 /// The chat screen. `refused`: the saved room refused this PC's trust code, so the settings screen opens first with the reason.
 pub fn run(chat: &Arc<Chat>, refused: bool) -> io::Result<()> {
     let mut terminal = Terminal::enter()?;
@@ -186,7 +195,7 @@ pub fn run(chat: &Arc<Chat>, refused: bool) -> io::Result<()> {
             redraw |= open.poll(); // a create-room answer that has come back
         }
         // Peers come and go without a chat line, and the status row shows their count.
-        let status = format!("{}/{}/{}/{}", chat.me.lock().unwrap().name, chat.fresh_peers().len(), chat.is_host(), chat.relay_status());
+        let status = status_key(chat);
         if redraw || status != last_status {
             last_status = status;
             match &mut form {
@@ -333,6 +342,20 @@ mod tests {
 
 
     #[test]
+    fn the_status_row_does_not_wait_on_its_own_name_lock() {
+        // The stall: the status text was built while the name lock was held, and reading a keyed peer takes that lock again.
+        let chat = Arc::new(chat());
+        chat.peers.lock().unwrap().push(Peer { id: "p1".into(), name: "Bob".into(), ip: "10.0.0.5".into(), port: 1, seen: Instant::now(), key: Some(vec![7; 32]) });
+        let (done, finished) = std::sync::mpsc::channel();
+        let worker = chat.clone();
+        std::thread::spawn(move || {
+            let _ = status_key(&worker);
+            let _ = done.send(());
+        });
+        assert!(finished.recv_timeout(Duration::from_secs(2)).is_ok(), "the status row is stuck on the name lock");
+    }
+
+    #[test]
     fn the_nodes_block_lists_one_node_per_row_and_caps_the_rest() {
         let chat = chat();
         let peer = |name: &str| Peer { id: name.into(), name: name.into(), ip: "10.0.0.5".into(), port: 1, seen: Instant::now(), key: None };
@@ -357,6 +380,20 @@ mod tests {
         assert_eq!(line, format!("{peers} · CLOUD SERVICE · room ID: ABCD2345 · setup code: - · relay: room join failed: offline"));
         let local = status_info("", "0", "BASE STATION", None, "");
         assert_eq!(local, format!("{} · {}", t("status.line", &[("peers", "0")]).trim(), t("mode.local", &[])));
+    }
+
+    #[test]
+    fn a_waiting_peer_shows_the_seconds_left_to_join_in_its_row_and_the_redraw_key() {
+        let chat = Arc::new(chat());
+        let key = vec![7u8; 32];
+        chat.peers.lock().unwrap().push(Peer { id: "w1".into(), name: "Bob".into(), ip: "10.0.0.5".into(), port: 1, seen: Instant::now(), key: Some(key.clone()) });
+        chat.note_waiting(&key);
+        let seconds = chat.join_seconds_left(&key).unwrap();
+        assert!(seconds >= 29, "{seconds}");
+        let rows: Vec<String> = nodes_block(&chat, "Ann", 30).iter().map(text_of).collect();
+        assert!(rows.iter().any(|row| row.contains(&t("nodes.seconds_left", &[("seconds", &seconds.to_string())]))), "{rows:?}");
+        // The redraw key carries the countdown, so the screen is drawn again as the seconds run down.
+        assert!(status_key(&chat).contains(&format!("[{seconds}]")) || status_key(&chat).contains("[59]"), "{}", status_key(&chat));
     }
 
     #[test]

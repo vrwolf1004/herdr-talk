@@ -54,9 +54,9 @@
   "trust.save_failed": "今回の実行中だけ確認済み。保存できませんでした: {error}",
   "peer.unverified": "{name} には送りません: 未確認です。コードを比べてから /join してください",
   "peer.plain_off": "{name} には送りません: 暗号化しない相手で、平文送信はオフです",
-  "peer.fingerprint": "{name} ({ip}): まだ確認されていません\n  コード: {code}\n  相手の画面のコードと同じか比べてから /join と入力してください",
+  "peer.fingerprint": "{name} ({ip}): まだ確認されていません\n  相互確認コード: {code}\n  相手の画面のコードと同じか比べてから /join と入力してください",
   "peer.key_changed": "{name} ({ip}) の鍵が変わりました。信頼せず送信もしません。理由が分かる場合だけ /join してください",
-  "peer.kicked": "{name} ({ip}) を除外しました: 20 秒以内に参加しませんでした。このチャットでは再び受け付けません。",
+  "peer.kicked": "{name} ({ip}) を除外しました: {seconds} 秒以内に参加しませんでした。このチャットでは再び受け付けません。 再接続するには /rejoin と入力してください。",
   "peers.verified": "確認済み",
   "peers.plain": "平文",
   "peers.unverified": "未確認、コード {code}",
@@ -114,6 +114,10 @@
   "tui.settings.label.name": "固有ID",
   "tui.settings.label.room": "ルーム ID（8文字）",
   "tui.settings.title": "SUPABASE 設定",
+  "rejoin.done": "除外した相手を再び受け付けます。{seconds} 秒以内に /join してください。",
+  "help.rejoin": "  /rejoin         除外した相手を再び受け付ける",
+  "nodes.seconds_left": "残り {seconds} 秒",
+  "net.receive_stopped": "繰り返しエラーのため受信が止まりました。チャットを再起動すると相手を再び見つけます。",
   "tui.lang.not_saved": "言語はこの実行のみ変わります (設定フォルダなし)",
   "tui.settings.create_need_connection": "部屋を作る: Supabase モードでは、先に設定コード(保存された URL とキー)と表示名を入力してください",
   "tui.settings.create_bad_trust": "部屋を作る: trust コードは数字 8 桁である必要があります",
@@ -213,5 +217,7 @@
   "gui.mode.base_station": "基地局",
   "gui.mode.cloud_service": "クラウドサービス",
   "gui.bottom.peers": "相手: {peers}",
-  "gui.status.mode_connected": "{mode} : 接続済み"
+  "gui.status.mode_connected": "{mode} : 接続済み",
+  "rejoin.done": "除外された相手をもう一度受け入れます。{seconds} 秒以内に /join してください。",
+  "help.rejoin": "  /rejoin         除外した相手を戻す"
 }

@@ -54,9 +54,9 @@
   "trust.save_failed": "nur für diese Sitzung bestätigt, Speichern fehlgeschlagen: {error}",
   "peer.unverified": "nicht an {name} gesendet: noch nicht bestätigt. Codes vergleichen, dann /join",
   "peer.plain_off": "nicht an {name} gesendet: keine Verschlüsselung, und Klartext ist aus",
-  "peer.fingerprint": "{name} ({ip}): noch nicht bestätigt\n  Code: {code}\n  Vergleichen Sie den Code mit dem Bildschirm des anderen, dann geben Sie /join ein",
+  "peer.fingerprint": "{name} ({ip}): noch nicht bestätigt\n  Gegenseitiger Prüfcode: {code}\n  Vergleichen Sie den Code mit dem Bildschirm des anderen, dann geben Sie /join ein",
   "peer.key_changed": "{name} ({ip}) hat einen neuen Schlüssel. Nicht vertraut, nichts gesendet. /join nur, wenn der Grund klar ist",
-  "peer.kicked": "{name} ({ip}) wurde entfernt: nicht innerhalb von 20 Sekunden beigetreten. In diesem Chat nicht wieder aufgenommen.",
+  "peer.kicked": "{name} ({ip}) wurde entfernt: nicht innerhalb von {seconds} Sekunden beigetreten. In diesem Chat nicht wieder aufgenommen. Zum erneuten Verbinden /rejoin eingeben.",
   "peers.verified": "bestätigt",
   "peers.plain": "Klartext",
   "peers.unverified": "unbestätigt, Code {code}",
@@ -114,6 +114,10 @@
   "tui.settings.label.name": "Eindeutige ID",
   "tui.settings.label.room": "Raum-ID (8 Zeichen)",
   "tui.settings.title": "SUPABASE-EINSTELLUNGEN",
+  "rejoin.done": "Entfernte Partner werden wieder aufgenommen. Mit /join innerhalb von {seconds} Sekunden bestätigen.",
+  "help.rejoin": "  /rejoin         entfernte Partner wieder aufnehmen",
+  "nodes.seconds_left": "noch {seconds} s",
+  "net.receive_stopped": "Der Empfang wurde nach wiederholten Fehlern beendet. Starten Sie den Chat neu, um Partner wiederzufinden.",
   "tui.lang.not_saved": "Die Sprache ändert sich nur für diesen Lauf (kein Einstellungsordner)",
   "tui.settings.create_need_connection": "Raum erstellen: Im Supabase-Modus zuerst den Einrichtungscode (gespeicherte URL und Schlüssel) und den Anzeigenamen eingeben",
   "tui.settings.create_bad_trust": "Raum erstellen: Der Trust-Code muss 8 Ziffern haben",
@@ -213,5 +217,7 @@
   "gui.mode.base_station": "BASISSTATION",
   "gui.mode.cloud_service": "CLOUD-DIENST",
   "gui.bottom.peers": "Peers: {peers}",
-  "gui.status.mode_connected": "{mode} : VERBUNDEN"
+  "gui.status.mode_connected": "{mode} : VERBUNDEN",
+  "rejoin.done": "Ausgeschlossene Peers werden wieder angenommen. Mit /join innerhalb von {seconds} s bestätigen.",
+  "help.rejoin": "  /rejoin         ausgeschlossene Peers zurückholen"
 }

@@ -5,9 +5,8 @@ import os
 import sys
 import time
 
-from core import phone
 from core.events import Message, Notice, PeerRow
-from i18n import cycle_language, t
+from i18n import can_save_language, cycle_language, t
 from extend import settings_form as relay_form
 
 
@@ -97,6 +96,7 @@ def help_box():
         t("help.peers"),
         t("help.trust"),
         t("help.phone"),
+        t("help.rejoin"),
         t("help.help"),
         t("help.quit"),
         "",
@@ -104,7 +104,6 @@ def help_box():
         t("help.enter"),
         t("help.backspace"),
         t("help.ctrl_l"),
-        t("help.ctrl_p"),
         t("help.ctrl_c"),
     ]
     width = max(char_width(line) for line in lines)
@@ -244,6 +243,8 @@ def on_key(ch, chat, typed):
     Return False to leave the chat."""
     if ch == relay_form.KEY_F3:  # the language is changed at once and the screen is drawn again by the caller
         cycle_language()
+        if not can_save_language():
+            chat.emit(Notice("lang.not_saved"))
         return True
     if chat.help_open:  # the key that closes the help box is not typed (Ctrl+C still leaves the chat)
         chat.help_open = False
@@ -314,10 +315,5 @@ def add_event(chat, event):
 
 
 def phone_overlay(chat):
-    """The rows to draw over the screen, read from phone.json now, so the token is in no chat line or copy. None when hidden."""
-    if not chat.phone_visible():
-        return None
-    info = phone.read(chat.state_dir) if chat.state_dir else None
-    if info is None:
-        return [t("phone.none")]
-    return [t("phone.title"), *[f"  {url}" for url in info["urls"]], t("phone.token", token=info["token"]), t("phone.hint")]
+    """Off: no phone address or token is drawn. shortcut: restore the rows (phone.json, read now) to turn it back on."""
+    return None

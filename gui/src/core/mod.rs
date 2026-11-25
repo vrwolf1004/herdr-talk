@@ -53,6 +53,8 @@ pub(crate) struct Shared {
     pub(crate) peers: Vec<String>,
     /// The other people in the room (Supabase mode), by name.
     pub(crate) room_names: Vec<String>,
+    /// The chat's host flag: in Supabase mode the room owner only (talk-core's is_host).
+    pub(crate) host: bool,
     /// This chat's own name and port. None until the chat says it (an older herdr-talk never does).
     pub(crate) me: Option<(String, u16)>,
     /// The relay state as the chat reports it ("" when the relay is off).
@@ -63,8 +65,8 @@ pub(crate) struct Shared {
     pub(crate) mode: String,
     /// Ctrl+L was pressed: the chat clears its message lines (in the node it runs in).
     pub(crate) clear: bool,
-    /// Peers waiting for a /join, with the code to compare: (name, code).
-    pub(crate) pending: Vec<(String, String)>,
+    /// Peers waiting for a /join, in the terminal's numbering.
+    pub(crate) pending: Vec<Waiting>,
 }
 
 /// The address this PC uses to reach the network. Connecting a UDP socket sends nothing; it only picks the address.
@@ -289,9 +291,13 @@ pub(crate) fn run_embedded(shared: &Arc<Mutex<Shared>>, outgoing: &Receiver<Stri
         };
         state.peers = chat.fresh_peers().iter().map(|peer| format!("{} ({}:{})", peer.name, peer.ip, peer.port)).collect();
         state.room_names = chat.room_names();
-        state.pending = chat.fresh_peers().iter().filter_map(|peer| {
-            let code = chat.sas_for(peer.key.as_deref()?)?;
-            (chat.link_of(peer) == talk_core::chat::Link::Unverified).then(|| (peer.name.clone(), code))
+        state.host = chat.is_host();
+        state.pending = chat.unverified_peers().into_iter().map(|(peer, code, number)| Waiting {
+            seconds: peer.key.as_deref().and_then(|key| chat.join_seconds_left(key)).unwrap_or(0),
+            number,
+            name: peer.name,
+            ip: peer.ip,
+            code,
         }).collect();
         state.relay = chat.relay_status();
         state.room = chat.room_status().unwrap_or_default();
@@ -333,9 +339,14 @@ pub(crate) fn session(link: &mut Link, shared: &Arc<Mutex<Shared>>, outgoing: &R
             .map(|peer| format!("{} ({}:{})", peer["name"].as_str().unwrap_or("?"), peer["ip"].as_str().unwrap_or("?"), peer["port"]))
             .collect();
         state.room_names = peers["room"].as_array().into_iter().flatten().filter_map(|name| name.as_str().map(str::to_string)).collect();
-        state.pending = peers["pending"].as_array().into_iter().flatten()
-            .map(|peer| (peer["name"].as_str().unwrap_or("?").to_string(), peer["code"].as_str().unwrap_or("").to_string()))
-            .collect();
+        state.host = peers["host"].as_bool().unwrap_or(false);
+        state.pending = peers["pending"].as_array().into_iter().flatten().map(|peer| Waiting {
+            number: peer["number"].as_u64().unwrap_or(0) as usize,
+            name: peer["name"].as_str().unwrap_or("?").to_string(),
+            ip: peer["ip"].as_str().unwrap_or("?").to_string(),
+            code: peer["code"].as_str().unwrap_or("").to_string(),
+            seconds: peer["seconds"].as_u64().unwrap_or(0),
+        }).collect();
         state.relay = peers["relay"].as_str().unwrap_or("").to_string();
         state.room = peers["room_status"].as_str().unwrap_or("").to_string();
         state.mode = peers["mode"].as_str().unwrap_or("local").to_string();
@@ -350,6 +361,27 @@ pub(crate) enum Kind {
     Ok,
     Pending,
     Problem,
+}
+
+/// A peer waiting for /join: the terminal's number, name and IP, the code to compare, and the seconds left to /join.
+#[derive(Clone)]
+pub(crate) struct Waiting {
+    pub(crate) number: usize,
+    pub(crate) name: String,
+    pub(crate) ip: String,
+    pub(crate) code: String,
+    pub(crate) seconds: u64,
+}
+
+/// One waiting row in the terminal's notation: "[n] name (ip)  waiting to join · N s left to /join".
+pub(crate) fn wait_row(waiting: &Waiting) -> String {
+    let left = talk_core::t("nodes.seconds_left", &[("seconds", &waiting.seconds.to_string())]);
+    format!("[{}] {} ({})  {} · {left}", waiting.number, waiting.name, waiting.ip, talk_core::t("nodes.waiting", &[]))
+}
+
+/// The [방장] badge: in Supabase mode the room owner (the chat's host flag), on the LAN this PC's phone-file owner.
+pub(crate) fn hosting(supabase: bool, room_host: bool, lan_host: bool) -> bool {
+    if supabase { room_host } else { lan_host }
 }
 
 /// The bottom line as Python shows it: "[host] peers · mode · room ID · setup code", then a problem only (see `relay_problem`).

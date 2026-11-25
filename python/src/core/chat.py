@@ -3,6 +3,7 @@ LAN network. The network functions it uses are in core/net.py. talk.py re-export
 """
 
 import json
+import math
 import os
 import socket
 import threading
@@ -24,7 +25,7 @@ PEER_TIMEOUT_SECONDS = 10
 MAX_PEERS = 10  # people in a LAN chat, this PC included; only verified ones count: a new peer is ignored once that many others are verified
 
 
-JOIN_LIMIT_SECONDS = 20  # a LAN peer must be joined (/join) this long after its first announce, or it is kicked for this chat
+JOIN_LIMIT_SECONDS = 30  # a LAN peer must be joined (/join) this long after its first announce, or it is kicked for this chat
 
 
 AUTO_RENAME_GAP_SECONDS = 60  # 자동 이름 변경 사이의 최소 간격
@@ -154,6 +155,20 @@ class Chat:
             fresh = {pid: info for pid, info in self.peers.items() if info["seen"] >= cutoff}
         return {pid: info for pid, info in fresh.items() if info.get("key") is None or not self.is_kicked(info["key"], info["name"], info["ip"])}
 
+    def join_seconds_left(self, key):
+        """Whole seconds left before a waiting key is kicked, or None when it is not waiting (joined, or no clock yet)."""
+        since = self.waiting_since.get(key)
+        if since is None or self.trusts(key):
+            return None
+        return max(0, math.ceil(JOIN_LIMIT_SECONDS - (time.time() - since)))
+
+    def rejoin_kicked(self):
+        """/rejoin: forget the kicked keys, so the next announce finds them again with a new 60-second clock. Verified peers
+        are not touched (they are never kicked)."""
+        for key in self.kicked:
+            self.waiting_since.pop(key, None)
+        self.kicked.clear()
+
     def is_kicked(self, key, name, ip):
         """True for a kicked key: not joined within JOIN_LIMIT_SECONDS (kicked for the rest of this chat). A joined key is never
         kicked. The first kick says so once in the chat. CLOUD SERVICE has no LAN chat: nobody is kicked there."""
@@ -165,10 +180,14 @@ class Chat:
         if since is None or time.time() - since < JOIN_LIMIT_SECONDS:
             return False
         self.kicked.add(key)
-        self.emit(Notice("peer.kicked", {"name": name, "ip": ip}))
+        self.emit(Notice("peer.kicked", {"name": name, "ip": ip, "seconds": JOIN_LIMIT_SECONDS}))
         return True
 
     def is_host(self):
+        """Supabase: this PC's node is the room's owner (who created it). LAN: this PC holds the phone host lock."""
+        if self.supabase:
+            relay = self.relay
+            return relay is not None and relay.owner_pk is not None and relay.owner_pk == relay.own_pk
         return self.host is not None
 
     def try_become_host(self):
@@ -416,6 +435,10 @@ class Chat:
                 prefix = f"[{number}] " if number is not None else ""
                 self.emit(PeerRow(prefix, clean_text(info["name"], 32), info["ip"], info["port"], state, code))
             return True
+        if text == "/rejoin":
+            self.rejoin_kicked()
+            self.emit(Notice("rejoin.done", {"seconds": JOIN_LIMIT_SECONDS}))
+            return True
         if text == "/phone" or text.startswith("/phone "):
             argument = text[6:].strip()
             if not argument:
@@ -505,14 +528,32 @@ def listen_for_peers(udp_port, chat):
         sock.close()
 
 
+SOCKET_ERROR_LIMIT = 50  # socket errors in a row before a receive loop gives up (a Windows reset or an oversized datagram is one)
+
+
+def _socket_failed(chat, errors):
+    """One socket error in a receive loop: wait a moment so a steady error does not spin, or give up after too many in a
+    row (one notice). True when the loop must end."""
+    if errors > SOCKET_ERROR_LIMIT:
+        chat.emit(Notice("net.socket_failed"))
+        return True
+    STOP.wait(LOOP_POLL_SECONDS)
+    return False
+
+
 def _listen_loop(sock, chat):
+    errors = 0
     while not STOP.is_set():
         try:
             data, addr = sock.recvfrom(4096)
         except socket.timeout:
             continue
-        except OSError:
-            return  # 소켓이 닫혔다 (종료 중)
+        except OSError:  # a closed socket also lands here; STOP is set then, so the loop ends
+            errors += 1
+            if STOP.is_set() or _socket_failed(chat, errors):
+                return
+            continue
+        errors = 0
         try:
             info = json.loads(data.decode("utf-8"))
         except ValueError:
@@ -727,13 +768,18 @@ def receive_messages(server, chat):
                 if not open_counts[ip]:
                     del open_counts[ip]
 
+    errors = 0
     while not STOP.is_set():
         try:
             conn, addr = server.accept()
         except socket.timeout:
             continue
-        except OSError:
-            return  # 서버 소켓이 닫혔다 (종료 중)
+        except OSError:  # a closed server socket lands here too; STOP is set then, so the loop ends
+            errors += 1
+            if STOP.is_set() or _socket_failed(chat, errors):
+                return
+            continue
+        errors = 0
         ip = addr[0]
         # Connections from unknown addresses, over the rate limit or over the open-connection limits are closed unread.
         if not chat.admit_sender(ip):

@@ -54,9 +54,9 @@
   "trust.save_failed": "trusted for this session only, could not save: {error}",
   "peer.unverified": "not sent to {name}: not verified yet. Compare codes, then /join",
   "peer.plain_off": "not sent to {name}: they do not encrypt, and plain text is off",
-  "peer.fingerprint": "{name} ({ip}): not verified yet\n  Code: {code}\n  Compare it with the code on the other screen, then type /join",
+  "peer.fingerprint": "{name} ({ip}): not verified yet\n  Mutual check code: {code}\n  Compare it with the code on the other screen, then type /join",
   "peer.key_changed": "{name} at {ip} has a new key. Not trusted, nothing sent. Use /join only if you know why",
-  "peer.kicked": "{name} at {ip} was removed: not joined within 20 seconds. Not admitted again in this chat.",
+  "peer.kicked": "{name} at {ip} was removed: not joined within {seconds} seconds. Not admitted again in this chat. To reconnect, type /rejoin.",
   "peers.verified": "verified",
   "peers.plain": "plain text",
   "peers.unverified": "not verified, code {code}",
@@ -114,6 +114,10 @@
   "tui.settings.label.name": "Unique ID",
   "tui.settings.label.room": "Room id (8 characters)",
   "tui.settings.title": "SUPABASE SETTINGS",
+  "rejoin.done": "Kicked peers are admitted again. /join them within {seconds} seconds.",
+  "help.rejoin": "  /rejoin         admit kicked peers again",
+  "nodes.seconds_left": "{seconds} s left to /join",
+  "net.receive_stopped": "Receiving stopped after repeated errors. Restart the chat to find peers again.",
   "tui.lang.not_saved": "The language changes for this run only (no settings folder)",
   "tui.settings.create_need_connection": "Create room: in Supabase mode, type the setup code (saved URL and key) and the display name first",
   "tui.settings.create_bad_trust": "Create room: the trust code must be 8 digits",
@@ -213,5 +217,7 @@
   "gui.mode.base_station": "BASE STATION",
   "gui.mode.cloud_service": "CLOUD SERVICE",
   "gui.bottom.peers": "Peers: {peers}",
-  "gui.status.mode_connected": "{mode} : CONNECTED"
+  "gui.status.mode_connected": "{mode} : CONNECTED",
+  "rejoin.done": "Kicked peers are accepted again. Use /join within {seconds} seconds.",
+  "help.rejoin": "  /rejoin         take back kicked peers"
 }
