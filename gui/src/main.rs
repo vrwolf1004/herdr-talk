@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn f3_switches_the_language_only_when_it_is_pressed() {
-        // No config folder here, so the switch is for this run only and nothing is said; the language is put back at the end.
+        // No config folder here, so the switch is for this run only and the notice says so; the language is put back at the end.
         std::env::remove_var("HERDR_PLUGIN_CONFIG_DIR");
         let before = talk_core::i18n::language();
         let press = |key: egui::Key| {
@@ -58,7 +58,7 @@ mod tests {
         };
         assert_eq!(press(egui::Key::F8), None);
         assert_eq!(talk_core::i18n::language(), before);
-        assert_eq!(press(egui::Key::F3), Some(String::new()), "pressed, with nothing to say");
+        assert_eq!(press(egui::Key::F3), Some(talk_core::t("tui.lang.not_saved", &[])), "no config folder: the notice says so");
         assert_ne!(talk_core::i18n::language(), before);
         for _ in 0..8 {
             if talk_core::i18n::language() == before {
@@ -67,6 +67,23 @@ mod tests {
             talk_core::i18n::switch_language_notice();
         }
         assert_eq!(talk_core::i18n::language(), before);
+
+        // With a config folder the switch is saved and nothing is said.
+        let dir = std::env::temp_dir().join(format!("herdr-talk-gui-f3-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HERDR_PLUGIN_CONFIG_DIR", &dir);
+        assert_eq!(press(egui::Key::F3), Some(String::new()), "saved: nothing to say");
+        assert!(dir.join("config.json").exists(), "the language is saved");
+        for _ in 0..8 {
+            if talk_core::i18n::language() == before {
+                break;
+            }
+            talk_core::i18n::switch_language_notice();
+        }
+        assert_eq!(talk_core::i18n::language(), before);
+        std::env::remove_var("HERDR_PLUGIN_CONFIG_DIR");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
