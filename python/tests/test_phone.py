@@ -12,7 +12,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 os.environ.setdefault("HERDR_TALK_LANG", "en")
 
 from core import noise  # noqa: E402
-import phone  # noqa: E402
+from core import phone  # noqa: E402
+from extend import screen  # noqa: E402
 from core import store  # noqa: E402
 import talk  # noqa: E402
 
@@ -119,10 +120,10 @@ class ChatPhoneTest(Base):
         self.assertTrue(first.try_become_host())
         self.assertFalse(second.try_become_host())
         token = phone.read(self.dir)["token"]
-        self.assertIn(token, "\n".join(first.phone_overlay()))
-        self.assertIsNone(second.phone_overlay(), "a node that is not the host shows nothing by itself")
+        self.assertIn(token, "\n".join(screen.phone_overlay(first)))
+        self.assertIsNone(screen.phone_overlay(second), "a node that is not the host shows nothing by itself")
         second.handle("/phone")
-        self.assertIn(token, "\n".join(second.phone_overlay()))  # but it reads the host's phone.json when asked
+        self.assertIn(token, "\n".join(screen.phone_overlay(second)))  # but it reads the host's phone.json when asked
         self.assertFalse([line for line in self.lines if token in line])
         self.assertFalse([line for chat in (first, second) for line, _ in chat.lines if token in line])
         first.release_host()
@@ -165,7 +166,7 @@ class ChatPhoneTest(Base):
     def test_no_phone_json_says_so(self):
         chat = self.chat(1)
         chat.show_phone()
-        self.assertEqual(chat.phone_overlay(), [talk.t("phone.none")])
+        self.assertEqual(screen.phone_overlay(chat), [talk.t("phone.none")])
 
     def test_the_host_joining_shows_the_phone_here_but_a_remote_one_does_not(self):
         host = self.chat(5000)

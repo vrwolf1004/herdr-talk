@@ -14,7 +14,7 @@ import unicodedata
 
 from core import relay_key
 from core import relay_rest
-import relay_settings
+from core import relay_settings
 from i18n import cycle_language, t
 
 TIMEOUT_SECONDS = 30

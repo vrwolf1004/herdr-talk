@@ -98,7 +98,8 @@ class StoreTest(Base):
         self.assertEqual(store.commit(bytes([1]) * 32, bytes([2]) * 32).hex(), "8d02d5ba2bcdc8c3392ffda99d1a66c4eede8c57cc4443c7d0fc00d5f39d7b59")
         self.assertEqual(store.sas_code(bytes([1]) * 32, bytes([2]) * 32, bytes([3]) * 32, bytes([4]) * 32), "56324468")
         self.assertEqual(store.sas_code(bytes([3]) * 32, bytes([4]) * 32, bytes([1]) * 32, bytes([2]) * 32), "56324468")
-        mobile = json.load(open(os.path.join(os.path.dirname(__file__), "..", "..", "mobile", "test-vectors", "relay.json")))["outputs"]
+        with open(os.path.join(os.path.dirname(__file__), "..", "..", "mobile", "test-vectors", "relay.json"), encoding="utf-8") as handle:
+            mobile = json.load(handle)["outputs"]
         code = store.sas_code(bytes.fromhex(mobile["initiatorPublic"]), bytes([0x11]) * 32, bytes.fromhex(mobile["responderPublic"]), bytes([0x22]) * 32)
         self.assertEqual(code, "55024010")
 

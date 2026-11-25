@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import relay_settings as rs  # noqa: E402
+from core import relay_settings as rs  # noqa: E402
 
 
 def _sample():

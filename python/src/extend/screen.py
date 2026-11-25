@@ -5,6 +5,8 @@ import os
 import sys
 import time
 
+from core import phone
+from core.events import Message, Notice, PeerRow
 from i18n import cycle_language, t
 from extend import settings_form as relay_form
 
@@ -269,3 +271,53 @@ def on_key(ch, chat, typed):
         typed[0] += ch
     return True
 
+
+def event_rows(event):
+    """The chat rows of an event as (text, mine, sender): a notice is its locale text, one row per line; a message
+    keeps its sender ("[time] sender > text" on screen); a plain sender is labelled "(plain text)"; a peer line is built
+    from its state here, so the core holds no words."""
+    if isinstance(event, Notice):
+        return [(row, False, None) for row in t(event.code, **event.args).split(chr(10))]
+    if isinstance(event, Message):
+        return [(event.text, event.mine, f"{event.sender} ({t('chat.plain')})" if event.plain else event.sender)]
+    if isinstance(event, PeerRow):
+        return [(f"- {event.prefix}{event.name} ({event.ip}:{event.port}) {_peer_state(event)}", False, None)]
+    return [(event.text, event.mine, None)]
+
+
+def _peer_state(row):
+    """The words of a /peers line's state."""
+    if row.state == "verified":
+        return t("peers.verified")
+    if row.state == "plain":
+        return t("peers.plain")
+    if row.state == "unverified":
+        return t("peers.unverified", code=row.code)
+    # shortcut: the pending text is English-only; move it to the locales with the other peer states.
+    return "(code pending)" if row.state == "pending" else ""
+
+
+def event_texts(event):
+    """The rows of an event as plain text, as they are printed when no screen is up."""
+    return [text if sender is None else f"{sender} > {text}" for text, _, sender in event_rows(event)]
+
+
+def print_event(event):
+    for text in event_texts(event):
+        print(text, flush=True)
+
+
+def add_event(chat, event):
+    """Keep an event's rows as chat lines (what the screen, or the control channel, shows)."""
+    for text, mine, sender in event_rows(event):
+        chat.add_line(text, mine, sender)
+
+
+def phone_overlay(chat):
+    """The rows to draw over the screen, read from phone.json now, so the token is in no chat line or copy. None when hidden."""
+    if not chat.phone_visible():
+        return None
+    info = phone.read(chat.state_dir) if chat.state_dir else None
+    if info is None:
+        return [t("phone.none")]
+    return [t("phone.title"), *[f"  {url}" for url in info["urls"]], t("phone.token", token=info["token"]), t("phone.hint")]

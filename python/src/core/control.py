@@ -9,7 +9,7 @@ import secrets
 import socket
 import threading
 
-import relay_settings
+from core import relay_settings
 from core import sessions
 from core.chat import LOOP_POLL_SECONDS
 from core.net import STOP

@@ -9,14 +9,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import phone
-import relay_chat
-import relay_settings
-from core import noise, store
-from core.events import Line, Message, Notice, Status
+from core import noise, phone, relay_chat, relay_settings, store
+from core.events import Line, Message, Notice, PeerRow, Status
 from core.names import NAMES_BY_LANGUAGE, clean_text, peer_name, pick_name, unique_name
 from core.net import APP, MAX_TEXT_CHARS, SEND_TIMEOUT_SECONDS, STOP, _Deadline, deliver, is_local_address, send_to
-from i18n import t
 
 
 MAX_TOTAL_PEERS = 10  # everyone in the LAN chat (verified or not) besides this PC: a new peer past this many is ignored
@@ -87,30 +83,10 @@ def resolve_name_clash(chat):
     return name, new
 
 
-def event_rows(event):
-    """The chat rows of an event as (text, mine, sender): a notice is its locale text, one row per line; a message
-    keeps its sender ("[time] sender > text" on screen); a line is text the screen side already made."""
-    if isinstance(event, Notice):
-        return [(row, False, None) for row in t(event.code, **event.args).split(chr(10))]
-    if isinstance(event, Message):
-        return [(event.text, event.mine, event.sender)]
-    return [(event.text, event.mine, None)]
-
-
-def event_texts(event):
-    """The rows of an event as plain text, as they are printed when no screen is up."""
-    return [text if sender is None else f"{sender} > {text}" for text, _, sender in event_rows(event)]
-
-
-def print_event(event):
-    for text in event_texts(event):
-        print(text, flush=True)
-
-
 class Chat:
     """Shared state: this instance, known peers, and the lines shown on screen."""
 
-    on_event = staticmethod(print_event)  # where events go: stdout until a screen (or a test) takes them
+    on_event = None  # where events go: the screen sets it (extend/screen.py); None drops them
 
     def __init__(self, me, plaintext=True):
         # me: id, name, port; with an identity also key and secret (bytes). start_node() sets plaintext from config.json
@@ -167,11 +143,6 @@ class Chat:
         with self.lines_lock:
             self.lines.append((line, mine, sender, stamp))
             del self.lines[:-MAX_LINES]
-
-    def add_event(self, event):
-        """Keep an event's rows as chat lines (what a screen, or the control channel, shows)."""
-        for text, mine, sender in event_rows(event):
-            self.add_line(text, mine, sender)
 
     def clear_lines(self):
         with self.lines_lock:
@@ -265,15 +236,6 @@ class Chat:
             self.phone_until = None
         self._phone_changed()
         return False
-
-    def phone_overlay(self):
-        """The rows to draw over the screen, read from phone.json now, so the token is in no chat line or copy. None when hidden."""
-        if not self.phone_visible():
-            return None
-        info = phone.read(self.state_dir) if self.state_dir else None
-        if info is None:
-            return [t("phone.none")]
-        return [t("phone.title"), *[f"  {url}" for url in info["urls"]], t("phone.token", token=info["token"]), t("phone.hint")]
 
     def my_nonce_for(self, key):
         """This node's nonce for one peer: made once per peer, never shared with another peer. Its commitment is put in
@@ -444,17 +406,15 @@ class Chat:
             own = self.me.get("key")
             for info in found.values():
                 link = self.link_of(info)
-                if link == "encrypted":
-                    state = t("peers.verified")
-                elif link == "plain":
-                    state = t("peers.plain")
+                code = None
+                if link in ("encrypted", "plain"):
+                    state = "verified" if link == "encrypted" else "plain"
                 else:
-                    sas = self.sas_for(info["key"]) if info.get("key") is not None else None
-                    # shortcut: the pending text is English-only; move it to the locales with the other peer states.
-                    state = t("peers.unverified", code=sas) if sas is not None else ("(code pending)" if own is not None else "")
+                    code = self.sas_for(info["key"]) if info.get("key") is not None else None
+                    state = "unverified" if code is not None else ("pending" if own is not None else "")
                 number = self.numbers.get(info.get("key"))
                 prefix = f"[{number}] " if number is not None else ""
-                self.emit(Line(f"- {prefix}{clean_text(info['name'], 32)} ({info['ip']}:{info['port']}) {state}"))
+                self.emit(PeerRow(prefix, clean_text(info["name"], 32), info["ip"], info["port"], state, code))
             return True
         if text == "/phone" or text.startswith("/phone "):
             argument = text[6:].strip()
