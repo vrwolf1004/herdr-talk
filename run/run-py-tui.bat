@@ -4,7 +4,7 @@ chcp 65001 >nul
 set "ROOT=%~dp0.."
 rem 실행 중인 herdr-talk 프로세스가 있으면 빌드를 막는다 (exe 가 잠겨 링크가 실패한다)
 set "RUNNING="
-for %%P in (herdr-talk.exe herdr-talk-gui.exe herdr-talk-py.exe) do (
+for %%P in (herdr-talk-py.exe) do (
     tasklist /FI "IMAGENAME eq %%P" 2>nul | find /I "%%P" >nul && set "RUNNING=%%P"
 )
 if defined RUNNING (

@@ -37,6 +37,32 @@ mod tests {
     }
 
     #[test]
+    fn the_help_lists_rejoin_and_the_rejoin_text_is_translated() {
+        assert!(HELP_KEYS.contains(&"help.rejoin"));
+        let done = talk_core::t("rejoin.done", &[("seconds", "60")]);
+        assert!(done.contains("60") && done != "rejoin.done", "{done}");
+    }
+
+    #[test]
+    fn a_waiting_row_is_in_the_terminal_notation_with_the_seconds_left() {
+        let waiting = |seconds| Waiting { number: 2, name: "Bob".into(), ip: "10.0.0.2".into(), code: "1234 5678".into(), seconds };
+        let row = wait_row(&waiting(42));
+        assert!(row.starts_with("[2] Bob (10.0.0.2)  "), "{row}");
+        assert!(row.contains(&talk_core::t("nodes.waiting", &[])), "{row}");
+        assert!(row.contains(&talk_core::t("nodes.seconds_left", &[("seconds", "42")])), "{row}");
+    }
+
+    #[test]
+    fn the_host_badge_follows_the_room_owner_in_supabase_and_the_lan_owner_otherwise() {
+        // Supabase: only the room owner (the chat's host flag), never the PC's LAN owner.
+        assert!(hosting(true, true, false));
+        assert!(!hosting(true, false, true));
+        // LAN: unchanged, the phone-file owner only.
+        assert!(hosting(false, false, true));
+        assert!(!hosting(false, true, false));
+    }
+
+    #[test]
     fn only_failures_are_shown_from_the_relay_text() {
         assert_eq!(relay_problem(""), None);
         assert_eq!(relay_problem("relay: room joined (2 members)"), None);

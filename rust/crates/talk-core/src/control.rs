@@ -30,11 +30,12 @@ pub fn answer(chat: &Arc<Chat>, request: &Value, allow_shutdown: bool) -> Value 
             // This chat's own name and port, so a GUI can list it above the others.
             let me = chat.me.lock().unwrap().clone();
             // Peers waiting for a /join: their name and the code the GUI shows for the comparison.
-            let pending: Vec<Value> = chat.fresh_peers().iter().filter_map(|peer| {
-                let code = chat.sas_for(peer.key.as_deref()?)?;
-                (chat.link_of(peer) == crate::chat::Link::Unverified).then(|| json!({"name": peer.name, "code": code}))
+            // The same numbers as the terminal's list ([n]), so /join n means the same peer in both.
+            let pending: Vec<Value> = chat.unverified_peers().iter().filter_map(|(peer, code, number)| {
+                let key = peer.key.as_deref()?;
+                Some(json!({"name": peer.name, "ip": peer.ip, "code": code, "number": number, "seconds": chat.join_seconds_left(key).unwrap_or(0)}))
             }).collect();
-            json!({"ok": true, "peers": peers, "pending": pending, "me": {"name": me.name, "port": me.port}, "room": chat.room_names(), "room_status": chat.room_status().unwrap_or_default(), "relay": chat.relay_status(), "mode": chat.mode_name()})
+            json!({"ok": true, "peers": peers, "pending": pending, "me": {"name": me.name, "port": me.port}, "room": chat.room_names(), "room_status": chat.room_status().unwrap_or_default(), "relay": chat.relay_status(), "mode": chat.mode_name(), "host": chat.is_host()})
         }
         Some("send") => match request.get("text").and_then(Value::as_str) {
             // Same path as typing in the terminal: commands and plain messages both work.

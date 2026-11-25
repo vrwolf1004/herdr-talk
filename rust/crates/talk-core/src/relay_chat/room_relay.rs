@@ -96,7 +96,8 @@ fn listen(chat: &Chat, state: &Path, config: &Config, settings: &Settings, seed:
             }
             if published {
                 match load_members(config, seed, &settings.room_code, &name_key(&chat.me.lock().unwrap().name), &settings.trust) {
-                    Ok(list) => {
+                    Ok((list, owner_pk)) => {
+                        chat.set_room_owner(owner_pk == me);
                         // The people in the room, for the CONNECTED NODES list (this PC is not listed twice).
                         chat.set_room_names(list.iter().filter(|member| member.pk != me).map(|member| if member.name.is_empty() { member.pk.chars().take(4).collect() } else { member.name.clone() }).collect());
                         chat.set_relay_status(&format!("relay: room joined ({} members)", list.len()));
@@ -148,14 +149,15 @@ fn publish_message(outcome: PutOutcome) -> Result<(), String> {
 }
 
 /// Join the room (idempotent) and return its members with their Noise keys.
-fn load_members(config: &Config, seed: &[u8; 32], room_code: &str, name: &str, trust: &str) -> Result<Vec<Member>, String> {
+fn load_members(config: &Config, seed: &[u8; 32], room_code: &str, name: &str, trust: &str) -> Result<(Vec<Member>, String), String> {
     let request = relay_rest::join_room_request(config, seed, room_code, name, trust)?;
     let (status, body) = relay_rest::http_post(&request)?;
     let info = relay_rest::read_join_room_response(status, &body)?;
-    relay_rest::members_noise_keys(config, &info.members)?
+    let members = relay_rest::members_noise_keys(config, &info.members)?
         .into_iter()
         .map(|(pk, noise, name)| Ok(Member { pk, noise: store::from_hex(&noise).ok_or("noise key is not hex")?, name }))
-        .collect()
+        .collect::<Result<Vec<Member>, String>>()?;
+    Ok((members, info.owner_pk))
 }
 
 /// Send one text to every other member of the room, one Noise message each, in one post (no /trust step in rooms).

@@ -64,11 +64,13 @@ pub(crate) struct App {
 /// The key list of the TUI /help box, in its order (talk-core locale keys; "" is a gap).
 pub(crate) const HELP_KEYS: &[&str] = &[
     "help.title_send", "help.send", "", "help.commands", "help.name", "help.lang", "help.codes",
-    "help.peers", "help.trust", "help.phone", "help.help", "help.quit", "", "help.keys", "help.enter", "help.backspace",
-    "help.ctrl_l", "help.ctrl_p", "help.ctrl_c",
+    "help.peers", "help.trust", "help.phone", "help.rejoin", "help.help", "help.quit", "", "help.keys", "help.enter", "help.backspace",
+    "help.ctrl_l", "help.ctrl_c",
 ];
 
 pub(crate) const PHONE_SHOWN: Duration = Duration::from_secs(30);
+/// Off: the phone address window is not drawn. Its state, phone.json, the bridge and `/phone new` stay as they are.
+const PHONE_PANEL: bool = false;
 
 /// F3 pressed this frame: switch the language (saved like the TUI's F3) and return the notice, if any. `None`: F3 was not pressed.
 pub(crate) fn language_key(ctx: &egui::Context) -> Option<String> {
@@ -308,7 +310,8 @@ impl eframe::App for App {
         }
         let mut open_settings = false;
         let supabase = talk_core::relay_settings::Mode::from_saved(&state.mode) == talk_core::relay_settings::Mode::Supabase;
-        let hosting = talk_core::phone::read(&state_dir()).is_some_and(|phone| state.me.as_ref().is_some_and(|(_, port)| phone.owner_port == *port));
+        let lan_host = talk_core::phone::read(&state_dir()).is_some_and(|phone| state.me.as_ref().is_some_and(|(_, port)| phone.owner_port == *port));
+        let hosting = hosting(supabase, state.host, lan_host);
         let (status_short, status_kind) = status_label(&state.status, supabase);
         egui::TopBottomPanel::top("status")
             .exact_height(40.0)
@@ -369,11 +372,11 @@ impl eframe::App for App {
             for peer in shown {
                 ui.colored_label(palette.text, egui::RichText::new(format!("● PEER  {peer}")).monospace());
             }
-            for (name, code) in &state.pending {
+            for waiting in &state.pending {
                 ui.horizontal(|ui| {
-                    ui.colored_label(palette.muted, egui::RichText::new(format!("● WAIT  {name}")).monospace());
+                    ui.colored_label(palette.muted, egui::RichText::new(wait_row(waiting)).monospace());
                     if ui.button(talk_core::t("gui.button.verify", &[])).clicked() {
-                        verify_open = Some((name.clone(), code.clone()));
+                        verify_open = Some((waiting.name.clone(), waiting.code.clone()));
                     }
                 });
             }
@@ -411,8 +414,8 @@ impl eframe::App for App {
                 if (enter || clicked) && !self.input.trim().is_empty() {
                     let text = std::mem::take(&mut self.input);
                     match text.trim() {
-                        // The window shows the phone address itself; the node only makes a new token.
-                        "/phone" => self.phone_until = Some(Instant::now() + PHONE_SHOWN),
+                        // With the panel off, a bare /phone goes to the node, which answers in the chat (as in the TUI).
+                        "/phone" if PHONE_PANEL => self.phone_until = Some(Instant::now() + PHONE_SHOWN),
                         "/phone new" => {
                             let _ = self.outgoing.send(text);
                             self.phone_until = Some(Instant::now() + PHONE_SHOWN);
@@ -475,7 +478,7 @@ impl eframe::App for App {
                 self.verify = None;
             }
         }
-        if self.phone_until.is_some() {
+        if PHONE_PANEL && self.phone_until.is_some() {
             let mut rows = vec![egui::RichText::new(talk_core::t("phone.title", &[])).strong()];
             match talk_core::phone::read(&state_dir()) {
                 Some(phone) => {

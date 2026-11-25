@@ -51,6 +51,7 @@ class Relay:
         self.names = {}    # pk hex -> the 대화명 it was shown under (a clash gets the key's first 4 characters)
         self.since = None
         self.own_pk = None  # this PC's Ed25519 key hex, set when the relay starts
+        self.owner_pk = None  # the room's owner (who created it), from the last join: the room's [host]
         self.joined = False  # True while the last join worked: the status tag reads it
         self.started = 0    # seconds when this node's relay started (memory only): older room rows are not shown
         self.cache = room.NonceCache()
@@ -100,6 +101,7 @@ class Relay:
     def _load_members(self):
         """Read the room's member keys and their Noise keys (the peers table)."""
         info = relay_rest.join_room(self.config, self.session.seed, self.settings["room_code"], self.hooks.my_name(), self.settings["trust"])
+        self.owner_pk = info["owner_pk"]
         pks = [pk for pk in info["members"] if pk != self.own_pk]
         noise_keys, names = {}, {}
         if pks:

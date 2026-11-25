@@ -117,12 +117,28 @@ fn announce(udp_port: u16, chat: Arc<Chat>) {
     }
 }
 
+/// Errors in a row before a receive loop gives up. Each one waits LOOP_POLL, so a broken socket does not spin.
+const LOOP_ERRORS: u32 = 50;
+
+/// One error in a receive loop. False when the loop must end: after LOOP_ERRORS in a row, with one notice in the chat.
+fn keep_receiving(chat: &Chat, failures: &mut u32) -> bool {
+    *failures += 1;
+    if *failures < LOOP_ERRORS {
+        chat.stop.wait(LOOP_POLL);
+        return true;
+    }
+    chat.say(t("net.receive_stopped", &[]));
+    false
+}
+
 /// Remember every other instance that announces itself.
 fn listen_for_peers(socket: UdpSocket, chat: Arc<Chat>) {
     let mut buffer = [0; 4096];
+    let mut failures = 0;
     while !chat.stop.is_set() {
         match socket.recv_from(&mut buffer) {
             Ok((size, address)) => {
+                failures = 0;
                 remember_peer(&chat, &buffer[..size], address.ip().to_string());
                 // The reveal workers need the Arc, so they are started here, not inside the parser.
                 for (key, ip, port) in chat.take_reveal_requests() {
@@ -130,7 +146,12 @@ fn listen_for_peers(socket: UdpSocket, chat: Arc<Chat>) {
                 }
             }
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-            Err(_) => return,
+            // A transient error (a datagram too big for the buffer, a reset) is skipped; the socket stays open.
+            Err(_) => {
+                if !keep_receiving(&chat, &mut failures) {
+                    return;
+                }
+            }
         }
     }
 }
@@ -272,9 +293,11 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
 /// Accept TCP connections. Each connection carries one message.
 fn receive_messages(server: TcpListener, chat: Arc<Chat>) {
     let open = Arc::new(Mutex::new(Open::default()));
+    let mut failures = 0;
     while !chat.stop.is_set() {
         match server.accept() {
             Ok((conn, address)) => {
+                failures = 0;
                 let ip = address.ip().to_string();
                 // Connections from unknown addresses or over the rate limit are closed unread.
                 if !chat.admit_sender(&ip) {
@@ -291,7 +314,11 @@ fn receive_messages(server: TcpListener, chat: Arc<Chat>) {
                 });
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => chat.stop.wait(ACCEPT_POLL),
-            Err(_) => return,
+            Err(_) => {
+                if !keep_receiving(&chat, &mut failures) {
+                    return;
+                }
+            }
         }
     }
 }
@@ -903,6 +930,42 @@ mod tests {
         chat.trusted.lock().unwrap().push(Trusted { name: "P9".into(), key: key(9).to_vec(), ip: "10.0.4.9".into() });
         remember_peer(&chat, packet(9).as_bytes(), "10.0.4.9".into());
         assert!(chat.fresh_peers().iter().any(|peer| peer.key.as_deref() == Some(&key(9)[..])), "the ninth verified peer is admitted");
+    }
+
+    #[test]
+    fn a_peer_is_not_remembered_until_the_mode_is_known() {
+        // Reproduces the silent first start: a fresh state folder (no relay.json) keeps LAN listening off until the
+        // first-run choice, so an announce from another node is dropped. Once the mode is known it is remembered.
+        let chat = chat();
+        let hello = json!({"app": APP, "id": "p1", "name": "Bob", "port": 9}).to_string();
+        chat.set_lan_listening(false);
+        remember_peer(&chat, hello.as_bytes(), "10.0.0.9".into());
+        assert!(chat.fresh_peers().is_empty(), "no peer while the mode is unknown");
+        chat.set_lan_listening(true);
+        remember_peer(&chat, hello.as_bytes(), "10.0.0.9".into());
+        assert_eq!(chat.fresh_peers().len(), 1, "the peer is remembered once listening is on");
+    }
+
+    #[test]
+    fn a_too_big_datagram_does_not_end_discovery() {
+        // A datagram bigger than the 4096-byte buffer used to end the receive loop; the node must still hear peers after it.
+        let udp_port = {
+            let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let dir = std::env::temp_dir().join(format!("herdr-talk-discovery-{}", fastrand::u64(..)));
+        let chat = start_in(Some("Ann".into()), 0, udp_port, &dir, false).unwrap();
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(&[b'x'; 6000], ("127.0.0.1", udp_port)).unwrap();
+        let hello = json!({"app": APP, "id": "p1big", "name": "Bob", "port": 9}).to_string();
+        let started = Instant::now();
+        while chat.fresh_peers().is_empty() && started.elapsed() < Duration::from_secs(5) {
+            sender.send_to(hello.as_bytes(), ("127.0.0.1", udp_port)).unwrap();
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(chat.fresh_peers().iter().any(|peer| peer.id == "p1big"), "the peer is remembered after the big datagram");
+        chat.stop.set();
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

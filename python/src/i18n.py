@@ -103,6 +103,11 @@ def cycle_language():
     return code
 
 
+def can_save_language():
+    """True when there is a settings folder: F3 keeps the language for the next runs. Without one it lasts this run only."""
+    return bool(os.environ.get("HERDR_PLUGIN_CONFIG_DIR"))
+
+
 def save_language(language):
     """Write "lang" into HERDR_PLUGIN_CONFIG_DIR/config.json, keeping the other keys. False when nothing was written:
     no config folder, or an existing config.json that is not a readable JSON object (it is left as it is)."""

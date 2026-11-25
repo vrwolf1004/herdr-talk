@@ -251,6 +251,70 @@ class RoomGateTests(unittest.TestCase):
         with mock.patch.object(talk.relay_rest, "_send", side_effect=OSError("offline")):
             self.assertFalse(talk.relay_chat.room_refuses(self.dir))
 
+class JoinCountdownTest(unittest.TestCase):
+    """A waiting key shows the seconds left to /join; a joined one shows none; the count reaches 0 when it is kicked."""
+
+    def test_the_seconds_left_go_down_to_zero_and_a_joined_key_has_none(self):
+        chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        chat.waiting_since["k"] = 1000.0
+        with mock.patch("core.chat.time.time", return_value=1010.0):
+            self.assertEqual(chat.join_seconds_left("k"), talk.JOIN_LIMIT_SECONDS - 10)
+        with mock.patch("core.chat.time.time", return_value=1000.0 + talk.JOIN_LIMIT_SECONDS + 5):
+            self.assertEqual(chat.join_seconds_left("k"), 0)
+        self.assertIsNone(chat.join_seconds_left("unknown"))
+        chat.trusted.append({"name": "K", "key": "k", "ip": "10.0.0.2"})
+        self.assertIsNone(chat.join_seconds_left("k"), "a verified key has no countdown")
+
+    def test_every_language_has_the_seconds_placeholder(self):
+        for path in sorted((Path(talk.__file__).resolve().parent / "locales").glob("*.json")):
+            self.assertIn("{seconds}", json.loads(path.read_text(encoding="utf-8"))["nodes.waiting_left"], path.name)
+
+
+KICK_REJOIN = {  # the sentence that ends each peer.kicked text: how to be admitted again
+    "en": "To reconnect, type /rejoin.", "ko": "다시 연결하시려면 /rejoin 를 입력하세요.",
+    "ru": "Чтобы снова подключиться, введите /rejoin.", "fr": "Pour vous reconnecter, tapez /rejoin.",
+    "es": "Para volver a conectar, escriba /rejoin.", "de": "Zum erneuten Verbinden /rejoin eingeben.",
+    "ja": "再接続するには /rejoin と入力してください。"}
+
+
+class RejoinTest(unittest.TestCase):
+    """/rejoin forgets the kicked peers (their clock starts again at the next announce); verified peers are left alone."""
+
+    def test_rejoin_clears_the_kicked_and_says_so(self):
+        chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        events = []
+        chat.on_event = events.append
+        chat.kicked.add("k")
+        chat.waiting_since["k"] = 1.0
+        chat.trusted.append({"name": "T", "key": "t", "ip": "10.0.0.2"})
+        chat.waiting_since["t"] = 2.0
+        self.assertTrue(chat.handle("/rejoin"))
+        self.assertEqual(chat.kicked, set())
+        self.assertNotIn("k", chat.waiting_since)
+        self.assertEqual(chat.waiting_since["t"], 2.0, "a verified peer keeps its record")
+        self.assertIsInstance(events[-1], talk.Notice)
+        self.assertEqual(events[-1].code, "rejoin.done")
+        self.assertEqual(events[-1].args, {"seconds": talk.JOIN_LIMIT_SECONDS})
+
+    def test_every_language_has_the_rejoin_text_and_help_line(self):
+        for path in sorted((Path(talk.__file__).resolve().parent / "locales").glob("*.json")):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertIn("{seconds}", data["rejoin.done"], path.name)
+            self.assertIn("/rejoin", data["help.rejoin"], path.name)
+
+
+class KickNoticeTest(unittest.TestCase):
+    """The kick notice takes the join limit as an argument, so the text follows JOIN_LIMIT_SECONDS in every language."""
+
+    def test_every_language_has_the_seconds_placeholder_and_the_limit_is_30(self):
+        self.assertEqual(talk.JOIN_LIMIT_SECONDS, 30)
+        for path in sorted((Path(talk.__file__).resolve().parent / "locales").glob("*.json")):
+            text = json.loads(path.read_text(encoding="utf-8"))["peer.kicked"]
+            self.assertIn("{seconds}", text, path.name)
+            self.assertNotIn("20", text, path.name)
+            self.assertTrue(text.endswith(KICK_REJOIN[path.stem]), path.name)
+
+
 class ChatStatusRowTest(unittest.TestCase):
     """The chat status row: peers, mode, room ID and setup code; a relay error is added at the end, success adds nothing."""
 
@@ -299,6 +363,38 @@ class ChatStatusRowTest(unittest.TestCase):
         text = self._row("relay: room join failed: offline")
         self.assertIn(f"setup code: ABCD2345 · relay: room join failed: offline", text)
         self.assertIn(t("status.line", peers=2), text)
+
+
+class DiscoverySurvivesSocketErrorsTest(unittest.TestCase):
+    """A datagram bigger than the 4096-byte receive buffer is a socket error on Windows; discovery must go on after it."""
+
+    def setUp(self):
+        talk.STOP.clear()
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.settimeout(talk.LOOP_POLL_SECONDS)
+        self.sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(self.listener.close)
+        self.addCleanup(self.sender.close)
+        self.addCleanup(talk.STOP.set)
+
+    def test_a_big_datagram_then_a_normal_announce_still_remembers_the_peer(self):
+        chat = talk.Chat({"id": "me", "name": "Me", "port": 1})
+        chat.lan_listening = True
+        thread = threading.Thread(target=talk._listen_loop, args=(self.listener, chat), daemon=True)
+        thread.start()
+        address = self.listener.getsockname()
+        self.sender.sendto(b"x" * 5000, address)
+        time.sleep(0.2)
+        self.sender.sendto(json.dumps({"app": talk.APP, "id": "peer1", "name": "Bob", "port": 9}).encode("utf-8"), address)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not any(info["id"] == "peer1" for info in chat.peers.values()):
+            time.sleep(0.05)
+        self.assertTrue(any(info["id"] == "peer1" for info in chat.peers.values()), "the announce after the big datagram is kept")
+        self.assertTrue(thread.is_alive(), "the loop is still running")
+        talk.STOP.set()
+        thread.join(3)
+        self.assertFalse(thread.is_alive())
 
 
 class HerdrCliTimeoutTest(unittest.TestCase):

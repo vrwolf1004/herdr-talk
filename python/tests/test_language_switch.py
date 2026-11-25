@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import i18n  # noqa: E402
 import talk  # noqa: E402
+from core.events import Notice  # noqa: E402
+from extend import screen  # noqa: E402
 from extend import settings_form  # noqa: E402
 
 ORDER = ["en", "ko", "ru", "fr", "es", "de", "ja"]
@@ -183,6 +185,46 @@ class FieldAlignmentTests(unittest.TestCase):
                     columns.append(settings_form.char_width(plain.split(" : [", 1)[0]))
             self.assertEqual(len(columns), 3, language)  # the Unique ID row is not drawn
             self.assertEqual(len(set(columns)), 1, (language, columns))
+
+
+class NoSettingsFolderNoteTests(unittest.TestCase):
+    """Without HERDR_PLUGIN_CONFIG_DIR, F3 changes the language for this run only and says so; with it, no note."""
+
+    def setUp(self):
+        self.saved_language = i18n.language()
+        self.dir = tempfile.mkdtemp(prefix="herdr-talk-note-")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.addCleanup(i18n.set_language, self.saved_language)
+
+    def test_first_run_and_settings_show_the_note_without_a_folder(self):
+        i18n.set_language("en")
+        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": ""}):
+            first = settings_form.FirstRun()
+            first.on_key(settings_form.KEY_F3)
+            self.assertEqual(i18n.language(), "ko")
+            self.assertEqual(first.message, i18n.t("lang.not_saved"))
+            form = settings_form.SettingsForm(self.dir, mine=("aa" * 32, "bb" * 32))
+            form.open_supabase()
+            form.on_key(settings_form.KEY_F3)
+            self.assertEqual(form.message, i18n.t("lang.not_saved"))
+
+    def test_the_chat_gets_the_note_without_a_folder_and_not_with_one(self):
+        i18n.set_language("en")
+        chat = mock.MagicMock()
+        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": ""}):
+            screen.on_key(settings_form.KEY_F3, chat, [""])
+        chat.emit.assert_called_once_with(Notice("lang.not_saved"))
+        chat = mock.MagicMock()
+        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": self.dir}):
+            screen.on_key(settings_form.KEY_F3, chat, [""])
+        chat.emit.assert_not_called()
+
+    def test_with_a_folder_the_first_run_has_no_note(self):
+        i18n.set_language("en")
+        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": self.dir}):
+            first = settings_form.FirstRun()
+            first.on_key(settings_form.KEY_F3)
+        self.assertEqual(first.message, "")
 
 
 if __name__ == "__main__":

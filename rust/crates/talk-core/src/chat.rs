@@ -16,8 +16,10 @@ use std::time::{Duration, Instant};
 
 pub const PEER_TIMEOUT: Duration = Duration::from_secs(10);
 /// A LAN peer must be joined (/join) within this time of its first announce, or it is kicked for this chat.
-pub const JOIN_LIMIT: Duration = Duration::from_secs(20);
+pub const JOIN_LIMIT: Duration = Duration::from_secs(30);
 pub const MAX_TEXT_CHARS: usize = 2000;
+/// The phone address and token panel is drawn only when this is true. Off for now; the data and commands are kept.
+const PHONE_PANEL_SHOWN: bool = false;
 /// Every peer in the list (verified or not, this PC not counted): a new one is ignored at this count. Change it here.
 pub const MAX_TOTAL_PEERS: usize = 10;
 /// Verified peers in one room (LAN or relay), this PC included: a new verified peer is ignored when MAX_PEERS - 1 are here.
@@ -64,7 +66,7 @@ pub fn default_name() -> String {
 pub fn help_box() -> Vec<String> {
     let keys = [
         "help.title_send", "help.send", "", "help.commands", "help.name", "help.lang", "help.codes",
-        "help.peers", "help.trust", "help.phone", "help.help", "help.quit", "", "help.keys", "help.enter", "help.backspace",
+        "help.peers", "help.trust", "help.rejoin", "help.phone", "help.help", "help.quit", "", "help.keys", "help.enter", "help.backspace",
         "help.ctrl_l", "help.ctrl_p", "help.ctrl_c",
     ];
     let lines: Vec<String> = keys.iter().map(|key| if key.is_empty() { String::new() } else { t(key, &[]) }).collect();
@@ -180,6 +182,8 @@ pub struct Chat {
     wait_numbers: Mutex<Vec<(Vec<u8>, usize)>>,
     /// True in Supabase mode: messages go only through the relay, never over the LAN.
     supabase: AtomicBool,
+    /// Supabase: this node created the room (its join answer's owner_pk is this node's key).
+    room_owner: AtomicBool,
     /// The other people in the room (CLOUD SERVICE), for the CONNECTED NODES list.
     room_names: Mutex<Vec<String>>,
     /// False while the first-run screen is open: the mode is not chosen yet, so no LAN peer is remembered.
@@ -237,6 +241,7 @@ impl Chat {
             relay_status: Mutex::new(String::new()),
             wait_numbers: Mutex::new(Vec::new()),
             supabase: AtomicBool::new(false),
+            room_owner: AtomicBool::new(false),
             room_names: Mutex::new(Vec::new()),
             lan_listening: AtomicBool::new(true),
             my_nonces: Mutex::new(HashMap::new()),
@@ -329,14 +334,23 @@ impl Chat {
     }
 
     /// True while this node holds the phone host lock.
+    /// The host badge: in Supabase mode the room owner only; on the LAN the first node on this PC.
     pub fn is_host(&self) -> bool {
+        if self.is_supabase() {
+            return self.room_owner.load(Ordering::Relaxed);
+        }
         self.host.lock().unwrap().is_some()
+    }
+
+    /// Set from the room join answer: true when this node's key is the room's owner_pk.
+    pub fn set_room_owner(&self, owner: bool) {
+        self.room_owner.store(owner, Ordering::Relaxed);
     }
 
     /// Become the host if no node on this PC is. Shows the phone address once when it succeeds. Returns true on success.
     pub fn try_become_host(&self) -> bool {
         let Some(state) = &self.state_dir else { return false };
-        if self.stop.is_set() || self.is_host() {
+        if self.stop.is_set() || self.host.lock().unwrap().is_some() {
             return false;
         }
         let port = self.me.lock().unwrap().port;
@@ -401,8 +415,9 @@ impl Chat {
     }
 
     /// The rows to draw over the screen, read from `phone.json` now, so the token is in no chat line or copy.
+    /// The panel is switched off (PHONE_PANEL_SHOWN): phone.json, the bridge and `/phone new` stay as they are.
     pub fn phone_overlay(&self) -> Option<Vec<String>> {
-        if !self.phone_visible() {
+        if !PHONE_PANEL_SHOWN || !self.phone_visible() {
             return None;
         }
         let Some(phone) = self.state_dir.as_deref().and_then(phone::read) else {
@@ -523,6 +538,7 @@ impl Chat {
 
     pub fn stop_relay(&self) {
         self.room_names.lock().unwrap().clear();
+        self.set_room_owner(false);
         if let Some((_, stop)) = self.relay_inbox.lock().unwrap().take() {
             stop.store(true, Ordering::Relaxed);
         }
@@ -624,6 +640,27 @@ impl Chat {
         self.waiting_since.lock().unwrap().entry(key.to_vec()).or_insert_with(Instant::now);
     }
 
+    /// /rejoin: forget the kicked peers, so their next announce starts a new /join clock. Verified peers are not touched.
+    pub fn rejoin_kicked(&self) {
+        let kicked: Vec<Vec<u8>> = self.kicked.lock().unwrap().drain().collect();
+        let mut waiting = self.waiting_since.lock().unwrap();
+        for key in &kicked {
+            waiting.remove(key);
+        }
+        drop(waiting);
+        self.say(t("rejoin.done", &[("seconds", &JOIN_LIMIT.as_secs().to_string())]));
+    }
+
+    /// Seconds left for a peer to /join (from its first announce, rounded up), or None when it is joined or not waiting.
+    pub fn join_seconds_left(&self, key: &[u8]) -> Option<u64> {
+        if self.trusts(key) {
+            return None;
+        }
+        let since = *self.waiting_since.lock().unwrap().get(key)?;
+        let left = JOIN_LIMIT.saturating_sub(since.elapsed());
+        Some(left.as_secs() + u64::from(left.subsec_nanos() > 0))
+    }
+
     /// True for a kicked key: not joined within JOIN_LIMIT, and kicked for the rest of this chat. A joined key is never kicked.
     /// The first kick says so once in the chat.
     pub fn is_kicked(&self, key: &[u8], name: &str, ip: &str) -> bool {
@@ -639,9 +676,20 @@ impl Chat {
         if late {
             kicked.insert(key.to_vec());
             drop(kicked);
-            self.say(t("peer.kicked", &[("name", name), ("ip", ip)]));
+            self.say(t("peer.kicked", &[("name", name), ("ip", ip), ("seconds", &JOIN_LIMIT.as_secs().to_string())]));
         }
         late
+    }
+
+    /// /rejoin: forget the kicked keys that are not trusted, so the next announce waits for /join again with a new 60 s clock.
+    /// Trusted (already confirmed) keys are left as they are.
+    pub fn rejoin(&self) {
+        let released: Vec<Vec<u8>> = self.kicked.lock().unwrap().iter().filter(|key| !self.trusts(key)).cloned().collect();
+        for key in &released {
+            self.kicked.lock().unwrap().remove(key);
+            self.waiting_since.lock().unwrap().remove(key);
+        }
+        self.say(t("rejoin.done", &[("seconds", &JOIN_LIMIT.as_secs().to_string())]));
     }
 
     /// True for a key that was kicked (its announcements are ignored).
@@ -714,6 +762,10 @@ impl Chat {
             }
             return true;
         }
+        if text == "/rejoin" {
+            self.rejoin_kicked();
+            return true;
+        }
         if text == "/phone" || text.starts_with("/phone ") {
             match text[6..].trim() {
                 "" => self.show_phone(),
@@ -726,6 +778,10 @@ impl Chat {
                 },
                 _ => self.say(t("usage.phone", &[])),
             }
+            return true;
+        }
+        if text == "/rejoin" {
+            self.rejoin();
             return true;
         }
         if text == "/join" || text.starts_with("/join ") {
@@ -1282,6 +1338,36 @@ mod tests {
     }
 
     #[test]
+    fn rejoin_forgets_a_kicked_peer_so_it_waits_again_with_a_new_clock() {
+        let chat = chat(&[]);
+        let key = [7u8; 32];
+        chat.peers.lock().unwrap().push(keyed_peer("Dan", &key));
+        chat.note_waiting(&key);
+        chat.waiting_since.lock().unwrap().insert(key.to_vec(), Instant::now() - JOIN_LIMIT);
+        assert!(chat.fresh_peers().is_empty() && chat.was_kicked(&key));
+        assert!(chat.handle("/rejoin"));
+        assert!(!chat.was_kicked(&key));
+        assert_eq!(chat.join_seconds_left(&key), None, "the clock starts again at the next announce");
+        chat.note_waiting(&key);
+        assert_eq!(chat.fresh_peers().len(), 1, "listed again");
+        assert!(texts(&chat).contains(&t("rejoin.done", &[("seconds", &JOIN_LIMIT.as_secs().to_string())])));
+    }
+
+    #[test]
+    fn the_join_clock_counts_down_and_is_none_for_a_key_not_waiting() {
+        let chat = chat(&[]);
+        let key = [8u8; 32];
+        assert_eq!(chat.join_seconds_left(&key), None);
+        chat.note_waiting(&key);
+        assert_eq!(chat.join_seconds_left(&key), Some(JOIN_LIMIT.as_secs()));
+        chat.waiting_since.lock().unwrap().insert(key.to_vec(), Instant::now() - Duration::from_secs(10));
+        let left = chat.join_seconds_left(&key).unwrap();
+        assert!(left == JOIN_LIMIT.as_secs() - 10 || left == JOIN_LIMIT.as_secs() - 9, "{left}");
+        chat.waiting_since.lock().unwrap().insert(key.to_vec(), Instant::now() - JOIN_LIMIT);
+        assert_eq!(chat.join_seconds_left(&key), Some(0));
+    }
+
+    #[test]
     fn a_peer_not_joined_within_the_limit_is_kicked_for_the_chat() {
         let chat = chat(&[]);
         let key = [9u8; 32];
@@ -1290,7 +1376,7 @@ mod tests {
         chat.waiting_since.lock().unwrap().insert(key.to_vec(), Instant::now() - JOIN_LIMIT);
         assert!(chat.fresh_peers().is_empty(), "a kicked peer is not listed");
         assert!(chat.was_kicked(&key));
-        assert!(texts(&chat).contains(&t("peer.kicked", &[("name", "Dan"), ("ip", "10.0.0.2")])));
+        assert!(texts(&chat).contains(&t("peer.kicked", &[("name", "Dan"), ("ip", "10.0.0.2"), ("seconds", &JOIN_LIMIT.as_secs().to_string())])));
     }
 
     #[test]
@@ -1333,14 +1419,12 @@ mod tests {
         assert!(first.try_become_host() && first.is_host());
         assert!(!second.try_become_host() && !second.is_host());
         let token = phone::read(&dir).unwrap().token;
-        let overlay = first.phone_overlay().expect("shown when the host starts").join("
-");
-        assert!(overlay.contains(&token));
+        // The panel is off: nothing is drawn, but phone.json still holds the token for the bridge.
+        assert!(first.phone_overlay().is_none(), "the panel is off");
+        assert!(phone::read(&dir).is_some());
         assert!(second.phone_overlay().is_none(), "a node that is not the host shows nothing by itself");
-        // A node that is not the host still reads the host's phone.json when asked.
         second.handle("/phone");
-        assert!(second.phone_overlay().unwrap().join("
-").contains(&token));
+        assert!(second.phone_overlay().is_none(), "/phone draws nothing while the panel is off");
         for chat in [&first, &second] {
             assert!(chat.lines().iter().all(|line| !line.render().contains(&token)));
         }
@@ -1350,6 +1434,54 @@ mod tests {
         assert!(first.phone_visible());
         first.release_host();
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn in_supabase_only_the_room_owner_is_the_host_even_if_this_pc_already_has_one() {
+        let dir = phone_dir();
+        let chat = phone_chat(&dir, 1);
+        chat.set_supabase_mode(true);
+        // This node holds the PC-level lock first, but it did not create the room: no host badge.
+        assert!(chat.try_become_host());
+        assert!(!chat.is_host(), "the PC lock alone is not the room host in Supabase");
+        chat.set_room_owner(true);
+        assert!(chat.is_host(), "the owner of the room is the host");
+        chat.set_room_owner(false);
+        assert!(!chat.is_host());
+        chat.release_host();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn rejoin_clears_the_kicked_record_and_starts_a_new_clock_but_keeps_verified_peers() {
+        let chat = chat(&[]);
+        let kicked = [5u8; 32];
+        let verified = [6u8; 32];
+        chat.note_waiting(&kicked);
+        chat.waiting_since.lock().unwrap().insert(kicked.to_vec(), Instant::now() - JOIN_LIMIT);
+        assert!(chat.is_kicked(&kicked, "Dan", "10.0.0.2"));
+        chat.trusted.lock().unwrap().push(Trusted { name: "Eve".into(), key: verified.to_vec(), ip: "10.0.0.3".into() });
+        assert!(chat.handle("/rejoin"));
+        assert!(!chat.was_kicked(&kicked), "the kicked record is gone");
+        assert_eq!(chat.join_seconds_left(&kicked), None, "no clock until the next announce");
+        chat.note_waiting(&kicked);
+        assert!((29..=30).contains(&chat.join_seconds_left(&kicked).unwrap()), "a new clock");
+        assert!(chat.trusts(&verified), "a verified peer is kept");
+        assert!(texts(&chat).contains(&t("rejoin.done", &[("seconds", &JOIN_LIMIT.as_secs().to_string())])));
+    }
+
+    #[test]
+    fn the_join_countdown_runs_from_the_first_announce_and_stops_when_joined() {
+        let chat = chat(&[]);
+        let key = [9u8; 32];
+        assert_eq!(chat.join_seconds_left(&key), None, "not waiting yet");
+        chat.note_waiting(&key);
+        let left = chat.join_seconds_left(&key).unwrap();
+        assert!((29..=30).contains(&left), "{left}");
+        chat.waiting_since.lock().unwrap().insert(key.to_vec(), Instant::now() - Duration::from_secs(20));
+        assert!((9..=10).contains(&chat.join_seconds_left(&key).unwrap()));
+        chat.trusted.lock().unwrap().push(Trusted { name: "Dan".into(), key: key.to_vec(), ip: "10.0.0.2".into() });
+        assert_eq!(chat.join_seconds_left(&key), None, "a joined peer has no countdown");
     }
 
     #[test]
