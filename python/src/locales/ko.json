@@ -77,7 +77,6 @@
   "room.send_failed": "방 메시지 실패: {error}",
   "room.only_one": "이 PC는 방 하나만 씁니다. 지금 방은 {code} 입니다",
   "status.help_hint": "F1 도움말",
-  "status.lang_hint": "F3: 언어",
   "trust.no_number": "확인 대기 중인 상대 중에 {n}번이 없습니다",
   "trust.already": "{n}번은 이미 확인되었거나 더 이상 대기 중이 아닙니다",
   "nodes.waiting": "참가 대기",

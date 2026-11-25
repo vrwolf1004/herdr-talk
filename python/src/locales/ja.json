@@ -77,7 +77,6 @@
   "room.send_failed": "ルームメッセージの送信に失敗: {error}",
   "room.only_one": "このPCで使えるルームは1つだけです。現在のルームは {code} です",
   "status.help_hint": "F1 ヘルプ",
-  "status.lang_hint": "F3: 言語",
   "trust.no_number": "確認待ちの相手に {n} 番はありません",
   "trust.already": "{n} 番は確認済み、または待機中ではありません",
   "nodes.waiting": "参加待ち",

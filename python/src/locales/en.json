@@ -77,7 +77,6 @@
   "room.send_failed": "Room message failed: {error}",
   "room.only_one": "Only one room per PC: this PC already uses room {code}",
   "status.help_hint": "F1 help",
-  "status.lang_hint": "F3: language",
   "trust.no_number": "no waiting peer has the number {n}",
   "trust.already": "{n} is already verified, or is no longer waiting",
   "nodes.waiting": "waiting to join",

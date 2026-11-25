@@ -106,7 +106,7 @@ pub fn switch_language_notice() -> String {
 fn notice(result: Result<bool, String>) -> String {
     match result {
         Ok(true) => String::new(),
-        Ok(false) => String::new(),
+        Ok(false) => t("tui.lang.not_saved", &[]),
         Err(error) => error,
     }
 }
@@ -217,7 +217,7 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
         assert_eq!(save_to_folder(None, "ko"), Ok(false), "no folder: the switch lasts this run");
         assert_eq!(save_to_folder(Some(""), "ko"), Ok(false), "an empty folder is no folder");
-        assert!(notice(Ok(false)).is_empty(), "no folder: nothing is shown");
+        assert_eq!(notice(Ok(false)), t("tui.lang.not_saved", &[]), "no folder: the switch lasts this run, and the line says so");
         assert_eq!(save_to_folder(base.to_str(), "ko"), Ok(true));
         assert!(notice(Ok(true)).is_empty(), "a saved switch shows nothing");
         assert!(base.join("config.json").exists());
