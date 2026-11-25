@@ -14,7 +14,7 @@ import time
 
 from core import ed25519, relay_key, relay_rest, room, store
 from core.events import Message, Notice, Status
-import relay_settings
+from core import relay_settings
 
 SLICE_SECONDS = 0.2
 WAIT_SECONDS = 30

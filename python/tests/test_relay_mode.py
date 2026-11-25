@@ -11,8 +11,8 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 os.environ.setdefault("HERDR_TALK_LANG", "en")
 
-import relay_chat  # noqa: E402
-import relay_settings  # noqa: E402
+from core import relay_chat  # noqa: E402
+from core import relay_settings  # noqa: E402
 from core import store  # noqa: E402
 import talk  # noqa: E402
 from extend import tui  # noqa: E402

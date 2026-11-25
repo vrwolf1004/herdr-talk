@@ -24,14 +24,12 @@ import threading
 from core.names import (  # re-exported: the name rules live in core/names.py
     NAMES_BY_LANGUAGE, clean_text, default_name, peer_name, pick_name, plain_sender, sender_name, squeeze_spaces, unique_name)
 import herdr_api
-import relay_chat
-import relay_settings
-from core import relay_rest
+from core import relay_chat, relay_rest, relay_settings
 from core import sessions
 from core import store
 from core.events import Line, Notice
 from core.chat import (  # the chat state and the LAN receive side: core/chat.py, re-exported for the screen and tests
-    Chat, RelayHooks, event_rows, event_texts, print_event, remember_peer, reveal_message, read_reveal, exchange_reveal, show_code, reveal_later, receive_messages, receive_one, listen_for_peers, _listen_loop, _read_plain, _receive_encrypted, resolve_name_clash, MAX_TOTAL_PEERS, PEER_TIMEOUT_SECONDS, MAX_PEERS, JOIN_LIMIT_SECONDS, AUTO_RENAME_GAP_SECONDS, SEND_WORKERS, MAX_LINES, MESSAGE_LIMIT, MESSAGE_WINDOW_SECONDS, PHONE_SHOWN_SECONDS, REVEAL_RETRY_SECONDS, LOOP_POLL_SECONDS, MAX_CONNECTIONS, MAX_PER_IP, CONNECTION_SECONDS, MAX_MESSAGE_BYTES)  # noqa: F401
+    Chat, RelayHooks, remember_peer, reveal_message, read_reveal, exchange_reveal, show_code, reveal_later, receive_messages, receive_one, listen_for_peers, _listen_loop, _read_plain, _receive_encrypted, resolve_name_clash, MAX_TOTAL_PEERS, PEER_TIMEOUT_SECONDS, MAX_PEERS, JOIN_LIMIT_SECONDS, AUTO_RENAME_GAP_SECONDS, SEND_WORKERS, MAX_LINES, MESSAGE_LIMIT, MESSAGE_WINDOW_SECONDS, PHONE_SHOWN_SECONDS, REVEAL_RETRY_SECONDS, LOOP_POLL_SECONDS, MAX_CONNECTIONS, MAX_PER_IP, CONNECTION_SECONDS, MAX_MESSAGE_BYTES)  # noqa: F401
 from core.net import (  # the announce, the send and the discovery port: core/net.py
     APP, ANNOUNCE_SECONDS, SEND_TIMEOUT_SECONDS, MAX_FRAME, MAX_TEXT_CHARS, STOP, _PEER_CLOSED_ERRNOS, _PEER_CLOSED_WINERRORS, announce, is_local_address, _Deadline, _peer_closed, send_to, _send_encrypted, deliver, DEFAULT_UDP_PORT, UDP_PORT_VARIABLE, parse_udp_port, udp_port)  # noqa: F401
 from core.control import (  # the control channel: core/control.py, re-exported for the GUI tests
@@ -41,7 +39,10 @@ from extend.tui import first_run_screen, run_ansi, settings_screen  # the full-s
 from extend import settings_form as relay_form  # noqa: F401  (re-exported for the tests)
 from extend.screen import (  # the screen layout and keys: extend/screen.py
     KEY_F1, char_width, enable_vt, read_char, read_char_timeout, wrap_line, help_box, fit, tail, ACCENT, BORDER, MUTED, TEXT, BOLD,
-    message_rows, MAX_NODE_ROWS, ERROR_WORDS, status_tag, screen_frame, on_key)  # noqa: F401
+    message_rows, MAX_NODE_ROWS, ERROR_WORDS, status_tag, screen_frame, on_key, event_rows, event_texts, print_event, add_event,
+    phone_overlay)  # noqa: F401
+
+Chat.on_event = staticmethod(print_event)  # no screen yet: the events go to stdout
 
 
 def load_dock_layout():
@@ -108,7 +109,7 @@ def start_node(args, state=None, plaintext=None):
     chat.state_dir = state
     # The first node on this PC is the host (방장): the badge shows it; the name stays a country name, as on every node.
     chat.try_become_host()
-    chat.on_event = chat.add_event
+    chat.on_event = lambda event: add_event(chat, event)
     threading.Thread(target=receive_messages, args=(server, chat), daemon=True).start()
     threading.Thread(target=announce, args=(args.udp_port, me), daemon=True).start()
     threading.Thread(target=listen_for_peers, args=(args.udp_port, chat), daemon=True).start()

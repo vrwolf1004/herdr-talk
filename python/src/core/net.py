@@ -14,7 +14,6 @@ import time
 from core import noise, store
 from core.events import Message
 from core.names import clean_text, plain_sender, sender_name, squeeze_spaces
-from i18n import t
 
 
 APP = "herdr-talk"
@@ -141,9 +140,8 @@ def deliver(data, key, chat):
         chat.emit(Message(name if name is not None else sender_name(sender), squeeze_spaces(' '.join(rows))))
         return
     # Plain: no key to check. Every row carries the plain sender's label, so no row can pass for another sender.
-    label = f"{plain_sender(sender)} ({t('chat.plain')})"
     for row in rows:
-        chat.emit(Message(label, row))
+        chat.emit(Message(plain_sender(sender), row, plain=True))
 
 
 _PEER_CLOSED_ERRNOS = {getattr(errno, name) for name in ("ENOTCONN", "ECONNRESET", "EPIPE") if hasattr(errno, name)}

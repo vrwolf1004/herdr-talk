@@ -7,14 +7,12 @@ import sys
 import threading
 import time
 
-import relay_chat
-import relay_settings
-from core import relay_rest
+from core import relay_chat, relay_rest, relay_settings
 from core.chat import Chat
 from core.events import Line, Notice
 from core.net import STOP
 from extend import settings_form as relay_form
-from extend.screen import enable_vt, help_box, on_key, read_char, read_char_timeout, screen_frame, status_tag
+from extend.screen import add_event, enable_vt, help_box, on_key, phone_overlay, read_char, read_char_timeout, screen_frame, status_tag
 from i18n import t
 
 
@@ -178,13 +176,13 @@ def run_ansi(chat):
             state = t("nodes.verified") if link == "encrypted" else t("nodes.waiting")
             nodes.append(f"{prefix}{info['name']} ({info['ip']})  {state}")
         mode = "CLOUD SERVICE" if chat.supabase else "BASE STATION"
-        overlay = help_box() if chat.help_open else chat.phone_overlay()
+        overlay = help_box() if chat.help_open else phone_overlay(chat)
         frame = screen_frame(lines, status, typed[0], size.columns, size.lines, overlay, nodes, mode, status_tag(chat))
         with screen_lock:
             _draw(frame)
 
     def show(event):
-        chat.add_event(event)
+        add_event(chat, event)
         redraw()
 
     chat.on_event = show

@@ -8,6 +8,7 @@ import unittest.mock
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import talk  # noqa: E402
+from extend.screen import add_event  # noqa: E402
 from extend import tui  # noqa: E402
 from core import chat as core_chat  # noqa: E402
 from extend.settings_form import ACCENT, BACKGROUND, BOLD, BORDER, MUTED, RESET, TEXT, place_row as place  # noqa: E402
@@ -133,7 +134,7 @@ class FrameTest(unittest.TestCase):
 class KeyTest(unittest.TestCase):
     def setUp(self):
         self.chat = make_chat()
-        self.chat.on_event = self.chat.add_event
+        self.chat.on_event = lambda event: add_event(self.chat, event)
         self.saved_send = talk.send_to
         self.sent = []
         core_chat.send_to = lambda peer, me, text: self.sent.append(text)  # Chat sends through core/chat.py

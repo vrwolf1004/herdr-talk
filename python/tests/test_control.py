@@ -12,6 +12,7 @@ os.environ.setdefault("HERDR_TALK_LANG", "en")
 
 from core import sessions  # noqa: E402
 import talk  # noqa: E402
+from extend.screen import add_event  # noqa: E402
 
 
 class Client:
@@ -39,7 +40,7 @@ class ControlTest(unittest.TestCase):
         self.dir = tempfile.mkdtemp(prefix="herdr-talk-control-")
         self.chat = talk.Chat({"id": "me", "name": "Me", "port": 1234})
         self.chat.lan_listening = True  # as after start_relay
-        self.chat.on_event = self.chat.add_event
+        self.chat.on_event = lambda event: add_event(self.chat, event)
         self.control = talk.start_control(self.chat, self.dir, allow_shutdown=True)
         with open(self.control.file, encoding="utf-8") as f:
             self.info = json.load(f)

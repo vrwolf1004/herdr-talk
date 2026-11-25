@@ -10,6 +10,7 @@ class Message:
     sender: str
     text: str
     mine: bool = False
+    plain: bool = False  # a plain (unverified, no key) sender: the screen labels it "(plain text)"
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,17 @@ class Line:
     """Text the screen side already made (a command reply, a status text). Core modules do not send it."""
     text: str
     mine: bool = False
+
+
+@dataclass(frozen=True)
+class PeerRow:
+    """One /peers line. state: "verified", "plain", "unverified" (code = the short code), "pending" or "" (no text)."""
+    prefix: str
+    name: str
+    ip: str
+    port: int
+    state: str
+    code: str = None
 
 
 @dataclass(frozen=True)

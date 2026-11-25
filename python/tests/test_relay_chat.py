@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-import relay_chat as rc  # noqa: E402
+from core import relay_chat as rc  # noqa: E402
 from core import relay_rest  # noqa: E402
 from core.events import Notice, Status  # noqa: E402
 
@@ -129,7 +129,7 @@ class RoomThreadTests(unittest.TestCase):
         relay = rc.Relay(hooks, None, self.config, settings(), self.session)
         relay.own_pk = "aa" * 32
         relay.members = {"bb" * 32: b"" * 32, "cc" * 32: b"" * 32, relay.own_pk: b"" * 32}
-        with mock.patch("relay_chat.room.post_text", return_value=True) as post:
+        with mock.patch("core.room.post_text", return_value=True) as post:
             relay._send_text("hello")
         recipients = post.call_args.args[4]
         self.assertEqual(sorted(recipients), [("bb" * 32, b"" * 32), ("cc" * 32, b"\x02" * 32)])
@@ -161,7 +161,7 @@ class InboxTests(unittest.TestCase):
         relay.members = {"bb" * 32: b"" * 32}
         rows = [{"sender_pk": "bb" * 32, "created_at": "t1", "ciphertext": "00", "ts": 1, "nonce": "11" * 16},
                 {"sender_pk": "bb" * 32, "created_at": "t2", "ciphertext": "00", "ts": 2, "nonce": "22" * 16}]
-        with mock.patch("relay_chat.room.fetch_rows", return_value=rows),                 mock.patch("relay_chat.room.check_row", side_effect=[None, ("Liam", "hi")]):
+        with mock.patch("core.room.fetch_rows", return_value=rows),                 mock.patch("core.room.check_row", side_effect=[None, ("Liam", "hi")]):
             relay._fetch()
         self.assertEqual(relay.since, "t2")
         self.assertEqual(hooks.said, [talk_message("Liam", "hi")])

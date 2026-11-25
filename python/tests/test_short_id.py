@@ -8,7 +8,7 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 from core import relay_key  # noqa: E402
-import relay_chat  # noqa: E402
+from core import relay_chat  # noqa: E402
 from core import relay_rest  # noqa: E402
 
 
