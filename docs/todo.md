@@ -89,8 +89,8 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 - [ ] **미확인 실환경 테스트:** 설정 코드 발급과 상환의 실제 응답, 틀린 trust 403, 11번째 참가 409, LAN 10명, 실제 터미널 화면, F2·F9 키 입력. (세부는 아래 "개선점")
 - [ ] **모바일 기기 실행:** 변경된 화면과 방 참가를 실제 기기에서 확인. 모바일 1:1 경로 정리 포함.
 - [ ] **모바일 브리지 결정:** 폰에서 LAN 채팅이 필요한지 정한다. 필요 없으면 브리지와 관련 문서를 지운다.
-- [ ] **코어 2단계:** Python `Chat`과 네트워크 함수를 `core/`로 옮긴다(talk-core `chat.rs`, `net.rs`와 맞춤).
-- [ ] **extend 2단계:** `talk.py`의 화면 그리기를 `extend/`로 분리한다.
+- [x] **코어 2단계:** Python `Chat`과 네트워크 함수는 `core/`로 옮겼고 talk-core `chat.rs`, `net.rs`와 짝이 맞는다. 남은 것: core의 앱 모듈 import 정리(i18n, phone, relay_chat, relay_settings)는 별도 항목. (2026-11-25 점검)
+- [x] **extend 2단계:** 화면 그리기는 `extend/`(tui.py, screen.py, dock_block.py, settings_form.py)로 나갔고 `talk.py`에는 진입점만 남았다. (2026-11-25 점검)
 - [ ] **커밋 범위 결정:** 1:1 제거 2단계 코드(미커밋)와 이번 작업을 나눠서 커밋할지 정한다.
 - [ ] **죽은 로케일 키 정리:** `tui.settings.label.*`, `mode.status` 등 쓰지 않는 키를 지울지 정한다.
 
@@ -110,13 +110,11 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 - [x] **GUI 하단 바 성공 문구 정리**: 지금은 "relay: room joined" 문구만 숨긴다. Python처럼 성공 문구는 숨기고 오류만 보이게 한다.
 - [x] **GUI 메시지 덮어쓰기 방지**: 늦게 도착한 trust 확인 결과가 더 새로운 메시지를 덮어쓸 수 있다. 메시지 순서를 맞춘다.
 - [x] **Python 도우미 `_join_room` 정리**: 실제 흐름에서 쓰지 않는 함수이고 테스트에서만 쓴다. 지우거나 실제 흐름과 맞춘다.
-- [ ] **trust 확인 시간 제한**: `room_refuses`가 기존 HTTP 시간 제한만 써서, 서버가 느리면 첫 화면이 늦게 뜬다. 짧은 시간 제한을 따로 둘지 정한다.
+- [x] **trust 확인 시간 제한:** `room_refuses`는 서버 호출에 3초 제한을 두고, 시간 초과는 막지 않는다(false). 테스트 있음(`a_slow_trust_check_gives_up_after_three_seconds_and_does_not_refuse`). (2026-11-25 확인)
 - [ ] **실환경 확인**: 설정 코드 발급, 상환, 방 참가, 틀린 trust 403, 11번째 참가 409를 실제 서버에서 확인한다.
 - [ ] **LAN 10명 실제 확인**: 여러 PC 또는 노드로 10명 참가와 11번째 거부를 확인한다.
 - [ ] **모바일 기기 실행**: 모바일 변경(trust, 설정 코드, 상태 줄)을 실제 기기에서 확인한다. 1:1 경로 정리도 함께 본다.
 - [ ] **모바일 브리지 결정**: 폰에서 LAN 채팅이 필요한지 정하고, 필요 없으면 브리지와 관련 문서를 지운다.
-- [ ] **코어 2단계**: Python `Chat`과 네트워크 함수를 `core/`로 옮긴다(talk-core `chat.rs`, `net.rs`와 맞춘다).
-- [ ] **extend 2단계**: `talk.py`의 화면 그리기를 `extend/`로 분리한다.
 - [ ] **Rust 설정 화면 테스트 보강**: 중간 저장과 최종 저장 규칙을 화면 단위로 확인한다.
 
 ## Bugs

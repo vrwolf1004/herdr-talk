@@ -166,19 +166,15 @@ impl Form {
             self.message = t("setup.invalid", &[]);
             return;
         }
-        let setup = relay_rest::normalize_setup_code(&typed).unwrap_or_default();
-        match relay_rest::redeem_setup_code(&typed, &relay_settings::setup_url()) {
-            Err(error) => self.message = error,
-            Ok((url, key)) => match relay_settings::save_connection(&self.state, &url, &key, &setup) {
-                Err(error) => self.message = t("tui.settings.not_saved", &[("error", &error)]),
-                Ok(()) => {
-                    self.url = url;
-                    self.key = key;
-                    self.setup_code = setup;
-                    self.fields[SETUP_FIELD].clear();
-                    self.message = t("tui.settings.setup_saved", &[]);
-                }
-            },
+        match redeem_and_save(&self.state, &relay_settings::setup_url(), &typed) {
+            Err(message) => self.message = message,
+            Ok((url, key, setup)) => {
+                self.url = url;
+                self.key = key;
+                self.setup_code = setup;
+                self.fields[SETUP_FIELD].clear();
+                self.message = t("tui.settings.setup_saved", &[]);
+            }
         }
     }
 
@@ -346,6 +342,15 @@ impl Form {
         }
         true
     }
+}
+
+/// F2's work: redeem the typed code at `url`, then save the URL, key and code. Ok gives them; Err is the message to show.
+/// Nothing is saved when the redeem is refused.
+fn redeem_and_save(state: &Path, url: &str, typed: &str) -> Result<(String, String, String), String> {
+    let setup = relay_rest::normalize_setup_code(typed).unwrap_or_default();
+    let (project_url, key) = relay_rest::redeem_setup_code(typed, url)?;
+    relay_settings::save_connection(state, &project_url, &key, &setup).map_err(|error| t("tui.settings.not_saved", &[("error", &error)]))?;
+    Ok((project_url, key, setup))
 }
 
 /// The message for a refused final save (Enter), as the screen shows it.
@@ -535,6 +540,32 @@ mod tests {
             issuing: None,
             drawn: Frame::default(),
         }
+    }
+
+    /// A local relay that answers one request with `response` and sends the request it read back. Returns its URL.
+    fn mock_relay(response: String) -> (String, mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let (sent, received) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            // Headers up to the blank line, then the body by its Content-Length.
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            let length: usize = head.lines().find_map(|line| line.strip_prefix("content-length:")).map_or(0, |value| value.trim().parse().unwrap());
+            let mut body = vec![0u8; length];
+            stream.read_exact(&mut body).unwrap();
+            request.extend(body);
+            sent.send(String::from_utf8_lossy(&request).to_string()).unwrap();
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (url, received)
     }
 
     fn folder(name: &str) -> PathBuf {
@@ -787,6 +818,32 @@ mod tests {
                 .collect();
             assert!(bracket_columns.iter().all(|at| *at == bracket_columns[0]), "{lang}: {bracket_columns:?}");
         }
+    }
+
+    #[test]
+    fn a_redeemed_setup_code_is_saved_with_url_key_and_code() {
+        // F2's path with a mock relay: a 200 answer saves URL, key and setup code.
+        let dir = folder("f2-redeem");
+        let _ = std::fs::remove_dir_all(&dir);
+        let body = r#"{"url":"https://p.supabase.co","key":"k1"}"#;
+        let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        let (relay_url, received) = mock_relay(response);
+        let (url, key, setup) = redeem_and_save(&dir, &relay_url, "abcd-2345").unwrap();
+        assert!(received.recv().unwrap().contains(r#""code":"ABCD2345""#));
+        assert_eq!((url.as_str(), key.as_str(), setup.as_str()), ("https://p.supabase.co", "k1", "ABCD2345"));
+        let saved = relay_settings::load_saved(&dir);
+        assert_eq!((saved.mode, saved.url.as_str(), saved.key.as_str(), saved.setup_code.as_str()), (Mode::Supabase, "https://p.supabase.co", "k1", "ABCD2345"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_refused_setup_code_saves_nothing_and_says_why() {
+        // F2's path with a mock relay: a 404 answer saves nothing and the message says the code is wrong.
+        let dir = folder("f2-refused");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (relay_url, _received) = mock_relay("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string());
+        assert_eq!(redeem_and_save(&dir, &relay_url, "ABCD2345"), Err(t("setup.wrong", &[])));
+        assert!(!dir.join(relay_settings::FILE).exists(), "nothing is written");
     }
 
     #[test]

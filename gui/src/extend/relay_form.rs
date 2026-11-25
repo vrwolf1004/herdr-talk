@@ -512,6 +512,24 @@ fn centered_column<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), add).inner
 }
 
+/// The redeem answer (the URL, key and typed code from the relay): on success the URL, key and setup code are saved at once,
+/// as the TUI does; a failure saves nothing. The code stays in the input, so a second save with it only re-saves (no second redeem).
+fn apply_redeem(form: &mut Form, answer: Result<(String, String, String), String>) {
+    match answer {
+        Ok((url, key, code)) => {
+            form.fields[CODE_FIELD] = code.clone();
+            form.url = url;
+            form.key = key;
+            form.setup_code = code;
+            form.message = match relay_settings::save_connection(&form.state, &form.url, &form.key, &form.setup_code) {
+                Ok(()) => t("gui.relay.setup_saved", &[]),
+                Err(error) => t("gui.relay.not_saved", &[("error", &error)]),
+            };
+        }
+        Err(error) => form.message = t("gui.relay.redeem_failed", &[("error", &error)]),
+    }
+}
+
 /// Draw the settings window: the mode row, the setup-code row (greyed out in Local mode), the room rows, and the buttons.
 pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
     let mut action = Action::Stay;
@@ -549,20 +567,11 @@ pub fn show(ctx: &egui::Context, palette: &Palette, form: &mut Form) -> Action {
     // The Save setup code answer: the URL, key and setup code are written at once (the middle save); nothing is shown.
     if let Some(answer) = form.redeeming.as_ref().and_then(|receiver| receiver.try_recv().ok()) {
         form.redeeming = None;
-        match answer {
-            Ok((url, key, code)) => {
-                // The code stays in the input after a save; pressing save again with the same code only re-saves (no second redeem).
-                form.fields[CODE_FIELD] = code.clone();
-                form.url = url;
-                form.key = key;
-                form.setup_code = code;
-                form.message = match relay_settings::save_connection(&form.state, &form.url, &form.key, &form.setup_code) {
-                    Ok(()) => t("gui.relay.setup_saved", &[]),
-                    Err(error) => t("gui.relay.not_saved", &[("error", &error)]),
-                };
-            }
-            Err(error) => form.message = t("gui.relay.redeem_failed", &[("error", &error)]),
-        }
+        apply_redeem(form, answer);
+    }
+    // F2 is the same as the Save setup code button (the TUI's F2).
+    if form.mode == Mode::Supabase && form.redeeming.is_none() && ctx.input(|input| input.key_pressed(egui::Key::F2)) {
+        form.save_setup_code(ctx);
     }
     egui::TopBottomPanel::bottom("relay_settings_actions")
         .exact_height(60.0)
@@ -735,6 +744,28 @@ mod tests {
         form.mode = Mode::Supabase;
         form.fields = [String::new(), "12345678".into(), "Alice".into(), "abcd2345".into()];
         form
+    }
+
+    #[test]
+    fn a_redeemed_setup_code_saves_url_key_and_code_and_a_refusal_saves_nothing() {
+        // The server answer is injected (no network): the redeem answer goes straight to apply_redeem, as show() does.
+        let ok_dir = folder("redeem_ok");
+        let mut form = supabase_form(&ok_dir);
+        form.fields[CODE_FIELD] = "abcd-2345".into();
+        apply_redeem(&mut form, Ok(("https://example.supabase.co".into(), "dummy-test-key".into(), "ABCD2345".into())));
+        let saved = relay_settings::load_saved(&ok_dir);
+        assert_eq!((saved.url.as_str(), saved.key.as_str(), saved.setup_code.as_str()), ("https://example.supabase.co", "dummy-test-key", "ABCD2345"));
+        assert_eq!(form.message, t("gui.relay.setup_saved", &[]));
+        let _ = std::fs::remove_dir_all(&ok_dir);
+
+        let refused_dir = folder("redeem_refused");
+        let mut form = supabase_form(&refused_dir);
+        form.fields[CODE_FIELD] = "abcd-2345".into();
+        apply_redeem(&mut form, Err("wrong".into()));
+        let saved = relay_settings::load_saved(&refused_dir);
+        assert!(saved.url.is_empty() && saved.key.is_empty() && saved.setup_code.is_empty(), "nothing is saved");
+        assert_eq!(form.message, t("gui.relay.redeem_failed", &[("error", "wrong")]));
+        let _ = std::fs::remove_dir_all(&refused_dir);
     }
 
     #[test]
