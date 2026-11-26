@@ -58,7 +58,6 @@ MESSAGE_LIMIT = 20             # messages one sender address may deliver within 
 MESSAGE_WINDOW_SECONDS = 10
 
 
-PHONE_SHOWN_SECONDS = 30       # how long the phone address and token stay on screen when nobody hides them
 
 
 def resolve_name_clash(chat):
@@ -108,11 +107,7 @@ class Chat:
         self.kicked = set()       # keys kicked for not joining in time: ignored for the rest of this chat
         self.state_dir = None     # where /trust saves; None keeps it for this session
         self.received = {}        # sender address -> arrival times of recent messages
-        self.host = None          # phone.Host while this node is the phone host (방장) of this PC
-        self.phone_until = None   # time.monotonic() until which the phone address is on screen. Only the screen shows it.
-        self.phone_lock = threading.Lock()
-        self.phone_timer = None
-        self.on_phone_change = None  # the screen sets this to redraw
+        self.host = None          # phone.Host while this node is the host (방장) of this PC
         self.help_open = False       # the help box is on screen (F1 or /help); the next key closes it
         self.numbers = {}            # waiting peer's key -> its number ([n]); given once, never reused or renumbered
         self.next_number = 1
@@ -191,7 +186,7 @@ class Chat:
         return self.host is not None
 
     def try_become_host(self):
-        """Become the phone host if no node on this PC is. Shows the phone address once when it succeeds."""
+        """Become the host (방장) of this PC if no node on this PC is."""
         if self.state_dir is None or STOP.is_set() or self.host is not None:
             return False
         try:
@@ -201,7 +196,6 @@ class Chat:
         if host is None:
             return False
         self.host = host
-        self.show_phone()
         return True
 
     def release_host(self):
@@ -218,43 +212,6 @@ class Chat:
                 self.try_become_host()
                 STOP.wait(2)
         threading.Thread(target=loop, daemon=True).start()
-
-    def _phone_changed(self):
-        if self.on_phone_change:
-            self.on_phone_change()
-
-    def show_phone(self):
-        with self.phone_lock:
-            self.phone_until = time.monotonic() + PHONE_SHOWN_SECONDS
-            if self.phone_timer:
-                self.phone_timer.cancel()
-            self.phone_timer = threading.Timer(PHONE_SHOWN_SECONDS + 0.1, self.phone_visible)
-            self.phone_timer.daemon = True
-            self.phone_timer.start()
-        self._phone_changed()
-
-    def hide_phone(self):
-        with self.phone_lock:
-            was_shown, self.phone_until = self.phone_until is not None, None
-        if was_shown:
-            self._phone_changed()
-
-    def toggle_phone(self):
-        if self.phone_visible():
-            self.hide_phone()
-        else:
-            self.show_phone()
-
-    def phone_visible(self):
-        """True while the phone address should be on screen. Hides it, and asks for a redraw, when its time is up."""
-        with self.phone_lock:
-            if self.phone_until is None:
-                return False
-            if time.monotonic() < self.phone_until:
-                return True
-            self.phone_until = None
-        self._phone_changed()
-        return False
 
     def my_nonce_for(self, key):
         """This node's nonce for one peer: made once per peer, never shared with another peer. Its commitment is put in
@@ -439,19 +396,6 @@ class Chat:
             self.rejoin_kicked()
             self.emit(Notice("rejoin.done", {"seconds": JOIN_LIMIT_SECONDS}))
             return True
-        if text == "/phone" or text.startswith("/phone "):
-            argument = text[6:].strip()
-            if not argument:
-                self.show_phone()
-            elif argument == "new":
-                if self.state_dir is not None and phone.regenerate_token(self.state_dir):
-                    self.emit(Notice("phone.new_done"))
-                    self.show_phone()
-                else:
-                    self.emit(Notice("phone.none"))
-            else:
-                self.emit(Notice("usage.phone"))
-            return True
         if text == "/join" or text.startswith("/join "):
             code = store.normalize_code(text[5:])
             if code:
@@ -596,7 +540,7 @@ def remember_peer(chat, info, ip):
     own = chat.me.get("key")
     if key is not None and key == own and not is_local_address(ip):
         return None
-    announces_commits = "commits" in info  # read before `info` is reused for the phone check below
+    announces_commits = "commits" in info  # read before `info` is reused below
     # The commitment (SAS): the one the peer gave us for us. It is pinned at first sight; a different one is refused.
     commit = None
     if key is not None and own is not None:
@@ -652,10 +596,6 @@ def remember_peer(chat, info, ip):
                     return name
         chat.peers[f"{peer_id}:{port}@{ip}"] = entry
     chat.emit(Notice("peer.joined", {"name": name, "ip": ip}))
-    # The host of this PC joined (its chat port is in phone.json, a local file): show the phone address on this screen only.
-    info = phone.read(chat.state_dir) if chat.state_dir else None
-    if info and info["owner_port"] == port and info["owner_pid"] != os.getpid() and is_local_address(ip):
-        chat.show_phone()
     if key is not None and own is not None and not chat.trusts(key):
         # A new key from an address we trusted before is a changed key, not a new peer, unless the trusted key is
         # still announcing from that address: then this is another identity on the same PC.

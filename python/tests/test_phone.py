@@ -78,40 +78,22 @@ class RoomHostTest(Base):
         self.assertEqual(relay.owner_pk, "cc" * 32)
 
 
-class TokenTest(unittest.TestCase):
-    def test_six_digits_with_leading_zeros_kept(self):
-        for _ in range(200):
-            token = phone.new_token()
-            self.assertRegex(token, r"^\d{6}$")
-        with mock.patch.object(phone.secrets, "randbelow", return_value=42):
-            self.assertEqual(phone.new_token(), "000042")
+class HostLockTest(Base):
+    """One host per PC: the node that holds phone.lock. phone.json keeps only the host's pid and chat port."""
 
-
-class RankTest(unittest.TestCase):
-    def test_addresses_are_ranked_for_a_phone(self):
-        ranked = phone.rank(
-            ["192.168.56.1", "169.254.1.2", "10.0.0.5", "192.168.0.181", "127.0.0.1", "192.168.0.181", "203.0.113.9"],
-            "192.168.0.181", 47860)
-        self.assertEqual(ranked, ["http://192.168.0.181:47860", "http://10.0.0.5:47860", "http://203.0.113.9:47860",
-                                  "http://192.168.56.1:47860", "http://169.254.1.2:47860"])
-
-
-class HostTest(Base):
     def test_one_host_wins_and_a_second_node_changes_nothing(self):
         first = self.take(1111)
         self.assertIsNotNone(first)
         info = phone.read(self.dir)
-        self.assertEqual((info["owner_pid"], info["owner_port"], info["port"]), (os.getpid(), 1111, phone.bridge_port()))
+        self.assertEqual((info["owner_pid"], info["owner_port"]), (os.getpid(), 1111))
         self.assertIsNone(self.take(2222))
         self.assertEqual(phone.read(self.dir), info)
 
-    def test_phone_json_has_the_agreed_fields(self):
+    def test_phone_json_has_only_the_host_fields(self):
         self.take(7)
         with open(phone.phone_file(self.dir), encoding="utf-8") as f:
             value = json.load(f)
-        self.assertEqual(set(value), {"port", "token", "urls", "owner_pid", "owner_port"})
-        self.assertRegex(value["token"], r"^\d{6}$")
-        self.assertIsInstance(value["urls"], list)
+        self.assertEqual(set(value), {"owner_pid", "owner_port"})
 
     def test_the_last_node_to_leave_removes_the_file_and_the_lock_is_free_again(self):
         first = self.take(1)
@@ -119,110 +101,8 @@ class HostTest(Base):
         self.assertIsNone(phone.read(self.dir))
         self.assertIsNotNone(self.take(2))
 
-    def test_a_successor_keeps_the_token_while_another_node_is_alive(self):
-        alive = socket.socket()
-        alive.bind(("127.0.0.1", 0))
-        alive.listen()
-        with open(os.path.join(self.dir, "control-1.json"), "w", encoding="utf-8") as f:
-            json.dump({"port": alive.getsockname()[1], "token": "x"}, f)
-        try:
-            first = self.take(1)
-            token = phone.read(self.dir)["token"]
-            first.release()
-            self.assertIsNotNone(phone.read(self.dir))
-            self.assertIsNotNone(self.take(2))
-            info = phone.read(self.dir)
-            self.assertEqual((info["token"], info["owner_port"]), (token, 2))
-        finally:
-            alive.close()
 
-    def test_regenerate_keeps_the_other_fields(self):
-        self.take(1)
-        before = phone.read(self.dir)
-        self.assertTrue(phone.regenerate_token(self.dir))
-        after = phone.read(self.dir)
-        self.assertEqual({k: v for k, v in after.items() if k != "token"}, {k: v for k, v in before.items() if k != "token"})
-        os.remove(phone.phone_file(self.dir))
-        self.assertFalse(phone.regenerate_token(self.dir))
-
-
-class ChatPhoneTest(Base):
-    def test_first_chat_is_host_and_shows_the_phone_once_without_leaking_the_token(self):
-        first, second = self.chat(1), self.chat(2)
-        self.assertTrue(first.try_become_host())
-        self.assertFalse(second.try_become_host())
-        token = phone.read(self.dir)["token"]
-        self.assertIsNone(screen.phone_overlay(first), "the phone panel is off: nothing is drawn")
-        second.handle("/phone")
-        self.assertIsNone(screen.phone_overlay(second))
-        self.assertFalse([line for line in self.lines if token in line])
-        self.assertFalse([line for chat in (first, second) for line, _ in chat.lines if token in line])
-        first.release_host()
-
-    def test_phone_new_changes_the_token_and_says_nothing_secret(self):
-        chat = self.chat(1)
-        chat.try_become_host()
-        before = phone.read(self.dir)["token"]
-        chat.handle("/phone new")
-        after = phone.read(self.dir)["token"]
-        self.assertNotEqual(before, after)
-        self.assertIn(talk.t("phone.new_done"), self.lines)
-        self.assertFalse([line for line in self.lines if before in line or after in line])
-        chat.handle("/phone what")
-        self.assertEqual(self.lines[-1], talk.t("usage.phone"))
-        chat.release_host()
-
-    def test_ctrl_p_toggles_and_any_other_key_hides(self):
-        chat = self.chat(1)
-        typed = [""]
-        talk.on_key("\x10", chat, typed)
-        self.assertTrue(chat.phone_visible())
-        self.assertEqual(typed[0], "")
-        talk.on_key("\x10", chat, typed)
-        self.assertFalse(chat.phone_visible())
-        talk.on_key("\x10", chat, typed)
-        talk.on_key("a", chat, typed)
-        self.assertFalse(chat.phone_visible())
-        self.assertEqual(typed[0], "a")
-
-    def test_it_hides_when_its_time_is_up_and_asks_for_a_redraw(self):
-        chat = self.chat(1)
-        redraws = []
-        chat.on_phone_change = lambda: redraws.append(1)
-        chat.show_phone()
-        chat.phone_until = time.monotonic() - 1
-        self.assertFalse(chat.phone_visible())
-        self.assertEqual(len(redraws), 2)  # once for show, once for the hide
-
-    def test_no_phone_json_says_so(self):
-        chat = self.chat(1)
-        chat.show_phone()
-        self.assertIsNone(screen.phone_overlay(chat))  # shown or not, the panel draws nothing
-
-    def test_the_host_joining_shows_the_phone_here_but_a_remote_one_does_not(self):
-        host = self.chat(5000)
-        host.try_become_host()
-        info = phone.read(self.dir)
-        info["owner_pid"] = os.getpid() + 1  # as if the host were another process
-        with open(phone.phone_file(self.dir), "w", encoding="utf-8") as f:
-            json.dump(info, f)
-        public, secret = noise.generate_keypair()
-        mine = talk.Chat({"id": store.peer_id(public), "name": "Me", "port": 1, "key": public, "secret": secret})
-        mine.state_dir = self.dir
-        announce = {"id": "other-node", "name": "Host", "port": 5000}
-        talk.remember_peer(mine, announce, "203.0.113.7")   # another PC: its token is not ours
-        self.assertFalse(mine.phone_visible())
-        mine.peers.clear()  # LAN is 1:1: the local host is admitted only when the other PC is gone
-        talk.remember_peer(mine, {**announce, "id": "other-node2", "port": 5000}, "127.0.0.1")
-        self.assertTrue(mine.phone_visible())
-        host.release_host()
-
-    def test_screen_frame_draws_the_overlay_over_the_bottom_rows_only(self):
-        # rows=12: the message rows are 4..6, so the two overlay rows are 5 and 6.
-        frame = talk.screen_frame([("hello", False)], "status", "", 40, 12, ["PHONE-ROW-1", "PHONE-ROW-2"])
-        self.assertIn(talk.relay_form.OVERLAY + "PHONE-ROW-1", frame)
-        self.assertIn(talk.relay_form.OVERLAY + "PHONE-ROW-2", frame)
-        self.assertNotIn("PHONE-ROW", talk.screen_frame([("hello", False)], "status", "", 40, 12))
+class HostNameTest(Base):
 
     def test_the_first_node_is_the_host_named_so_unless_it_has_a_name(self):
         import types
@@ -247,9 +127,17 @@ class ChatPhoneTest(Base):
                 server.close()
             shutil.rmtree(started[-1][2], ignore_errors=True) if started else None
 
-    def test_help_mentions_the_command_and_the_key(self):
-        box = "\n".join(talk.help_box())
-        self.assertIn("/phone", box)
+
+
+class OverlayRowsTest(unittest.TestCase):
+
+    def test_screen_frame_draws_the_overlay_over_the_bottom_rows_only(self):
+        # rows=12: the message rows are 4..6, so the two overlay rows are 5 and 6.
+        frame = talk.screen_frame([("hello", False)], "status", "", 40, 12, ["ROW-1", "ROW-2"])
+        self.assertIn(talk.relay_form.OVERLAY + "ROW-1", frame)
+        self.assertIn(talk.relay_form.OVERLAY + "ROW-2", frame)
+        self.assertNotIn("ROW", talk.screen_frame([("hello", False)], "status", "", 40, 12))
+
 
 
 if __name__ == "__main__":

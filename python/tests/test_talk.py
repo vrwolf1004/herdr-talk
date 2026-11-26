@@ -340,7 +340,6 @@ class ChatStatusRowTest(unittest.TestCase):
         chat.lines = []
         chat.lines_lock = threading.Lock()
         chat.help_open = False
-        chat.phone_visible.return_value = False
         chat.relay_status = relay_status
         frames = []
         with mock.patch.object(tui, "_enter_screen", return_value=lambda: None), mock.patch.object(tui, "_draw", side_effect=frames.append), \

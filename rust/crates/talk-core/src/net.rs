@@ -265,12 +265,6 @@ fn remember_peer_inner(chat: &Chat, data: &[u8], ip: String) {
     peers.push(peer);
     drop(peers);
     chat.say(t("peer.joined", &[("name", &name), ("ip", &ip)]));
-    // The host of this PC joined (its chat port is in phone.json, a local file): show the phone address on this screen only.
-    if chat.state_dir.as_deref().and_then(crate::phone::read).is_some_and(|phone| phone.owner_port == port && phone.owner_pid != std::process::id())
-        && is_local_address(&ip)
-    {
-        chat.show_phone();
-    }
     if let Some(key) = key.filter(|key| !chat.trusts(key)) {
         // A new key from an address we trusted before is a changed key, not a new peer, unless the trusted key is
         // still announcing from that address: then this is another identity on the same PC.

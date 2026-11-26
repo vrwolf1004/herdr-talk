@@ -16,7 +16,6 @@ Check the symptom in the table first. Each check points to the setting or step t
 | `no peers yet` on one PC with two chats | Fixed 2026-11-06 in `net.rs` (`is_local_address` now accepts any of this PC's adapter addresses). Rebuild and restart the running `herdr-talk.exe`. See [mobile.md](mobile.md). |
 | `<name> 의 키가 바뀌었습니다. 확인하지 않았고 보내지도 않습니다` | A new key appeared at an address you trusted before. On one PC with several identities this was a false alarm (fixed 2026-11-06). Trust only when you know why: compare codes, then `/join`. |
 | `<name> 에게 보내지 않음: 암호화하지 않는 상대이고 평문이 꺼져 있습니다` | The peer is a plaintext (Python) edition and `"plaintext": true` is off in the Rust `config.json`. Rust drops Python messages silently in the other direction. See [mobile.md](mobile.md). |
-| Phone app cannot connect | Use the bridge `app address` of the phone's Wi-Fi, not a virtual adapter (e.g. `192.168.56.1`). Same Wi-Fi, firewall allows the bridge port (47860). After 5 wrong tokens an IP is blocked for 10 minutes. |
 | Expo QR missing | Metro started with `CI=1`. Run `npx expo start --host lan` in a normal terminal. If port 8081 is busy Expo uses 8082: check the port in the QR or `exp://` address. |
 | Supabase join returns `410` | The room expired. Rooms last 24 hours from creation and cannot be extended; create a new room. Expiry cleanup is implemented but not deployed. |
 | A room ID does not match | Enter all 8 `A-Z0-9` characters. Case, spaces, and dashes are ignored. **Retired:** peer ID as a room-join input. |
@@ -30,4 +29,3 @@ The current relay is a many-participant room model; the peer-ID-based one-to-one
 
 - [Usage](usage.md): commands, keys, names, language, network
 - [Configuration](configuration.md): settings, control channel, timing constants
-- [Mobile (Expo Go)](mobile.md): phone connection, bridge, decisions

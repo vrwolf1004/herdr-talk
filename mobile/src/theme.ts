@@ -1,6 +1,11 @@
-// gui/src/main.rs 의 palette() 와 같은 색.
+// gui/src/extend/theme.rs 의 palette() 와 같은 색.
 export const CHOICES = ['Dark', 'Light', 'Amber', 'Green'] as const;
 export type Choice = (typeof CHOICES)[number];
+
+/** A saved theme name back to a choice; anything else (or nothing saved) is the default, Green. */
+export function parseChoice(text: string | null): Choice {
+  return CHOICES.find((choice) => choice === text) ?? 'Green';
+}
 
 export type Palette = {
   background: string;
@@ -28,10 +33,20 @@ const PALETTES: Record<Choice, Palette> = {
     accent: '#ffd24d', mine: '#ffd24d', danger: '#ff5533', bezel: '#2a2a2a',
   },
   Green: {
-    background: '#000000', panel: '#00100a', border: '#1a7a36', text: '#33ff66', muted: '#1fa040',
-    accent: '#99ffb3', mine: '#99ffb3', danger: '#ff5555', bezel: '#2a2a2a',
+    background: '#050a08', panel: '#0a140f', border: '#417d55', text: '#b4dcbe', muted: '#526b59',
+    accent: '#46ff82', mine: '#46ff82', danger: '#ff5555', bezel: '#2a2a2a',
   },
 };
+
+/** The noise setting as saved: "on" or "off". */
+export function noiseText(on: boolean): string {
+  return on ? "on" : "off";
+}
+
+/** A saved noise setting back to a boolean; anything else (or nothing saved) is off. */
+export function parseNoise(text: string | null): boolean {
+  return text === "on";
+}
 
 export function palette(choice: Choice): Palette {
   return PALETTES[choice];

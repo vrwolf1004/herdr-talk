@@ -173,7 +173,7 @@ fn main() -> eframe::Result<()> {
             install_korean_font(&cc.egui_ctx);
             let hwnd = window_hwnd(cc);
             cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
-            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None, phone_until: None, phone_checked: false, reload: reload.clone(), relay_form: None, first_run: talk_core::relay_settings::needs_first_run(&state_dir()), notice: String::new(), choice_timer: None, intro_mode: talk_core::relay_settings::Mode::from_saved(talk_core::relay_settings::load_saved(&state_dir()).mode.as_str()), toast_text: String::new(), toast_started: None, help_open: false, verify: None }))
+            Ok(Box::new(App { screen: Screen::Intro, shared, outgoing, input: String::new(), theme: Choice::Green, crt: true, hwnd, local_ip: local_ip(), frame_theme: None, reload: reload.clone(), relay_form: None, first_run: talk_core::relay_settings::needs_first_run(&state_dir()), notice: String::new(), choice_timer: None, intro_mode: talk_core::relay_settings::Mode::from_saved(talk_core::relay_settings::load_saved(&state_dir()).mode.as_str()), toast_text: String::new(), toast_started: None, help_open: false, verify: None }))
         }),
     );
     stop_serve(&started);

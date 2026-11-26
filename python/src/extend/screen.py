@@ -95,7 +95,6 @@ def help_box():
         t("help.codes"),
         t("help.peers"),
         t("help.trust"),
-        t("help.phone"),
         t("help.rejoin"),
         t("help.help"),
         t("help.quit"),
@@ -209,7 +208,7 @@ def screen_frame(lines, status, typed, cols, rows, overlay=None, nodes=(), mode=
             put(index + 4, visible[index])
         else:
             put(index + 4, "")
-    # The phone address and token, over the bottom rows of the messages. They are not chat lines.
+    # The overlay rows (the help box), over the bottom rows of the messages. They are not chat lines.
     shown = (overlay or [])[:area]
     for index, text in enumerate(shown):
         text = fit(text, cols - 1)
@@ -252,13 +251,8 @@ def on_key(ch, chat, typed):
     if ch == KEY_F1:
         chat.help_open = True
         return True
-    if ch != "\x10":             # the phone address hides on the first key that is not its own toggle
-        chat.hide_phone()
     if ch in ("\x03", "\x04"):    # Ctrl+C, Ctrl+D
         return False
-    if ch == "\x10":             # Ctrl+P: show or hide the phone address and token
-        chat.toggle_phone()
-        return True
     if ch == "\x0c":              # Ctrl+L: clear the messages on screen
         chat.clear_lines()
     elif ch == "\x0e":            # Ctrl+N: start a rename
@@ -312,8 +306,3 @@ def add_event(chat, event):
     """Keep an event's rows as chat lines (what the screen, or the control channel, shows)."""
     for text, mine, sender in event_rows(event):
         chat.add_line(text, mine, sender)
-
-
-def phone_overlay(chat):
-    """Off: no phone address or token is drawn. shortcut: restore the rows (phone.json, read now) to turn it back on."""
-    return None

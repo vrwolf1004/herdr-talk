@@ -190,7 +190,6 @@ def run_ansi(chat):
         redraw()
 
     chat.on_event = show
-    chat.on_phone_change = redraw
     _restore_screen = leave
     redraw()
     threading.Thread(target=leave_when_idle, args=(chat,), daemon=True).start()
@@ -231,7 +230,6 @@ def run_ansi(chat):
                 chat.emit(Line(message))
             redraw()
     finally:
-        chat.on_phone_change = None
         chat.on_event = Chat.on_event  # back to stdout: the screen is gone
         _restore_screen = None
         leave()

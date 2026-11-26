@@ -29,7 +29,7 @@ from core import sessions
 from core import store
 from core.events import Line, Notice
 from core.chat import (  # the chat state and the LAN receive side: core/chat.py, re-exported for the screen and tests
-    Chat, RelayHooks, remember_peer, reveal_message, read_reveal, exchange_reveal, show_code, reveal_later, receive_messages, receive_one, listen_for_peers, _listen_loop, _read_plain, _receive_encrypted, resolve_name_clash, MAX_TOTAL_PEERS, PEER_TIMEOUT_SECONDS, MAX_PEERS, JOIN_LIMIT_SECONDS, AUTO_RENAME_GAP_SECONDS, SEND_WORKERS, MAX_LINES, MESSAGE_LIMIT, MESSAGE_WINDOW_SECONDS, PHONE_SHOWN_SECONDS, REVEAL_RETRY_SECONDS, LOOP_POLL_SECONDS, MAX_CONNECTIONS, MAX_PER_IP, CONNECTION_SECONDS, MAX_MESSAGE_BYTES)  # noqa: F401
+    Chat, RelayHooks, remember_peer, reveal_message, read_reveal, exchange_reveal, show_code, reveal_later, receive_messages, receive_one, listen_for_peers, _listen_loop, _read_plain, _receive_encrypted, resolve_name_clash, MAX_TOTAL_PEERS, PEER_TIMEOUT_SECONDS, MAX_PEERS, JOIN_LIMIT_SECONDS, AUTO_RENAME_GAP_SECONDS, SEND_WORKERS, MAX_LINES, MESSAGE_LIMIT, MESSAGE_WINDOW_SECONDS, REVEAL_RETRY_SECONDS, LOOP_POLL_SECONDS, MAX_CONNECTIONS, MAX_PER_IP, CONNECTION_SECONDS, MAX_MESSAGE_BYTES)  # noqa: F401
 from core.net import (  # the announce, the send and the discovery port: core/net.py
     APP, ANNOUNCE_SECONDS, SEND_TIMEOUT_SECONDS, MAX_FRAME, MAX_TEXT_CHARS, STOP, _PEER_CLOSED_ERRNOS, _PEER_CLOSED_WINERRORS, announce, is_local_address, _Deadline, _peer_closed, send_to, _send_encrypted, deliver, DEFAULT_UDP_PORT, UDP_PORT_VARIABLE, parse_udp_port, udp_port)  # noqa: F401
 from core.control import (  # the control channel: core/control.py, re-exported for the GUI tests
@@ -40,7 +40,7 @@ from extend import settings_form as relay_form  # noqa: F401  (re-exported for t
 from extend.screen import (  # the screen layout and keys: extend/screen.py
     KEY_F1, char_width, enable_vt, read_char, read_char_timeout, wrap_line, help_box, fit, tail, ACCENT, BORDER, MUTED, TEXT, BOLD,
     message_rows, MAX_NODE_ROWS, ERROR_WORDS, status_tag, screen_frame, on_key, event_rows, event_texts, print_event, add_event,
-    phone_overlay)  # noqa: F401
+)  # noqa: F401
 
 Chat.on_event = staticmethod(print_event)  # no screen yet: the events go to stdout
 
@@ -148,7 +148,7 @@ def run(args):
     _tidy_sessions(chat)
     me = chat.me
     control = start_control(chat, state_dir())
-    chat.watch_host()  # the first node on this PC owns the phone address; another takes over when it ends
+    chat.watch_host()  # the first node on this PC is the host (방장); another takes over when it ends
     try:
         quit_first_run = bool(chat.state_dir and relay_settings.needs_first_run(chat.state_dir) and first_run_screen(chat.state_dir) == "quit")
     except KeyboardInterrupt:  # Ctrl+C on the first-run screen is a quit, not a crash

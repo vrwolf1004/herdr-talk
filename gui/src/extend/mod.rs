@@ -36,10 +36,6 @@ pub(crate) struct App {
     pub(crate) local_ip: String,
     /// The theme the title bar was last colored for.
     pub(crate) frame_theme: Option<Choice>,
-    /// Until when the phone address and token are on screen. Only this window shows them: never a chat line, never a log.
-    pub(crate) phone_until: Option<Instant>,
-    /// The auto-show at the first chat screen was decided (it happens once, and only when this window's node is the host).
-    pub(crate) phone_checked: bool,
     /// Set when the settings were saved: the session asks the serve node to start the relay again.
     pub(crate) reload: Arc<AtomicBool>,
     /// The Ctrl+R settings window, while it is open.
@@ -64,13 +60,10 @@ pub(crate) struct App {
 /// The key list of the TUI /help box, in its order (talk-core locale keys; "" is a gap).
 pub(crate) const HELP_KEYS: &[&str] = &[
     "help.title_send", "help.send", "", "help.commands", "help.name", "help.lang", "help.codes",
-    "help.peers", "help.trust", "help.phone", "help.rejoin", "help.help", "help.quit", "", "help.keys", "help.enter", "help.backspace",
+    "help.peers", "help.trust", "help.rejoin", "help.help", "help.quit", "", "help.keys", "help.enter", "help.backspace",
     "help.ctrl_l", "help.ctrl_c",
 ];
 
-pub(crate) const PHONE_SHOWN: Duration = Duration::from_secs(30);
-/// Off: the phone address window is not drawn. Its state, phone.json, the bridge and `/phone new` stay as they are.
-const PHONE_PANEL: bool = false;
 
 /// F3 pressed this frame: switch the language (saved like the TUI's F3) and return the notice, if any. `None`: F3 was not pressed.
 pub(crate) fn language_key(ctx: &egui::Context) -> Option<String> {
@@ -288,26 +281,6 @@ impl eframe::App for App {
             locked(&*self.shared, "update.clear").clear = true;
         }
         let state = locked(&*self.shared, "update.chat");
-        // Once, at the first chat screen: show the phone address when the node this window talks to is the host (방장) of this PC.
-        if !self.phone_checked {
-            if let Some((_, port)) = &state.me {
-                self.phone_checked = true;
-                if talk_core::phone::read(&state_dir()).is_some_and(|phone| phone.owner_port == *port) {
-                    self.phone_until = Some(Instant::now() + PHONE_SHOWN);
-                }
-            }
-        }
-        // Ctrl+P toggles; typing or Enter hides.
-        let (toggle, typed) = ctx.input(|input| (
-            input.modifiers.ctrl && input.key_pressed(egui::Key::P),
-            input.events.iter().any(|event| matches!(event, egui::Event::Text(_))) || input.key_pressed(egui::Key::Enter),
-        ));
-        let visible = self.phone_until.is_some_and(|until| until > Instant::now());
-        if toggle {
-            self.phone_until = if visible { None } else { Some(Instant::now() + PHONE_SHOWN) };
-        } else if typed || !visible {
-            self.phone_until = None;
-        }
         let mut open_settings = false;
         let supabase = talk_core::relay_settings::Mode::from_saved(&state.mode) == talk_core::relay_settings::Mode::Supabase;
         let lan_host = talk_core::phone::read(&state_dir()).is_some_and(|phone| state.me.as_ref().is_some_and(|(_, port)| phone.owner_port == *port));
@@ -413,17 +386,7 @@ impl eframe::App for App {
                 let clicked = ui.add_sized([68.0, INPUT_HEIGHT], egui::Button::new("SEND")).clicked();
                 if (enter || clicked) && !self.input.trim().is_empty() {
                     let text = std::mem::take(&mut self.input);
-                    match text.trim() {
-                        // With the panel off, a bare /phone goes to the node, which answers in the chat (as in the TUI).
-                        "/phone" if PHONE_PANEL => self.phone_until = Some(Instant::now() + PHONE_SHOWN),
-                        "/phone new" => {
-                            let _ = self.outgoing.send(text);
-                            self.phone_until = Some(Instant::now() + PHONE_SHOWN);
-                        }
-                        _ => {
-                            let _ = self.outgoing.send(text);
-                        }
-                    }
+                    let _ = self.outgoing.send(text);
                 }
                 if enter {
                     response.request_focus();
@@ -477,22 +440,6 @@ impl eframe::App for App {
             if confirm || close {
                 self.verify = None;
             }
-        }
-        if PHONE_PANEL && self.phone_until.is_some() {
-            let mut rows = vec![egui::RichText::new(talk_core::t("phone.title", &[])).strong()];
-            match talk_core::phone::read(&state_dir()) {
-                Some(phone) => {
-                    rows.extend(phone.urls.iter().map(|url| egui::RichText::new(url.as_str())));
-                    rows.push(egui::RichText::new(talk_core::t("phone.token", &[("token", &phone.token)])).strong());
-                    rows.push(egui::RichText::new(talk_core::t("phone.hint", &[])));
-                }
-                None => rows.push(egui::RichText::new(talk_core::t("phone.none", &[]))),
-            }
-            egui::Window::new("phone").title_bar(false).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -70.0]).show(ctx, |ui| {
-                for row in rows {
-                    ui.label(row);
-                }
-            });
         }
         if self.crt {
             draw_scanlines(ctx);
