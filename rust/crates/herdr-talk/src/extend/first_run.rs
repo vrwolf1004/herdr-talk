@@ -74,6 +74,13 @@ pub fn save_local(state: &Path) -> Result<(), String> {
 }
 
 pub fn render(out: &mut Stdout, chooser: &mut Chooser, remaining: Option<u64>, width: usize, rows: usize) -> io::Result<()> {
+    let body = body(chooser, remaining);
+    let frame = classic(body, &t("tui.first_run.keys", &[]), "", width, rows);
+    paint(out, width, rows, frame, &mut chooser.drawn)
+}
+
+/// The rows of the choice screen. The LAN hint says why BASE STATION is picked: nothing is found before the mode is saved.
+fn body(chooser: &Chooser, remaining: Option<u64>) -> Vec<Row> {
     // A text menu: the selected item is bright and marked with ▶; the other item is body text.
     let item = |mode: Mode, number: u8, name: &str, hint: &str| -> Vec<Row> {
         let selected = chooser.selected == mode;
@@ -86,11 +93,12 @@ pub fn render(out: &mut Stdout, chooser: &mut Chooser, remaining: Option<u64>, w
     body.push(vec![]);
     body.extend(item(Mode::Supabase, 2, &t("mode.supabase", &[]), &t("mode.hint_supabase", &[])));
     body.push(vec![]);
+    body.push(vec![(t("first.lan_hint", &[]), Tone::Dim)]);
+    body.push(vec![]);
     if let Some(seconds) = remaining {
         body.push(vec![(t("mode.timeout_hint", &[("n", &seconds.to_string())]), Tone::Dim)]);
     }
-    let frame = classic(body, &t("tui.first_run.keys", &[]), "", width, rows);
-    paint(out, width, rows, frame, &mut chooser.drawn)
+    body
 }
 
 #[cfg(test)]
@@ -117,6 +125,13 @@ mod tests {
         let mut chooser = Chooser::new(Instant::now());
         assert!(matches!(press(&mut chooser, KeyCode::Esc), Step::Quit));
         assert!(matches!(press(&mut chooser, KeyCode::Char('x')), Step::Stay));
+    }
+
+    #[test]
+    fn the_first_screen_says_that_base_station_finds_the_lan_peers() {
+        let chooser = Chooser::new(Instant::now());
+        let rows: Vec<String> = body(&chooser, None).iter().map(|row| row.iter().map(|(text, _)| text.as_str()).collect::<String>()).collect();
+        assert!(rows.iter().any(|row| row == &t("first.lan_hint", &[])), "{rows:?}");
     }
 
     #[test]

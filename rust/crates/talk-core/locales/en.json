@@ -114,6 +114,7 @@
   "tui.settings.label.name": "Unique ID",
   "tui.settings.label.room": "Room id (8 characters)",
   "tui.settings.title": "SUPABASE SETTINGS",
+  "first.lan_hint": "Choose BASE STATION to find peers on this network.",
   "rejoin.done": "Kicked peers are admitted again. /join them within {seconds} seconds.",
   "help.rejoin": "  /rejoin         admit kicked peers again",
   "nodes.seconds_left": "{seconds} s left to /join",

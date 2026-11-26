@@ -114,6 +114,7 @@
   "tui.settings.label.name": "Уникальный ID",
   "tui.settings.label.room": "ID комнаты (8 символов)",
   "tui.settings.title": "НАСТРОЙКИ SUPABASE",
+  "first.lan_hint": "Выберите BASE STATION, чтобы найти собеседников в этой сети.",
   "rejoin.done": "Удалённые собеседники снова принимаются. Введите /join в течение {seconds} секунд.",
   "help.rejoin": "  /rejoin         снова принять удалённых",
   "nodes.seconds_left": "осталось {seconds} с",

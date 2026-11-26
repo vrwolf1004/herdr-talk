@@ -153,6 +153,7 @@ class FirstRun:
             *_menu_item(self.selected == 0, f"01. {t('mode.local')}", t("mode.hint_local")),
             ("", ""),
             *_menu_item(self.selected == 1, f"02. {t('mode.supabase')}", t("mode.hint_supabase")),
+            (t("first.lan_hint"), MUTED),  # no peers are searched before the mode is saved; BASE STATION searches
             ("", ""),
         ]
         left = self.remaining()

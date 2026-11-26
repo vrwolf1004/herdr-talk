@@ -114,6 +114,7 @@
   "tui.settings.label.name": "ID unique",
   "tui.settings.label.room": "ID du salon (8 caractères)",
   "tui.settings.title": "PARAMÈTRES SUPABASE",
+  "first.lan_hint": "Choisissez BASE STATION pour trouver les pairs de ce réseau.",
   "rejoin.done": "Les pairs retirés sont à nouveau admis. Faites /join dans les {seconds} secondes.",
   "help.rejoin": "  /rejoin         réadmettre les pairs retirés",
   "nodes.seconds_left": "reste {seconds} s",

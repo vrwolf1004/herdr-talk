@@ -110,5 +110,6 @@
   "nodes.waiting_left": "waiting to join, {seconds} s left",
   "rejoin.done": "Removed peers may come back: /join them within {seconds} seconds.",
   "help.rejoin": "  /rejoin         take back removed peers",
-  "lang.not_saved": "The language changes for this run only (no settings folder)"
+  "lang.not_saved": "The language changes for this run only (no settings folder)",
+  "first.lan_hint": "Choose BASE STATION to find peers on this network."
 }

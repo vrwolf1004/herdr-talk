@@ -236,6 +236,7 @@ mod tests {
         for (name, _) in LOCALES {
             let messages = load(name);
             let footer = messages["tui.first_run.keys"].as_str().unwrap();
+            assert!(messages["first.lan_hint"].as_str().is_some_and(|text| !text.is_empty()), "{name}");
             assert!(footer.contains("F3"), "{name}: {footer}");
             assert_eq!(messages["mode.local"].as_str(), Some("BASE STATION"), "{name}");
             assert_eq!(messages["mode.supabase"].as_str(), Some("CLOUD SERVICE"), "{name}");

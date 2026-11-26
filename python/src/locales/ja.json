@@ -110,5 +110,6 @@
   "nodes.waiting_left": "確認待ち、残り {seconds} 秒",
   "rejoin.done": "除外した相手を再び受け付けます。{seconds} 秒以内に /join してください。",
   "help.rejoin": "  /rejoin         除外した相手を再び受け付ける",
-  "lang.not_saved": "言語はこの実行の間だけ変わります（設定フォルダなし）"
+  "lang.not_saved": "言語はこの実行の間だけ変わります（設定フォルダなし）",
+  "first.lan_hint": "BASE STATION を選ぶと、同じネットワークの相手を探します。"
 }

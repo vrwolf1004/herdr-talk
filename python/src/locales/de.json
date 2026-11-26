@@ -110,5 +110,6 @@
   "nodes.waiting_left": "wartet, noch {seconds} s",
   "rejoin.done": "Entfernte Teilnehmer werden wieder aufgenommen: /join innerhalb von {seconds} Sekunden.",
   "help.rejoin": "  /rejoin         entfernte Teilnehmer wieder aufnehmen",
-  "lang.not_saved": "Die Sprache ändert sich nur für diesen Lauf (kein Einstellungsordner)"
+  "lang.not_saved": "Die Sprache ändert sich nur für diesen Lauf (kein Einstellungsordner)",
+  "first.lan_hint": "Wähle BASE STATION, um Teilnehmer in diesem Netz zu finden."
 }

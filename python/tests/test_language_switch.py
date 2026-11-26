@@ -227,5 +227,21 @@ class NoSettingsFolderNoteTests(unittest.TestCase):
         self.assertEqual(first.message, "")
 
 
+class FirstRunLanHintTest(unittest.TestCase):
+    """The first-run screen says that BASE STATION is the choice that finds peers (no peers are remembered before it)."""
+
+    def setUp(self):
+        self.saved_language = i18n.language()
+        self.addCleanup(i18n.set_language, self.saved_language)
+
+    def test_the_hint_is_drawn_under_the_choices_in_every_language(self):
+        import re
+        for language in ORDER:
+            i18n.set_language(language)
+            text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", settings_form.FirstRun().render(120, 40))
+            self.assertIn(i18n.t("first.lan_hint"), text, language)
+            self.assertGreater(text.index(i18n.t("first.lan_hint")), text.index(i18n.t("mode.hint_supabase")), language)
+
+
 if __name__ == "__main__":
     unittest.main()

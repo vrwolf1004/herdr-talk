@@ -110,5 +110,6 @@
   "nodes.waiting_left": "확인 대기, 남은 시간 {seconds}초",
   "rejoin.done": "제외된 상대를 다시 받습니다. {seconds}초 안에 /join 하세요.",
   "help.rejoin": "  /rejoin         제외한 상대를 다시 받기",
-  "lang.not_saved": "언어는 이번 실행에만 바뀝니다 (설정 폴더 없음)"
+  "lang.not_saved": "언어는 이번 실행에만 바뀝니다 (설정 폴더 없음)",
+  "first.lan_hint": "BASE STATION 을 고르면 같은 네트워크의 상대를 찾습니다."
 }

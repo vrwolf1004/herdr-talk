@@ -493,7 +493,10 @@ pub fn choose(ctx: &egui::Context, palette: &Palette, remaining: Option<u64>) ->
             if ui.link(egui::RichText::new(t("mode.supabase", &[])).monospace().size(14.0).color(palette.muted).underline()).clicked() {
                 picked = Some(Pick::Supabase);
             }
-            ui.add_space(20.0);
+            ui.add_space(12.0);
+            // Same line as the TUI's first-run screen (talk-core's first.lan_hint).
+            ui.colored_label(palette.muted, egui::RichText::new(t("first.lan_hint", &[])).monospace());
+            ui.add_space(12.0);
             if let Some(seconds) = remaining {
                 ui.colored_label(palette.muted, egui::RichText::new(t("mode.timeout_hint", &[("n", &seconds.to_string())])).monospace());
             }

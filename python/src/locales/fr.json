@@ -110,5 +110,6 @@
   "nodes.waiting_left": "en attente, {seconds} s restantes",
   "rejoin.done": "Les pairs exclus peuvent revenir : faites /join dans les {seconds} secondes.",
   "help.rejoin": "  /rejoin         reprendre les pairs exclus",
-  "lang.not_saved": "La langue ne change que pour cette exécution (pas de dossier de réglages)"
+  "lang.not_saved": "La langue ne change que pour cette exécution (pas de dossier de réglages)",
+  "first.lan_hint": "Choisissez BASE STATION pour trouver les pairs de ce réseau."
 }

@@ -114,6 +114,7 @@
   "tui.settings.label.name": "固有ID",
   "tui.settings.label.room": "ルーム ID（8文字）",
   "tui.settings.title": "SUPABASE 設定",
+  "first.lan_hint": "BASE STATION を選ぶと、同じネットワークの相手を探します。",
   "rejoin.done": "除外した相手を再び受け付けます。{seconds} 秒以内に /join してください。",
   "help.rejoin": "  /rejoin         除外した相手を再び受け付ける",
   "nodes.seconds_left": "残り {seconds} 秒",

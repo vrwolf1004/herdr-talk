@@ -37,6 +37,13 @@ mod tests {
     }
 
     #[test]
+    fn the_first_run_screen_has_the_lan_hint_text() {
+        // The choose screen draws first.lan_hint under the choices; the text must be translated, not the bare key.
+        let hint = talk_core::t("first.lan_hint", &[]);
+        assert!(!hint.is_empty() && hint != "first.lan_hint", "{hint}");
+    }
+
+    #[test]
     fn the_help_lists_rejoin_and_the_rejoin_text_is_translated() {
         assert!(HELP_KEYS.contains(&"help.rejoin"));
         let done = talk_core::t("rejoin.done", &[("seconds", "60")]);

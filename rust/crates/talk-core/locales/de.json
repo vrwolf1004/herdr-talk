@@ -114,6 +114,7 @@
   "tui.settings.label.name": "Eindeutige ID",
   "tui.settings.label.room": "Raum-ID (8 Zeichen)",
   "tui.settings.title": "SUPABASE-EINSTELLUNGEN",
+  "first.lan_hint": "Wählen Sie BASE STATION, um Partner in diesem Netzwerk zu finden.",
   "rejoin.done": "Entfernte Partner werden wieder aufgenommen. Mit /join innerhalb von {seconds} Sekunden bestätigen.",
   "help.rejoin": "  /rejoin         entfernte Partner wieder aufnehmen",
   "nodes.seconds_left": "noch {seconds} s",

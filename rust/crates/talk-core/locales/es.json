@@ -114,6 +114,7 @@
   "tui.settings.label.name": "ID único",
   "tui.settings.label.room": "ID de sala (8 caracteres)",
   "tui.settings.title": "AJUSTES DE SUPABASE",
+  "first.lan_hint": "Elija BASE STATION para encontrar pares en esta red.",
   "rejoin.done": "Los pares expulsados vuelven a admitirse. Use /join en {seconds} segundos.",
   "help.rejoin": "  /rejoin         volver a admitir pares expulsados",
   "nodes.seconds_left": "quedan {seconds} s",

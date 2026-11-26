@@ -114,6 +114,7 @@
   "tui.settings.label.name": "유니크ID",
   "tui.settings.label.room": "방 ID (8자리)",
   "tui.settings.title": "SUPABASE 설정",
+  "first.lan_hint": "BASE STATION 을 고르면 같은 네트워크의 상대를 찾습니다.",
   "rejoin.done": "제외된 상대를 다시 받습니다. {seconds}초 안에 /join 하세요.",
   "help.rejoin": "  /rejoin         제외된 상대를 다시 받습니다",
   "nodes.seconds_left": "남은 시간 {seconds}초",

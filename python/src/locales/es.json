@@ -110,5 +110,6 @@
   "nodes.waiting_left": "esperando, quedan {seconds} s",
   "rejoin.done": "Se vuelve a aceptar a los excluidos: haga /join en {seconds} segundos.",
   "help.rejoin": "  /rejoin         volver a aceptar a los excluidos",
-  "lang.not_saved": "El idioma cambia solo en esta ejecución (no hay carpeta de ajustes)"
+  "lang.not_saved": "El idioma cambia solo en esta ejecución (no hay carpeta de ajustes)",
+  "first.lan_hint": "Elija BASE STATION para encontrar pares en esta red."
 }
