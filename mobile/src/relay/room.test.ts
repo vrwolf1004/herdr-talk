@@ -102,7 +102,8 @@ test("loadMembers joins, then reads the Noise keys of the other members only", a
     return { status: 200, text: async () => JSON.stringify(body) };
   };
   const result = await loadMembers(settings, SEED, 1700000000, NONCE, fetcher);
-  assert.deepEqual([...result], [[other, "ff".repeat(32)]]);
+  assert.equal(result.ownerPk, ownPk);
+  assert.deepEqual([...result.members], [[other, "ff".repeat(32)]]);
   assert.match(calls[1], new RegExp(`pk=in\\.\\(${other}\\)`));
   assert.equal(calls[0], "https://x.supabase.co/functions/v1/join-room");
 });

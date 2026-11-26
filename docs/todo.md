@@ -88,11 +88,19 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 - [x] **운영 적용 확인 (2026-11-19):** 마이그레이션 0006–0011 적용, 설정 코드 테이블과 함수(`claim_setup_code`), 함수 7개 ACTIVE, 시크릿 2개 존재 확인.
 - [ ] **미확인 실환경 테스트:** 설정 코드 발급과 상환의 실제 응답, 틀린 trust 403, 11번째 참가 409, LAN 10명, 실제 터미널 화면, F2·F9 키 입력. (세부는 아래 "개선점")
 - [ ] **모바일 기기 실행:** 변경된 화면과 방 참가를 실제 기기에서 확인. 모바일 1:1 경로 정리 포함.
-- [ ] **모바일 브리지 결정:** 폰에서 LAN 채팅이 필요한지 정한다. 필요 없으면 브리지와 관련 문서를 지운다.
+- [x] **모바일 브리지 결정 (2026-11-26):** 브리지를 없애고 모바일은 Supabase 방 채팅만 쓴다. 브리지 코드와 문서는 지웠다 (Rust·Python). 남은 GUI 참조는 아래 '폰 브리지 제거' 항목.
 - [x] **코어 2단계:** Python `Chat`과 네트워크 함수는 `core/`로 옮겼고 talk-core `chat.rs`, `net.rs`와 짝이 맞는다. 남은 것: core의 앱 모듈 import 정리(i18n, phone, relay_chat, relay_settings)는 별도 항목. (2026-11-25 점검)
 - [x] **extend 2단계:** 화면 그리기는 `extend/`(tui.py, screen.py, dock_block.py, settings_form.py)로 나갔고 `talk.py`에는 진입점만 남았다. (2026-11-25 점검)
 - [ ] **커밋 범위 결정:** 1:1 제거 2단계 코드(미커밋)와 이번 작업을 나눠서 커밋할지 정한다.
 - [ ] **죽은 로케일 키 정리:** `tui.settings.label.*`, `mode.status` 등 쓰지 않는 키를 지울지 정한다.
+
+## 폰 브리지 제거 (2026-11-26)
+
+- [x] **Rust 정리:** `phone.json` 에는 방장의 pid 와 채팅 포트만 쓴다 (talk-core `phone.rs`). 토큰 생성·재발급 (`/phone new`), 폰 주소·토큰 패널, Ctrl+P, 브리지 포트와 주소 후보 코드를 지웠다. 방장 잠금 `phone.lock` 은 그대로다.
+- [x] **Python 정리:** Python 워커가 `phone.json` 에서 token·urls 를 지웠다 (방장 pid·채팅 포트만 남음).
+- [x] **모바일은 Supabase 전용:** LAN 과 PC 브리지가 없다 (`docs/mobile.md`). 방 채팅은 구현돼 있다 (위 '모바일 방 기능' 정정).
+- [ ] **GUI 쪽 남은 참조:** `gui/src/extend/mod.rs` 가 `talk_core::phone::read` 의 `token`, `phone.title`·`phone.token`·`phone.hint`·`phone.none` 키, `help.phone` 키, `/phone` 명령과 Ctrl+P 패널을 쓴다. 정리 뒤 GUI 빌드가 깨질 수 있으므로 GUI 쪽 패널 제거가 필요하다 (이번 작업 범위 밖).
+- [ ] **실기기 모바일 확인:** 위 방 채팅과 설정 화면을 실제 기기에서 본다 (기존 '모바일 기기 실행' 항목과 같다).
 
 ## LAN 참가 (2026-11-19 결정)
 
@@ -114,7 +122,7 @@ Improvement list for herdr-talk. Items are grouped by area, most important first
 - [ ] **실환경 확인**: 설정 코드 발급, 상환, 방 참가, 틀린 trust 403, 11번째 참가 409를 실제 서버에서 확인한다.
 - [ ] **LAN 10명 실제 확인**: 여러 PC 또는 노드로 10명 참가와 11번째 거부를 확인한다.
 - [ ] **모바일 기기 실행**: 모바일 변경(trust, 설정 코드, 상태 줄)을 실제 기기에서 확인한다. 1:1 경로 정리도 함께 본다.
-- [ ] **모바일 브리지 결정**: 폰에서 LAN 채팅이 필요한지 정하고, 필요 없으면 브리지와 관련 문서를 지운다.
+- [x] **모바일 브리지 결정 (2026-11-26)**: 브리지 없음, 모바일은 Supabase 방 채팅만. 관련 문서 정리 완료.
 - [ ] **Rust 설정 화면 테스트 보강**: 중간 저장과 최종 저장 규칙을 화면 단위로 확인한다.
 
 ## Bugs
@@ -212,7 +220,7 @@ Open:
 - [ ] **GUI exit when its node goes away.** A GUI that was attached to a Python host disappeared right after that node was stopped (no crash event found). (2026-11-09: 재현 안 됨, 6회 — 순서 A 4회, 순서 B 2회. GUI 는 외부 Python 방장에 붙지 않고 자기 자식 serve 에만 붙음. 원 빌드·state 폴더 조건 미확인. `gui-panic.log` 로 다음 발생 때 원인 확인. 진단 로그는 추가됨)
 - [ ] **Phone token after takeover (later).** When the host goes away and the remaining node is the only one on this PC, a new token is issued (`phone.rs` / `phone.py` `try_take`: `other_live_nodes` does not count the node itself). Differs from "takeover keeps token". Deferred 2026-11-09: phone work is not possible on the current network. Decide when phone work resumes.
 - [ ] **Panel position.** The panel is an overlay at the bottom, not a line directly under `방장 입장`, so it never lands in the chat history. Ask whether a position directly under the line is needed.
-- [ ] **Bridge start.** The host does not start the bridge; the user runs `node mobile-bridge/bridge.js`. Decide whether the host should start it (needs a fixed path and process handling).
+- [x] **Bridge start.** (2026-11-26: 브리지 제거로 해소)
 - [ ] **Chat across two PCs** (not tested). A different state folder is treated as another PC.
 - [ ] **Phone leg encryption**: the bridge is plain HTTP on the LAN. Options: HTTPS with a pinned certificate, or a tunnel.
 - [ ] **Phone as a real P2P peer.** Not possible with Expo Go (UDP/TCP sockets need native modules, so a development build). Would need a JS Noise implementation, Android multicast permission and background limits. Separate project.
@@ -246,7 +254,7 @@ Found by reading the relay, node-folder and CLI code after commit `222aee8`. Not
 - [ ] **배포 상태 (2026-11-17 일부 확인)**: 운영 Edge Function 목록 확인 — create-room, join-room, post-message, fetch-messages, put-peer 배포됨 (put-peer 는 최신 코드와 같은지 미확인). delete-peer 는 없음 (배포 필요, 사용자 실행).
 - [ ] **RLS·채널 권한은 코드로만 확인**: 0001~0005 마이그레이션 읽기 기준. 실제 DB 의 정책과 grant 는 확인하지 않았다. 방 보안 항목 (RLS 전체 공개) 과 함께 확인한다.
 - [ ] **Edge Function 응답 경로는 코드로만 확인**: `create-room`, `join-room` 의 200·400·401·410 경로를 코드 읽기로 정리했다. 실행과 호출은 하지 않았다 (실제 방 생성·참가는 쓰기 작업).
-- [ ] **모바일 방 기능 없음**: `mobile/src/relay` 는 1:1 경로만 있다 (`settings.ts` 단일 peer ID, `client.ts` `findRow`, `protocol.ts` 두 키 채널). 방 생성·참가·멤버 조회가 필요하다. 1:1 제거와 함께 맞춘다. 실기기와 Expo 실행은 확인하지 않았다.
+- [x] **모바일 방 기능 (정정, 2026-11-26)**: 방 생성·참가·멤버 조회·방 채팅(post-message, fetch-messages)이 `mobile/src/relay/room.ts` 와 `mobile/src/app/index.tsx` 에 구현돼 있음을 코드로 확인했다. 이전 항목의 '방 기능 없음' 은 낡은 기록. 실기기와 Expo 실행은 아직 확인하지 않았다.
 - [ ] **1:1 제거 3단계 (서버, 보류)**: `peers.short_id` 컬럼과 `put-peer`·`delete-peer` 의 짧은 ID 조회를 제거한다. 보류 이유: 행 게시 서명 형식을 바꿔야 하고 (talk-core `put_message`, Python `put_request`, mobile `signPut` 동시 변경), 행 게시를 Rust·Python 이 아직 쓴다. `peers` 테이블은 `rooms.owner_pk`, `room_members.peer_pk` 가 참조하므로 남긴다. 마이그레이션 실행은 사람이 한다.
 - [ ] **모바일 앱 SAS 적용 (차후)**: SAS 커밋 방식 (LAN announce 의 commit, reveal 프레임, 8자 코드) 을 `mobile/` 에 맞춘다. PC 판 (Rust, Python) 과 같은 고정 벡터로 확인. 구버전 앱은 거부된다 (호환 결정 (b)). 지금 PC 판 SAS 구현 (`task_5a16ee93214f`) 이 끝난 뒤 진행.
 - [ ] **모바일 1:1 경로 정리**: `mobile/src/relay` 의 `engine.ts`, `client.ts` `findRow`, `relay.tsx` 의 peer 칸은 이번 정리 범위 밖이라 남았다. 방 기능 구현과 함께 정리한다.

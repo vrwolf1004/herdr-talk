@@ -215,20 +215,21 @@ export async function createRoom(
   return parseCreated(answer.status, answer.text);
 }
 
-/** Join the room and read the other members' Noise keys. Members without a row in `peers` are left out. */
+/** Join the room: the owner's key and the other members' Noise keys. Members without a row in `peers` are left out. */
 export async function loadMembers(
   settings: RelaySettings,
   seed: Uint8Array,
   now: number,
   nonce: string,
   fetcher: Fetch = fetch as unknown as Fetch,
-): Promise<Map<string, string>> {
+): Promise<{ ownerPk: string; members: Map<string, string> }> {
   const join = await call(settings, "/functions/v1/join-room", "POST", joinRoomBody(seed, settings.roomCode, settings.name, settings.trust, now, nonce), fetcher);
+  const { ownerPk, members } = parseJoin(join.status, join.text);
   const own = bytesToHex(signingPublicKey(seed));
-  const others = parseJoin(join.status, join.text).members.filter((pk) => pk !== own);
-  if (others.length === 0) return new Map();
+  const others = members.filter((pk) => pk !== own);
+  if (others.length === 0) return { ownerPk, members: new Map() };
   const peers = await call(settings, `/rest/v1/peers?${membersQuery(others)}`, "GET", undefined, fetcher);
-  return parseMembersNoise(peers.status, peers.text);
+  return { ownerPk, members: parseMembersNoise(peers.status, peers.text) };
 }
 
 export async function fetchRows(

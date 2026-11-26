@@ -42,15 +42,10 @@ fn on_key(key: KeyEvent, chat: &Chat, input: &mut String) -> bool {
     if HELP_OPEN.with(|open| open.replace(false)) && !(ctrl && key.code == KeyCode::Char('c')) {
         return true;
     }
-    // The phone address hides on the first key that is not its own toggle.
-    if !(ctrl && key.code == KeyCode::Char('p')) {
-        chat.hide_phone();
-    }
     match key.code {
         KeyCode::Char('c' | 'd') if ctrl => return false,
         KeyCode::Char('l') if ctrl => chat.clear_lines(),
         KeyCode::Char('n') if ctrl => *input = "/name ".to_string(),
-        KeyCode::Char('p') if ctrl => chat.toggle_phone(),
         KeyCode::F(1) => HELP_OPEN.with(|open| open.set(true)),
         // F3 switches the language; a save failure is said in the chat (the switch still happens).
         KeyCode::F(3) => {
@@ -165,7 +160,6 @@ pub fn run(chat: &Arc<Chat>, refused: bool) -> io::Result<()> {
     let mut drawn = Frame::default();
     render(&mut terminal.0, chat, &input, &mut stamps, &mut drawn)?;
     loop {
-        chat.phone_visible(); // hides the phone address when its time is up, and asks for a redraw
         let mut redraw = chat.take_dirty();
         if event::poll(POLL)? {
             match event::read()? {
@@ -291,20 +285,6 @@ mod tests {
         assert!(input.is_empty(), "the closing key is not typed");
         on_key(key(KeyCode::Char('b'), KeyModifiers::NONE), &chat, &mut input);
         assert_eq!(input, "b");
-    }
-
-    #[test]
-    fn ctrl_p_toggles_the_phone_and_any_other_key_hides_it() {
-        let (chat, mut input) = (chat(), String::new());
-        on_key(key(KeyCode::Char('p'), KeyModifiers::CONTROL), &chat, &mut input);
-        assert!(chat.phone_visible());
-        assert!(input.is_empty(), "Ctrl+P types nothing");
-        on_key(key(KeyCode::Char('p'), KeyModifiers::CONTROL), &chat, &mut input);
-        assert!(!chat.phone_visible());
-        on_key(key(KeyCode::Char('p'), KeyModifiers::CONTROL), &chat, &mut input);
-        on_key(key(KeyCode::Char('a'), KeyModifiers::NONE), &chat, &mut input);
-        assert!(!chat.phone_visible());
-        assert_eq!(input, "a");
     }
 
     #[test]

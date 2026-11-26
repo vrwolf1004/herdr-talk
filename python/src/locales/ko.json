@@ -8,7 +8,6 @@
   "help.codes": "    코드: ko en zh ja vi fr de es ru id pt",
   "help.peers": "  /peers          최근에 보인 상대 목록",
   "help.trust": "  /join <코드>   코드로 상대 확인",
-  "help.phone": "  /phone new      새 폰 토큰 만들기",
   "help.help": "  /help           이 상자 보기",
   "help.quit": "  /quit           채팅 나가기",
   "help.keys": "단축키",
@@ -45,9 +44,6 @@
   "peers.plain": "평문",
   "peers.unverified": "미확인, 코드 {code}",
   "trust.ambiguous": "코드 {code} 와 맞는 키가 여러 개입니다. 확인하지 않았습니다. 코드를 다시 비교하세요",
-  "phone.none": "아직 폰 주소가 없습니다: 이 PC 에 방장이 없습니다.",
-  "phone.new_done": "새 토큰을 만들었습니다. 폰에서 새 토큰을 다시 입력하세요.",
-  "usage.phone": "사용법: /phone   또는   /phone new",
   "host.badge": "[방장]",
   "mode.local": "BASE STATION",
   "mode.supabase": "CLOUD SERVICE",
@@ -110,5 +106,6 @@
   "nodes.waiting_left": "확인 대기, 남은 시간 {seconds}초",
   "rejoin.done": "제외된 상대를 다시 받습니다. {seconds}초 안에 /join 하세요.",
   "help.rejoin": "  /rejoin         제외한 상대를 다시 받기",
-  "lang.not_saved": "언어는 이번 실행에만 바뀝니다 (설정 폴더 없음)"
+  "lang.not_saved": "언어는 이번 실행에만 바뀝니다 (설정 폴더 없음)",
+  "first.lan_hint": "BASE STATION 을 고르면 같은 네트워크의 상대를 찾습니다."
 }

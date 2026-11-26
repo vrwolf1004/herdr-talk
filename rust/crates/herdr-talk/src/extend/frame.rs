@@ -46,7 +46,7 @@ pub(crate) enum Tone {
     Warn,
     /// An error state (status tag).
     Alert,
-    /// The phone address over the messages: dark text on the border green.
+    /// The help box over the messages: dark text on the border green.
     Overlay,
     /// The divider lines: the border green.
     Border,
@@ -264,7 +264,7 @@ pub(crate) fn nodes_block(chat: &Chat, name: &str, rows: usize) -> Vec<Row> {
     block
 }
 
-/// The chat screen: the messages fill the middle, the phone address (when shown) sits over their last rows.
+/// The chat screen: the messages fill the middle, the help box (when shown) sits over their last rows.
 pub(crate) fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: usize, rows: usize) -> (Vec<Row>, usize) {
     let lines = chat.lines();
     let seqs: Vec<u64> = lines.iter().map(|line| line.seq).collect();
@@ -276,9 +276,9 @@ pub(crate) fn chat_frame(chat: &Chat, input: &str, stamps: &mut Stamps, width: u
     let mut body: Vec<Row> = messages[messages.len().saturating_sub(area)..].to_vec();
     // Fill the message area first: with few messages the overlay rows must still sit inside it.
     body.resize_with(area, Vec::new);
-    // The help box (F1) and the phone address sit over the bottom rows of the messages, the same way.
+    // The help box (F1) sits over the bottom rows of the messages.
     let help = HELP_OPEN.with(Cell::get).then(talk_core::help_box);
-    for overlay in help.into_iter().chain(chat.phone_overlay()) {
+    if let Some(overlay) = help {
         let count = overlay.len().min(area);
         for (slot, text) in body[area - count..].iter_mut().zip(&overlay) {
             let text = fit(text, width);

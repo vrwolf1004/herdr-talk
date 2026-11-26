@@ -8,7 +8,6 @@
   "help.codes": "    коды: ko en zh ja vi fr de es ru id pt",
   "help.peers": "  /peers          недавно замеченные",
   "help.trust": "  /join <код>    подтвердить собеседника по коду",
-  "help.phone": "  /phone new      создать новый токен телефона",
   "help.help": "  /help           показать это окно",
   "help.quit": "  /quit           выйти из чата",
   "help.keys": "Клавиши",
@@ -45,9 +44,6 @@
   "peers.plain": "открытый текст",
   "peers.unverified": "не подтверждён, код {code}",
   "trust.ambiguous": "коду {code} соответствуют несколько разных ключей. Не подтверждено: сравните коды ещё раз",
-  "phone.none": "Адреса для телефона пока нет: на этом ПК нет хоста.",
-  "phone.new_done": "Новый токен создан. Телефонам нужно ввести новый.",
-  "usage.phone": "использование: /phone   или   /phone new",
   "host.badge": "[хост]",
   "mode.local": "BASE STATION",
   "mode.supabase": "CLOUD SERVICE",
@@ -110,5 +106,6 @@
   "nodes.waiting_left": "ожидает, осталось {seconds} с",
   "rejoin.done": "Удалённых участников снова принимаем: выполните /join в течение {seconds} с.",
   "help.rejoin": "  /rejoin         снова принять удалённых",
-  "lang.not_saved": "Язык меняется только для этого запуска (нет папки настроек)"
+  "lang.not_saved": "Язык меняется только для этого запуска (нет папки настроек)",
+  "first.lan_hint": "Выберите BASE STATION, чтобы найти участников в этой сети."
 }

@@ -8,7 +8,6 @@
   "help.codes": "    codes: ko en zh ja vi fr de es ru id pt",
   "help.peers": "  /peers          list peers seen recently",
   "help.trust": "  /join <code>   verify a peer by code",
-  "help.phone": "  /phone new      make a new phone token",
   "help.help": "  /help           show this box",
   "help.quit": "  /quit           leave the chat",
   "help.keys": "Keys",
@@ -45,9 +44,6 @@
   "peers.plain": "plain text",
   "peers.unverified": "not verified, code {code}",
   "trust.ambiguous": "several different keys match code {code}. Not trusted: compare the codes again",
-  "phone.none": "No phone address yet: no host on this PC.",
-  "phone.new_done": "New token made. Phones must enter the new one.",
-  "usage.phone": "usage: /phone   or   /phone new",
   "host.badge": "[host]",
   "mode.local": "BASE STATION",
   "mode.supabase": "CLOUD SERVICE",
@@ -110,5 +106,6 @@
   "nodes.waiting_left": "waiting to join, {seconds} s left",
   "rejoin.done": "Removed peers may come back: /join them within {seconds} seconds.",
   "help.rejoin": "  /rejoin         take back removed peers",
-  "lang.not_saved": "The language changes for this run only (no settings folder)"
+  "lang.not_saved": "The language changes for this run only (no settings folder)",
+  "first.lan_hint": "Choose BASE STATION to find peers on this network."
 }

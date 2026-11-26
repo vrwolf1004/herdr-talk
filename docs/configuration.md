@@ -68,20 +68,17 @@ Rooms last 24 hours from creation and cannot be extended. Joining an expired roo
 
 ## Phone host (방장)
 
-One node per PC owns the phone's address and token. Both editions follow the same rules, so Rust and Python nodes in one state folder elect one host between them.
+One node per PC holds the host role. Both editions follow the same rules, so Rust and Python nodes in one state folder elect one host between them.
 
-- **Who is the host.** The node that holds `phone.lock` in the state folder (an OS file lock, taken atomically, so nodes that start together get exactly one host). Only this PC counts: nodes on other PCs have their own host and their own phone bridge.
-- **`phone.json`** (readable by this user only): `{"port", "token", "urls", "owner_pid", "owner_port"}`. The token is six digits (`000000` to `999999`) from the OS random source. `urls` are address candidates, the default-route adapter first, then other private addresses, virtual adapters (VirtualBox `192.168.56.x`, link-local, Docker) last. `port` is `TALK_BRIDGE_PORT` or 47860. Nothing in it is sent over the network or announced.
-- **Name.** The host is decided when a node starts, before its first announcement. Every node without `--name` gets a random name from its language's name list (the usual name-clash numbering applies). The host is not called `방장` any more: the host role shows only as a `[방장]` badge (`host.badge`) in the status row while the node is the host, and the badge does not change the name. Started with `--name`, the node keeps that name. Any node started on the same PC, host or not, does not show the phone address by itself (Ctrl+P or `/phone`; it still shows when the host joins).
-- **Name on hand-off.** A node that takes over keeps the name it has: names are never changed by a take-over. Only the status-row badge moves to it, and it shows the phone address once. The old host's name goes with it.
-- **When the host ends** the OS gives the lock back and a waiting node takes it within two seconds (whichever polls first, not strictly the oldest), keeps the token and port and writes its own pid. The last node to leave removes `phone.json`. After a crash the file stays until the next host starts.
-- **Showing it.** The address and token are drawn over the bottom of the chat screen only, never as a chat line, in no log and not to peers. They appear when this node becomes the host, and when the host of this PC joins (its chat port in `phone.json` matches the announcement from a local address). They hide on the first key typed, with Ctrl+P again, or after 30 seconds. **Ctrl+P** or `/phone` shows them again, on any node (a node that is not the host reads the host's file). The terminal chat (Rust and Python) and the Windows window have it.
-- **`/phone new`** makes a new token in `phone.json`. The bridge reads the file on every request, so phones that used the old token get 401 and must enter the new one.
-- **Bridge.** `mobile-bridge/bridge.js` takes port and token from `TALK_BRIDGE_PORT` / `TALK_BRIDGE_TOKEN` when set, else from `phone.json`, else it makes a random token and prints it. The six-digit token is guarded by the bridge's block of an address after 5 wrong tries for 10 minutes. The host does not start the bridge: run `node mobile-bridge/bridge.js` yourself.
+- **Who is the host.** The node that holds `phone.lock` in the state folder (an OS file lock, taken atomically, so nodes that start together get exactly one host). Only this PC counts: nodes on other PCs have their own host.
+- **`phone.json`** (readable by this user only): the host's state file, holding only the host's process id and chat port (`owner_pid`, `owner_port`). It has no token and no address, and it is not sent over the network or announced.
+- **Name.** The host is decided when a node starts, before its first announcement. Every node without `--name` gets a random name from its language's name list (the usual name-clash numbering applies). The host is not called `방장` any more: the host role shows only as a `[방장]` badge (`host.badge`) in the status row while the node is the host, and the badge does not change the name. Started with `--name`, the node keeps that name.
+- **Name on hand-off.** A node that takes over keeps the name it has: names are never changed by a take-over. Only the status-row badge moves to it.
+- **When the host ends** the OS gives the lock back and a waiting node takes it within two seconds (whichever polls first, not strictly the oldest), keeps the port and writes its own pid. The last node to leave removes `phone.json`. After a crash the file stays until the next host starts.
 
 ## Control channel
 
-The Python edition has the same channel (`python src/talk.py run` or `serve`, same `control-<pid>.json`, same `token`/`lines`/`peers`/`send`/`shutdown` requests, same state folder order), so the mobile bridge works with either edition.
+The Python edition has the same channel (`python src/talk.py run` or `serve`, same `control-<pid>.json`, same `token`/`lines`/`peers`/`send`/`shutdown` requests, same state folder order).
 
 `herdr-talk run` and `herdr-talk serve` open a local channel for a GUI or script. `serve` is the same chat without a screen and ends on Ctrl+C, a termination signal, or `shutdown`.
 

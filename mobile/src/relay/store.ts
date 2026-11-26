@@ -11,6 +11,7 @@ import { emptySettings, isPeerInput, isValidName, type RelaySettings } from "./s
 import { type Keys } from "./engine.ts";
 import { signingPublicKey } from "./protocol.ts";
 import { namesFor } from "./names.ts";
+import { noiseText, parseChoice, parseNoise, type Choice } from "../theme.ts";
 
 // Settings: encrypted in expo-secure-store (Android Keystore). The old AsyncStorage copy is only read once, to move it.
 const SETTINGS_KEY = "herdr-talk.relay.settings";
@@ -97,6 +98,28 @@ export async function saveSettings(settings: RelaySettings): Promise<void> {
 export async function clearSettings(): Promise<void> {
   await SecureStore.deleteItemAsync(SECURE_SETTINGS_KEY);
   await AsyncStorage.removeItem(SETTINGS_KEY);
+}
+
+const THEME_KEY = "herdr-talk.theme";
+
+/** The saved theme (Green when none is saved). */
+export async function loadTheme(): Promise<Choice> {
+  return parseChoice(await AsyncStorage.getItem(THEME_KEY));
+}
+
+export async function saveTheme(choice: Choice): Promise<void> {
+  await AsyncStorage.setItem(THEME_KEY, choice);
+}
+
+const NOISE_KEY = "herdr-talk.noise-effect";
+
+/** Whether the noise overlay is on (off when nothing is saved). */
+export async function loadNoiseEffect(): Promise<boolean> {
+  return parseNoise(await AsyncStorage.getItem(NOISE_KEY));
+}
+
+export async function saveNoiseEffect(on: boolean): Promise<void> {
+  await AsyncStorage.setItem(NOISE_KEY, noiseText(on));
 }
 
 /** Noise public keys (hex) of the peers the user confirmed with the code. */

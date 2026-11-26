@@ -32,7 +32,7 @@ fn run(args: RunArgs) -> Result<(), String> {
         thread::spawn(move || keep_dock_block(pane, chat));
     }
     let _control = control::serve(chat.clone(), &talk_core::store::state_dir(), false).map_err(|error| error.to_string())?;
-    chat.watch_host(); // the first node on this PC owns the phone address; another takes over when it ends
+    chat.watch_host(); // the first node on this PC is the host of this PC; another takes over when it ends
     let me = chat.me.lock().unwrap().clone();
     chat.say(t("start.hello", &[("name", &me.name), ("port", &me.port.to_string())]));
     let state = talk_core::store::state_dir();

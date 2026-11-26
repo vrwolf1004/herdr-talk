@@ -8,7 +8,6 @@
   "help.codes": "    Codes: ko en zh ja vi fr de es ru id pt",
   "help.peers": "  /peers          zuletzt gesehene Peers",
   "help.trust": "  /join <Code>   Partner per Code prüfen",
-  "help.phone": "  /phone new      neuen Handy-Token erstellen",
   "help.help": "  /help           dieses Fenster anzeigen",
   "help.quit": "  /quit           Chat verlassen",
   "help.keys": "Tasten",
@@ -45,9 +44,6 @@
   "peers.plain": "Klartext",
   "peers.unverified": "unbestätigt, Code {code}",
   "trust.ambiguous": "mehrere verschiedene Schlüssel passen zum Code {code}. Nicht bestätigt: Codes erneut vergleichen",
-  "phone.none": "Noch keine Handy-Adresse: kein Host auf diesem PC.",
-  "phone.new_done": "Neuer Token erzeugt. Handys müssen den neuen eingeben.",
-  "usage.phone": "Verwendung: /phone   oder   /phone new",
   "host.badge": "[Gastgeber]",
   "mode.local": "BASE STATION",
   "mode.supabase": "CLOUD SERVICE",
@@ -110,5 +106,6 @@
   "nodes.waiting_left": "wartet, noch {seconds} s",
   "rejoin.done": "Entfernte Teilnehmer werden wieder aufgenommen: /join innerhalb von {seconds} Sekunden.",
   "help.rejoin": "  /rejoin         entfernte Teilnehmer wieder aufnehmen",
-  "lang.not_saved": "Die Sprache ändert sich nur für diesen Lauf (kein Einstellungsordner)"
+  "lang.not_saved": "Die Sprache ändert sich nur für diesen Lauf (kein Einstellungsordner)",
+  "first.lan_hint": "Wähle BASE STATION, um Teilnehmer in diesem Netz zu finden."
 }

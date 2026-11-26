@@ -25,15 +25,9 @@ cargo run --release
 
 See [Supabase relay](docs/supabase-relay.md) for the current model and unverified items.
 
-## Phone (Expo Go)
+## Host (방장)
 
-An Android phone can join the chat through `mobile-bridge/bridge.js` and the Expo app in `mobile/`. The phone is not a peer: it talks to the bridge over HTTP and the bridge talks to a herdr-talk node on the same PC. Use it only on a trusted Wi-Fi, because that leg is plain HTTP.
-
-- The first node on a PC is the **host** (named "Host" unless `--name` is given, with a `[Host]` badge). It owns the phone URL and a 6-digit token in `phone.json`. The next node takes over when the host exits.
-- The chat shows the phone address and token when you become host or when the host joins, and on `Ctrl+P` or `/phone`. `/phone new` makes a new token. They are drawn on screen only, never in chat lines or logs.
-- Run `node mobile-bridge/bridge.js`, then `npx expo start --host lan` in `mobile/`, and enter the address and token in the app.
-
-Details, checks and open items: [docs/mobile.md](docs/mobile.md).
+The first node started on a PC is the **host** (named "Host" unless `--name` is given, with a `[Host]` badge). It holds the host lock (`phone.lock`) for this PC, and the next node takes over when the host exits. In Supabase mode the `[host]` badge means the room's creator instead.
 
 ## Names
 

@@ -43,7 +43,7 @@ BORDER = "\x1b[38;2;65;125;85m"       # #417D55 dividers
 MUTED = "\x1b[38;2;125;154;132m"      # #7D9A84 hints (lifted from #526B59 for readability, as in Rust)
 WARN = "\x1b[38;2;255;184;77m"        # #FFB84D messages
 ALERT = "\x1b[38;2;255;85;85m"        # #FF5555 errors
-OVERLAY = "\x1b[38;2;5;10;8m\x1b[48;2;65;125;85m"  # the phone address: background text on the border green
+OVERLAY = "\x1b[38;2;5;10;8m\x1b[48;2;65;125;85m"  # the overlay (help box): background text on the border green
 BOLD = "\x1b[1m"
 APP_NAME = "▣ HERDR-TALK"
 
@@ -153,6 +153,7 @@ class FirstRun:
             *_menu_item(self.selected == 0, f"01. {t('mode.local')}", t("mode.hint_local")),
             ("", ""),
             *_menu_item(self.selected == 1, f"02. {t('mode.supabase')}", t("mode.hint_supabase")),
+            (t("first.lan_hint"), MUTED),  # no peers are searched before the mode is saved; BASE STATION searches
             ("", ""),
         ]
         left = self.remaining()
