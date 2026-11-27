@@ -2,7 +2,7 @@
   "expo": {
     "name": "herdr-talk",
     "slug": "herdr-talk",
-    "version": "1.0.0",
+    "version": "0.8.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",

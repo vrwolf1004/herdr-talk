@@ -1,6 +1,6 @@
 [package]
 name = "herdr-talk-gui"
-version = "0.1.0"
+version = "0.8.5"
 edition = "2021"
 description = "Windows window for herdr-talk: shows the chat and sends messages through the local control channel"
 
